@@ -17,6 +17,7 @@ except ImportError:
 
 from argus.cli.cmd_diff import diff_runs
 from argus.cli.cmd_doctor import doctor
+from argus.cli.cmd_key import key_clear, key_set, key_show
 from argus.cli.cmd_locate import locate_sources
 from argus.cli.cmd_login import login, logout, whoami
 from argus.cli.cmd_open_ui import open_ui
@@ -35,6 +36,32 @@ app = typer.Typer(
 
 open_app = typer.Typer(help="Open Argus tools.", no_args_is_help=True)
 app.add_typer(open_app, name="open")
+
+key_app = typer.Typer(help="Manage your BYOK OpenAI API key.", no_args_is_help=True)
+app.add_typer(key_app, name="key")
+
+
+@key_app.command("set")
+def cmd_key_set(
+    value: Annotated[
+        Optional[str],
+        typer.Argument(help="OpenAI API key. Omit to be prompted with hidden input."),
+    ] = None,
+) -> None:
+    """Save your OpenAI API key locally (~/.argus/config.json)."""
+    key_set(value)
+
+
+@key_app.command("show")
+def cmd_key_show() -> None:
+    """Show the currently resolved key (masked) and its source."""
+    key_show()
+
+
+@key_app.command("clear")
+def cmd_key_clear() -> None:
+    """Remove the saved local key."""
+    key_clear()
 
 _console = Console()
 
@@ -68,6 +95,7 @@ _COMMANDS = [
     ("login", "sign in with Google to sync runs to the cloud"),
     ("logout", "clear stored credentials"),
     ("whoami", "show current login status"),
+    ("key set", "save your OpenAI API key locally for BYOK mode"),
     ("update", "check GitHub for a newer release and upgrade"),
     ("doctor", "diagnose integration issues (LangGraph, storage)"),
 ]

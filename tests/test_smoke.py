@@ -1143,3 +1143,24 @@ def test_login_reports_hosted_only_when_unconfigured(monkeypatch, capsys):
     cl.login()
     out = capsys.readouterr().out.lower()
     assert "hosted" in out or "not available" in out
+
+
+@pytest.mark.unit
+def test_cmd_key_set_show_clear(tmp_path, monkeypatch, capsys):
+    import argus.user_config as uc
+    import argus.cli.cmd_key as ck
+
+    monkeypatch.setattr(uc, "_CONFIG_DIR", tmp_path / ".argus")
+    monkeypatch.setattr(uc, "_CONFIG_FILE", tmp_path / ".argus" / "config.json")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    ck.key_set("sk-abcdef123456")
+    assert uc.get_saved_openai_key() == "sk-abcdef123456"
+
+    ck.key_show()
+    out = capsys.readouterr().out
+    assert "sk-abcdef123456" not in out  # masked
+    assert "3456" in out  # last 4 shown
+
+    ck.key_clear()
+    assert uc.get_saved_openai_key() is None
