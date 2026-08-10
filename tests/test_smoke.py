@@ -1185,3 +1185,22 @@ def test_embedding_client_uses_resolved_key(monkeypatch):
 
     es._get_client()
     assert captured["api_key"] == "sk-embed"
+
+
+@pytest.mark.unit
+def test_doctor_llm_mode_byok(monkeypatch):
+    import argus.cli.cmd_doctor as d
+    monkeypatch.setattr("argus.user_config.resolve_openai_key", lambda: "sk-x")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+    ok, msg = d._check_llm_mode()
+    assert ok is True
+    assert "BYOK" in msg
+
+
+@pytest.mark.unit
+def test_doctor_llm_mode_heuristic(monkeypatch):
+    import argus.cli.cmd_doctor as d
+    monkeypatch.setattr("argus.user_config.resolve_openai_key", lambda: None)
+    monkeypatch.setattr("argus.cloud.SUPABASE_URL", None)
+    ok, msg = d._check_llm_mode()
+    assert "heuristic" in msg.lower()

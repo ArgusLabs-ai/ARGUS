@@ -180,6 +180,25 @@ def _check_optional_deps() -> tuple[bool, str]:
     return True, ", ".join(parts)
 
 
+def _check_llm_mode() -> tuple[bool, str]:
+    """Report which LLM path is active: BYOK / hosted / heuristic-only."""
+    import os
+
+    from argus.cloud import SUPABASE_URL
+    from argus.user_config import resolve_openai_key
+
+    if resolve_openai_key():
+        source = "env" if os.environ.get("OPENAI_API_KEY") else "saved"
+        return True, f"BYOK ({source}) — calling OpenAI directly"
+    if SUPABASE_URL is not None:
+        from argus.cloud import is_logged_in
+
+        if is_logged_in():
+            return True, "hosted proxy (logged in)"
+        return True, "hosted available — run: argus login (or set OPENAI_API_KEY)"
+    return True, "heuristic-only — no key set (argus key set to enable LLM checks)"
+
+
 def doctor() -> None:
     """Run all diagnostic checks and print results."""
     console.print()
@@ -193,6 +212,7 @@ def doctor() -> None:
         ("python", _check_python_version),
         ("langgraph", _check_langgraph),
         ("storage", _check_storage),
+        ("llm", _check_llm_mode),
         ("replay", _check_replay_readiness),
         ("optional deps", _check_optional_deps),
     ]
