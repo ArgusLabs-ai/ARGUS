@@ -1133,3 +1133,13 @@ def test_cloud_noops_when_unconfigured(monkeypatch):
     assert cloud.is_logged_in() is False
     assert cloud.push_run({"run_id": "x"}) is False
     assert cloud.pull_shared_signatures() == []
+
+
+@pytest.mark.unit
+def test_login_reports_hosted_only_when_unconfigured(monkeypatch, capsys):
+    import argus.cli.cmd_login as cl
+
+    monkeypatch.setattr(cl, "SUPABASE_URL", None)
+    cl.login()
+    out = capsys.readouterr().out.lower()
+    assert "hosted" in out or "not available" in out

@@ -79,6 +79,14 @@ _CALLBACK_HTML = """\
 
 def login() -> None:
     """Run the OAuth login flow."""
+    if SUPABASE_URL is None:
+        _console.print(
+            "  [yellow]Cloud login is a hosted-only feature.[/yellow]\n"
+            "  ARGUS runs fully local with your own key — set one with: "
+            "[bold]argus key set[/bold]\n"
+            "  or export OPENAI_API_KEY."
+        )
+        return
     if is_logged_in():
         creds = load_credentials()
         if creds and time.time() < creds.expires_at - 60:

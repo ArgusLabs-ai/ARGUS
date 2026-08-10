@@ -1124,42 +1124,47 @@ def _make_handler(
                 # Try Supabase upload (non-blocking)
                 supabase_ok = False
                 try:
-                    from argus.cloud import (  # noqa: PLC0415
-                        SUPABASE_ANON_KEY,
-                        SUPABASE_URL,
-                        _get_valid_credentials,
-                        _supabase_request,
-                    )
+                    from argus.cloud import SUPABASE_URL as _sb_url
 
-                    creds = _get_valid_credentials()
-                    if creds:
-                        report_payload["user_id"] = creds.user_id
-                        _supabase_request(
-                            creds.access_token,
-                            "reports",
-                            method="POST",
-                            body=report_payload,
-                            extra_headers={"Prefer": "return=minimal"},
-                        )
-                        supabase_ok = True
+                    if _sb_url is None:
+                        pass  # local-only mode: report upload is hosted-only
                     else:
-                        # Fallback: use anon key so reports work without login
-                        import urllib.request as _ur  # noqa: PLC0415
-
-                        _anon_body = json.dumps(report_payload).encode()
-                        _anon_req = _ur.Request(
-                            f"{SUPABASE_URL}/rest/v1/reports",
-                            data=_anon_body,
-                            headers={
-                                "Content-Type": "application/json",
-                                "apikey": SUPABASE_ANON_KEY,
-                                "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
-                                "Prefer": "return=minimal",
-                            },
-                            method="POST",
+                        from argus.cloud import (  # noqa: PLC0415
+                            SUPABASE_ANON_KEY,
+                            SUPABASE_URL,
+                            _get_valid_credentials,
+                            _supabase_request,
                         )
-                        _ur.urlopen(_anon_req, timeout=5)
-                        supabase_ok = True
+
+                        creds = _get_valid_credentials()
+                        if creds:
+                            report_payload["user_id"] = creds.user_id
+                            _supabase_request(
+                                creds.access_token,
+                                "reports",
+                                method="POST",
+                                body=report_payload,
+                                extra_headers={"Prefer": "return=minimal"},
+                            )
+                            supabase_ok = True
+                        else:
+                            # Fallback: use anon key so reports work without login
+                            import urllib.request as _ur  # noqa: PLC0415
+
+                            _anon_body = json.dumps(report_payload).encode()
+                            _anon_req = _ur.Request(
+                                f"{SUPABASE_URL}/rest/v1/reports",
+                                data=_anon_body,
+                                headers={
+                                    "Content-Type": "application/json",
+                                    "apikey": SUPABASE_ANON_KEY,
+                                    "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+                                    "Prefer": "return=minimal",
+                                },
+                                method="POST",
+                            )
+                            _ur.urlopen(_anon_req, timeout=5)
+                            supabase_ok = True
                 except Exception:
                     pass  # Supabase upload is best-effort
 
