@@ -1034,3 +1034,35 @@ def test_conditional_branch_auto_finalize():
     record = load_run(session.run_id)
     assert record is not None
     assert record.overall_status == "clean"
+
+
+@pytest.mark.unit
+def test_user_config_save_load_clear(tmp_path, monkeypatch):
+    import argus.user_config as uc
+
+    monkeypatch.setattr(uc, "_CONFIG_DIR", tmp_path / ".argus")
+    monkeypatch.setattr(uc, "_CONFIG_FILE", tmp_path / ".argus" / "config.json")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    assert uc.get_saved_openai_key() is None
+    uc.set_openai_key("sk-test-123")
+    assert uc.get_saved_openai_key() == "sk-test-123"
+    # file is chmod 600
+    import stat
+    mode = stat.S_IMODE((tmp_path / ".argus" / "config.json").stat().st_mode)
+    assert mode == 0o600
+    uc.clear_openai_key()
+    assert uc.get_saved_openai_key() is None
+
+
+@pytest.mark.unit
+def test_resolve_openai_key_prefers_env(tmp_path, monkeypatch):
+    import argus.user_config as uc
+
+    monkeypatch.setattr(uc, "_CONFIG_DIR", tmp_path / ".argus")
+    monkeypatch.setattr(uc, "_CONFIG_FILE", tmp_path / ".argus" / "config.json")
+    uc.set_openai_key("sk-saved")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    assert uc.resolve_openai_key() == "sk-env"
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert uc.resolve_openai_key() == "sk-saved"
