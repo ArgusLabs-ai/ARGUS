@@ -1066,3 +1066,49 @@ def test_resolve_openai_key_prefers_env(tmp_path, monkeypatch):
     assert uc.resolve_openai_key() == "sk-env"
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert uc.resolve_openai_key() == "sk-saved"
+
+
+@pytest.mark.unit
+def test_llm_proxy_uses_byok_when_key_present(monkeypatch):
+    import argus.llm_proxy as lp
+
+    captured = {}
+
+    def fake_direct(*, api_key, model, messages, max_tokens, temperature,
+                    response_format, timeout):
+        captured["api_key"] = api_key
+        captured["model"] = model
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(lp, "_call_openai_direct", fake_direct)
+    monkeypatch.setattr(lp, "resolve_openai_key", lambda: "sk-byok")
+
+    out = lp.create_chat_completion(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+    assert "error" not in out
+    assert captured["api_key"] == "sk-byok"
+    assert captured["model"] == "gpt-4o-mini"
+
+
+@pytest.mark.unit
+def test_llm_proxy_errors_when_no_key_and_no_proxy(monkeypatch):
+    import argus.llm_proxy as lp
+
+    monkeypatch.setattr(lp, "resolve_openai_key", lambda: None)
+    monkeypatch.setattr(lp, "SUPABASE_URL", None)
+
+    out = lp.create_chat_completion(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+    assert "error" in out
+
+
+@pytest.mark.unit
+def test_llm_proxy_is_available_true_with_byok(monkeypatch):
+    import importlib
+
+    import argus.llm_proxy as lp
+
+    # conftest's autouse fixture stubs is_available to always return False
+    # for test isolation elsewhere; reload restores the real implementation
+    # for this test only.
+    importlib.reload(lp)
+    monkeypatch.setattr(lp, "resolve_openai_key", lambda: "sk-byok")
+    assert lp.is_available() is True
