@@ -1164,3 +1164,24 @@ def test_cmd_key_set_show_clear(tmp_path, monkeypatch, capsys):
 
     ck.key_clear()
     assert uc.get_saved_openai_key() is None
+
+
+@pytest.mark.unit
+def test_embedding_client_uses_resolved_key(monkeypatch):
+    import argus.embedding_store as es
+
+    captured = {}
+
+    class FakeOpenAI:
+        def __init__(self, api_key=None):
+            captured["api_key"] = api_key
+
+    monkeypatch.setattr(es, "_client", None)
+    monkeypatch.setattr("argus.user_config.resolve_openai_key", lambda: "sk-embed")
+    import sys, types
+    fake_mod = types.ModuleType("openai")
+    fake_mod.OpenAI = FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_mod)
+
+    es._get_client()
+    assert captured["api_key"] == "sk-embed"

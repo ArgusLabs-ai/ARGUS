@@ -43,7 +43,10 @@ def _get_client() -> Any:
             pass
         from openai import OpenAI  # noqa: PLC0415
 
-        _client = OpenAI()
+        from argus.user_config import resolve_openai_key  # noqa: PLC0415
+
+        key = resolve_openai_key()
+        _client = OpenAI(api_key=key) if key else OpenAI()
         return _client
 
 
