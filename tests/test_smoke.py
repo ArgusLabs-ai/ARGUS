@@ -1112,3 +1112,24 @@ def test_llm_proxy_is_available_true_with_byok(monkeypatch):
     importlib.reload(lp)
     monkeypatch.setattr(lp, "resolve_openai_key", lambda: "sk-byok")
     assert lp.is_available() is True
+
+
+@pytest.mark.unit
+def test_cloud_no_hardcoded_supabase_url():
+    import inspect
+
+    import argus.cloud as cloud
+
+    src = inspect.getsource(cloud)
+    assert "isnphpbckxfjsxllryrg" not in src  # real project ref must be gone
+
+
+@pytest.mark.unit
+def test_cloud_noops_when_unconfigured(monkeypatch):
+    import argus.cloud as cloud
+
+    monkeypatch.setattr(cloud, "SUPABASE_URL", None)
+    monkeypatch.setattr(cloud, "SUPABASE_ANON_KEY", None)
+    assert cloud.is_logged_in() is False
+    assert cloud.push_run({"run_id": "x"}) is False
+    assert cloud.pull_shared_signatures() == []

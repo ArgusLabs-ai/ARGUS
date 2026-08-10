@@ -6,6 +6,7 @@ Uses only stdlib (urllib) to avoid adding dependencies.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -14,14 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# ── Public Supabase config (safe to embed — RLS protects data) ───────────
-SUPABASE_URL = "https://isnphpbckxfjsxllryrg.supabase.co"
-SUPABASE_ANON_KEY = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlzbnBocGJja3hmanN4bGxyeXJnIiwi"
-    "cm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0MDcxNjQsImV4cCI6MjA5Mjk4MzE2NH0."
-    "nfaMxbDL9E8gyvV7k2r6F8PQhAcxdZ4QVlkVWloJ88Q"
-)
+# ── Supabase config (hosted deployments set these via cloud/config.py) ────
+SUPABASE_URL = os.environ.get("ARGUS_SUPABASE_URL")
+SUPABASE_ANON_KEY = os.environ.get("ARGUS_SUPABASE_ANON_KEY")
 
 _CREDENTIALS_DIR = Path.home() / ".argus"
 _CREDENTIALS_FILE = _CREDENTIALS_DIR / "credentials.json"
@@ -73,6 +69,8 @@ def clear_credentials() -> None:
 
 
 def is_logged_in() -> bool:
+    if SUPABASE_URL is None:
+        return False
     creds = load_credentials()
     return creds is not None
 
@@ -80,12 +78,14 @@ def is_logged_in() -> bool:
 # ── Token refresh ────────────────────────────────────────────────────────
 
 
-def _refresh_if_needed(creds: Credentials) -> Credentials:
+def _refresh_if_needed(creds: Credentials) -> Credentials | None:
     """Refresh the access token if it expires within 60 seconds."""
     if time.time() < creds.expires_at - 60:
         return creds
 
     try:
+        if SUPABASE_ANON_KEY is None:
+            return None
         body = json.dumps({"refresh_token": creds.refresh_token}).encode()
         req = urllib.request.Request(
             f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
@@ -113,6 +113,8 @@ def _refresh_if_needed(creds: Credentials) -> Credentials:
 
 
 def _get_valid_credentials() -> Credentials | None:
+    if SUPABASE_URL is None:
+        return None
     creds = load_credentials()
     if creds is None:
         return None
@@ -131,6 +133,8 @@ def _supabase_request(
     extra_headers: dict[str, str] | None = None,
 ) -> Any:
     """Make an authenticated request to the Supabase REST API."""
+    if SUPABASE_ANON_KEY is None:
+        raise RuntimeError("ARGUS_SUPABASE_ANON_KEY not configured")
     url = f"{SUPABASE_URL}/rest/v1/{path}"
     headers = {
         "apikey": SUPABASE_ANON_KEY,
