@@ -17,10 +17,24 @@ Your LangGraph pipeline runs fine — no exception. But three nodes later, somet
 ## Install
 
 ```bash
-pip install argus-agents
+pip install "argus-agents[all]"
 ```
 
-That's the whole product. ARGUS runs **fully local** — runs are stored in `.argus/runs/`, no account, no cloud, no signup. Heuristic detection (150+ signatures) works out of the box.
+This gets the full product: the `argus` CLI, the LangGraph adapter, and AI-powered detection. ARGUS runs **fully local** — runs are stored in `.argus/runs/`, no account, no cloud, no signup. Heuristic detection (150+ signatures) works out of the box.
+
+<details>
+<summary>Installing only what you need</summary>
+
+`argus-agents` has a zero-dependency core. Pull in just the extras you use:
+
+```bash
+pip install argus-agents            # framework-agnostic library only (ArgusSession)
+pip install "argus-agents[cli]"     # + the `argus` command-line tool
+pip install "argus-agents[langgraph]"  # + the ArgusWatcher LangGraph adapter
+pip install "argus-agents[llm]"     # + OpenAI-powered semantic features
+pip install "argus-agents[all]"     # everything (recommended)
+```
+</details>
 
 ## Bring Your Own Key (BYOK)
 
