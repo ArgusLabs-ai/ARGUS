@@ -204,7 +204,16 @@ def approve_candidate_shared(candidate_id: str) -> dict[str, Any] | None:
 
     Returns the signature dict on success, or None if the candidate was
     not found or the push failed.
+
+    In open-source / local-only mode (no ARGUS_SUPABASE_URL configured) there
+    is no shared community registry, so this transparently falls back to a
+    local approval — every trend stays on the user's machine.
     """
+    from argus.cloud import SUPABASE_URL  # noqa: PLC0415
+
+    if SUPABASE_URL is None:
+        return approve_candidate(candidate_id)
+
     data = load_candidates()
     cand = None
     for i, c in enumerate(data["candidates"]):

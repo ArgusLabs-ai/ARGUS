@@ -32,6 +32,17 @@ Framework-agnostic usage (Prefect, Temporal, raw Python, etc.):
 
 __version__ = "0.8.11"
 
+# Hosted/enterprise activation: when the proprietary `cloud/` package is present
+# (full-repo deployment), wire its Supabase config into the environment before
+# any submodule reads it. The open-source pip package does not ship `cloud/`, so
+# this import fails and silently no-ops — BYOK users stay fully local.
+try:  # pragma: no cover - exercised only in hosted deployments
+    from cloud.config import apply_env as _apply_cloud_env
+
+    _apply_cloud_env()
+except Exception:
+    pass
+
 from argus.models import ArgusConfig, LLMInvestigationConfig
 from argus.session import ArgusSession
 from argus.watcher import ArgusWatcher

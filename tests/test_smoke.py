@@ -1222,3 +1222,31 @@ def test_cli_key_set_accepts_positional_value(tmp_path, monkeypatch):
     result = CliRunner().invoke(app, ["key", "set", "sk-positional-123456"])
     assert result.exit_code == 0, result.output
     assert uc.get_saved_openai_key() == "sk-positional-123456"
+
+
+@pytest.mark.unit
+def test_approve_shared_falls_back_to_local_when_no_cloud(tmp_path, monkeypatch):
+    """OSS/local-only: approving a trend for 'sharing' with no Supabase configured
+    must store it locally (no public/private split), not silently fail."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".argus").mkdir(exist_ok=True)
+    import argus.cloud as cloud
+    monkeypatch.setattr(cloud, "SUPABASE_URL", None)
+
+    from argus.models import SuggestedSignature
+    import argus.candidate_store as cs
+
+    sig = SuggestedSignature(
+        pattern="placeholder local fallback test",
+        match_strategy="contains_ci",
+        proposed_category="placeholder_outputs",
+        severity="high",
+        description="d",
+        evidence=("e",),
+        confidence=0.9,
+        reasoning="r",
+    )
+    cid = cs.add_candidate(sig, "run-1")
+    res = cs.approve_candidate_shared(cid)
+    assert res is not None  # did not fail
+    assert (tmp_path / ".argus" / "custom_signatures.json").exists()  # stored locally

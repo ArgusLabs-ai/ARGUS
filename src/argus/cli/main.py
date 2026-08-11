@@ -71,6 +71,7 @@ _WORDMARK = [
 ]
 
 _SETUP_LINES = [
+    ("argus key set <openai-key>", "# optional: enable AI-powered detection (BYOK)"),
     ("from argus import ArgusWatcher", ""),
     ("watcher = ArgusWatcher()", ""),
     ("watcher.watch(graph)", "# graph = your StateGraph, before .compile()"),

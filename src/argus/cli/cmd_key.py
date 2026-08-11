@@ -26,6 +26,12 @@ def key_set(value: str | None = None) -> None:
         return
     user_config.set_openai_key(value)
     _console.print(f"  [green]Saved[/green] key {_mask(value)} to ~/.argus/config.json")
+    _console.print(
+        "  [dim]BYOK enabled — AI-powered detection now uses your key.\n"
+        "  Next: wrap your pipeline with [bold]ArgusWatcher[/bold], run it, then "
+        "[bold]argus show[/bold] / [bold]argus ui[/bold].\n"
+        "  Check status anytime with [bold]argus doctor[/bold].[/dim]"
+    )
 
 
 def key_show() -> None:
