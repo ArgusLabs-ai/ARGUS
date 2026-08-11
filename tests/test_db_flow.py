@@ -198,7 +198,14 @@ def test_3_private_db_flags_next_run():
 
 
 def test_4_public_approval(monkeypatch):
-    """Sharing a candidate writes it to the shared cache (simulating Supabase push)."""
+    """Sharing a candidate writes it to the shared cache (simulating Supabase push).
+
+    Public sharing is an enterprise/configured feature: with no Supabase
+    configured (open-source), approve_candidate_shared falls back to a local
+    approval. This test exercises the configured/enterprise path, so it sets
+    a Supabase URL.
+    """
+    monkeypatch.setattr("argus.cloud.SUPABASE_URL", "https://test.supabase.co")
     sig2 = _make_sig("[SYSTEM PROMPT LEAKED]", category="suspicious_phrases")
     cand_id = add_candidate(sig2, run_id="run-002", node_name="rag_retriever")
 
@@ -329,6 +336,10 @@ def test_6_rejected_pattern_not_requeued():
 def test_7_full_loop_report(monkeypatch, capsys):
     """Runs the complete learning loop in one test and prints a final report."""
     results: dict[str, bool] = {}
+
+    # Public sharing is enterprise/configured — set a Supabase URL so the
+    # shared-approval path runs (open-source with no URL falls back to local).
+    monkeypatch.setattr("argus.cloud.SUPABASE_URL", "https://test.supabase.co")
 
     # ── Step 1: LLM suggests trend (private) ──
     private_sig = _make_sig("ARGUS_PRIVATE_TREND")
