@@ -1204,3 +1204,21 @@ def test_doctor_llm_mode_heuristic(monkeypatch):
     monkeypatch.setattr("argus.cloud.SUPABASE_URL", None)
     ok, msg = d._check_llm_mode()
     assert "heuristic" in msg.lower()
+
+
+@pytest.mark.unit
+def test_cli_key_set_accepts_positional_value(tmp_path, monkeypatch):
+    """Regression: `argus key set <value>` must register VALUE as a positional
+    argument (not a --value option), so the key is actually persisted."""
+    from typer.testing import CliRunner
+
+    import argus.user_config as uc
+    from argus.cli.main import app
+
+    monkeypatch.setattr(uc, "_CONFIG_DIR", tmp_path / ".argus")
+    monkeypatch.setattr(uc, "_CONFIG_FILE", tmp_path / ".argus" / "config.json")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = CliRunner().invoke(app, ["key", "set", "sk-positional-123456"])
+    assert result.exit_code == 0, result.output
+    assert uc.get_saved_openai_key() == "sk-positional-123456"

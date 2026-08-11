@@ -43,10 +43,9 @@ app.add_typer(key_app, name="key")
 
 @key_app.command("set")
 def cmd_key_set(
-    value: Annotated[
-        Optional[str],
-        typer.Argument(help="OpenAI API key. Omit to be prompted with hidden input."),
-    ] = None,
+    value: Optional[str] = typer.Argument(
+        None, help="OpenAI API key. Omit to be prompted with hidden input."
+    ),
 ) -> None:
     """Save your OpenAI API key locally (~/.argus/config.json)."""
     key_set(value)
