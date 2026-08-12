@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/VaradDurge/ARGUS/security/advisories/new
+    about: Please report security issues privately, not as a public issue. See SECURITY.md.
+  - name: Hosted / enterprise support
+    url: https://arguslabs.in
+    about: Questions about the managed cloud tier, billing, or enterprise features.

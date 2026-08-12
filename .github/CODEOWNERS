@@ -1,0 +1,23 @@
+# Code owners for ARGUS.
+#
+# Owners are automatically requested for review on any PR that touches a
+# matching path, and (with branch protection) their approval is REQUIRED before
+# merge. This is the primary "nothing merges without us" control.
+#
+# NOTE: add your co-maintainer's GitHub handle next to @VaradDurge below once
+# you have it (e.g. `* @VaradDurge @their-handle`). They must also be added as a
+# repo collaborator with at least "write"/"maintain" access for reviews to count.
+
+# Default owner for everything in the repo.
+*                       @VaradDurge
+
+# Proprietary / enterprise + release-critical paths — owner-only, never open to
+# external contribution.
+/cloud/                 @VaradDurge
+/supabase/              @VaradDurge
+/LICENSE                @VaradDurge
+/cloud/LICENSE          @VaradDurge
+/pyproject.toml         @VaradDurge
+/.github/               @VaradDurge
+/CODEOWNERS             @VaradDurge
+/.github/CODEOWNERS     @VaradDurge

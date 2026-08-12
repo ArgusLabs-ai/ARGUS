@@ -1,0 +1,42 @@
+name: CLA Assistant
+
+# Requires every external contributor to sign the CLA (CLA.md) before their PR can
+# be merged. Signatures are recorded in the `cla-signatures` branch of this repo.
+#
+# ONE-TIME SETUP (owner):
+#   1. Create a Personal Access Token (classic) with `repo` scope, or a
+#      fine-grained token with Contents: read/write on this repo.
+#   2. Add it as a repository secret named `CLA_SIGNATURES_TOKEN`
+#      (Settings → Secrets and variables → Actions → New repository secret).
+# The bot then comments on new PRs asking the contributor to sign.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    steps:
+      - name: CLA Assistant
+        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_SIGNATURES_TOKEN }}
+        with:
+          path-to-signatures: 'signatures/cla.json'
+          path-to-document: 'https://github.com/VaradDurge/ARGUS/blob/master/CLA.md'
+          branch: 'cla-signatures'
+          # Maintainers are exempt from signing. Add your co-maintainer's handle here.
+          allowlist: VaradDurge,bot*,dependabot*
+          custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
+          custom-allsigned-prcomment: 'All contributors have signed the CLA — thank you!'
