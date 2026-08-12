@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a problem with ARGUS
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in the details below.
+  - type: input
+    id: version
+    attributes:
+      label: ARGUS version
+      description: Output of `pip show argus-agents | grep Version` (or `argus --help` header).
+      placeholder: "0.8.11"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - "pip install argus-agents (library only)"
+        - "pip install 'argus-agents[all]'"
+        - "pip install 'argus-agents[cli]'"
+        - "other / from source"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A minimal code snippet or commands that reproduce the issue.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: Python version, OS, LangGraph version (if used).
+      placeholder: "Python 3.11, macOS 14, langgraph 0.2.x"
+    validations:
+      required: false
+  - type: checkboxes
+    id: mode
+    attributes:
+      label: Detection mode
+      options:
+        - label: "Reproduces with BYOK / OPENAI_API_KEY set"
+        - label: "Reproduces in heuristic-only mode (no key)"

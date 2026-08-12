@@ -127,3 +127,24 @@ For bug reports, include:
 - Keep PRs focused — one fix or feature per PR
 - For new detection logic, include a fixture run that the old code misses and the new code catches
 - Don't add co-author attribution in commits
+
+## Contribution Terms (CLA)
+
+ARGUS is **open-core**: the core in `src/argus/` is Apache-2.0, while `cloud/`
+and `supabase/` are proprietary. To keep this model workable, first-time
+contributors must sign our lightweight [Contributor License Agreement](CLA.md).
+A bot will prompt you on your first pull request — signing is a one-time comment.
+
+The `cloud/` and `supabase/` directories are **not open to external
+contributions**. PRs that modify them will be closed.
+
+## Review & Merge Process
+
+- `master` is protected: **all changes land via pull request** — no direct pushes.
+- CI (ruff + pytest on Python 3.9/3.11/3.12) must pass.
+- At least one **code owner** approval is required (see [CODEOWNERS](.github/CODEOWNERS)).
+- Only maintainers merge to `master`.
+
+## Reporting Security Issues
+
+Do not open a public issue. Follow [SECURITY.md](SECURITY.md).
