@@ -185,11 +185,17 @@ def _check_llm_mode() -> tuple[bool, str]:
     import os
 
     from argus.cloud import SUPABASE_URL
-    from argus.user_config import resolve_openai_key
+    from argus.user_config import get_provider, resolve_key
 
-    if resolve_openai_key():
-        source = "env" if os.environ.get("OPENAI_API_KEY") else "saved"
-        return True, f"BYOK ({source}) — calling OpenAI directly"
+    provider = get_provider()
+    if resolve_key(provider):
+        env_names = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
+        env_present = os.environ.get(env_names.get(provider, "")) or (
+            provider == "google"
+            and (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+        )
+        source = "env" if env_present else "saved"
+        return True, f"BYOK ({source}) — calling {provider} directly"
     if SUPABASE_URL is not None:
         from argus.cloud import is_logged_in
 

@@ -453,7 +453,7 @@ export default function AIAnalysisTab({ runA, runB, isLocal = false }: { runA: R
             Compare analysis unavailable: {compareError}
           </p>
           <p className="text-[11px] mt-1" style={{ color: 'var(--text-tertiary)' }}>
-            Ensure OPENAI_API_KEY is set and argus ui is running locally.
+            Ensure a provider key is set (argus key set) and argus ui is running locally.
           </p>
         </div>
       )}

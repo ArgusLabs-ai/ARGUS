@@ -1071,31 +1071,60 @@ def test_resolve_openai_key_prefers_env(tmp_path, monkeypatch):
 @pytest.mark.unit
 def test_llm_proxy_uses_byok_when_key_present(monkeypatch):
     import argus.llm_proxy as lp
+    import argus.providers as providers
 
     captured = {}
 
-    def fake_direct(*, api_key, model, messages, max_tokens, temperature,
+    def fake_openai(*, api_key, model, messages, max_tokens, temperature,
                     response_format, timeout):
         captured["api_key"] = api_key
         captured["model"] = model
         return {"choices": [{"message": {"content": "ok"}}]}
 
-    monkeypatch.setattr(lp, "_call_openai_direct", fake_direct)
-    monkeypatch.setattr(lp, "resolve_openai_key", lambda: "sk-byok")
+    monkeypatch.setitem(providers.ADAPTERS, "openai", fake_openai)
+    monkeypatch.setattr(lp.user_config, "get_provider", lambda: "openai")
+    monkeypatch.setattr(lp.user_config, "resolve_key", lambda p: "sk-byok")
 
     out = lp.create_chat_completion(
         model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}]
     )
     assert "error" not in out
     assert captured["api_key"] == "sk-byok"
-    assert captured["model"] == "gpt-4o-mini"
+    assert captured["model"] == "gpt-4o-mini"  # OpenAI passes model through
+
+
+@pytest.mark.unit
+def test_llm_proxy_routes_to_active_provider_with_tier_remap(monkeypatch):
+    import argus.llm_proxy as lp
+    import argus.providers as providers
+
+    captured = {}
+
+    def fake_anthropic(*, api_key, model, messages, **kw):
+        captured["api_key"] = api_key
+        captured["model"] = model
+        return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    monkeypatch.setitem(providers.ADAPTERS, "anthropic", fake_anthropic)
+    monkeypatch.setattr(lp.user_config, "get_provider", lambda: "anthropic")
+    monkeypatch.setattr(lp.user_config, "resolve_key", lambda p: "sk-ant")
+    monkeypatch.setattr(lp.user_config, "get_model_overrides", lambda: {})
+
+    out = lp.create_chat_completion(
+        model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}]
+    )
+    assert "error" not in out
+    assert captured["api_key"] == "sk-ant"
+    # gpt-4o-mini (cheap tier) remaps to Anthropic's cheap model
+    assert captured["model"] == "claude-3-5-haiku-latest"
 
 
 @pytest.mark.unit
 def test_llm_proxy_errors_when_no_key_and_no_proxy(monkeypatch):
     import argus.llm_proxy as lp
 
-    monkeypatch.setattr(lp, "resolve_openai_key", lambda: None)
+    monkeypatch.setattr(lp.user_config, "get_provider", lambda: "openai")
+    monkeypatch.setattr(lp.user_config, "resolve_key", lambda p: None)
     monkeypatch.setattr(lp, "SUPABASE_URL", None)
 
     out = lp.create_chat_completion(
@@ -1114,7 +1143,7 @@ def test_llm_proxy_is_available_true_with_byok(monkeypatch):
     # for test isolation elsewhere; reload restores the real implementation
     # for this test only.
     importlib.reload(lp)
-    monkeypatch.setattr(lp, "resolve_openai_key", lambda: "sk-byok")
+    monkeypatch.setattr(lp.user_config, "configured_providers", lambda: ["openai"])
     assert lp.is_available() is True
 
 
@@ -1195,7 +1224,8 @@ def test_embedding_client_uses_resolved_key(monkeypatch):
 @pytest.mark.unit
 def test_doctor_llm_mode_byok(monkeypatch):
     import argus.cli.cmd_doctor as d
-    monkeypatch.setattr("argus.user_config.resolve_openai_key", lambda: "sk-x")
+    monkeypatch.setattr("argus.user_config.get_provider", lambda: "openai")
+    monkeypatch.setattr("argus.user_config.resolve_key", lambda p: "sk-x")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
     ok, msg = d._check_llm_mode()
     assert ok is True
@@ -1203,9 +1233,20 @@ def test_doctor_llm_mode_byok(monkeypatch):
 
 
 @pytest.mark.unit
+def test_doctor_llm_mode_byok_anthropic(monkeypatch):
+    import argus.cli.cmd_doctor as d
+    monkeypatch.setattr("argus.user_config.get_provider", lambda: "anthropic")
+    monkeypatch.setattr("argus.user_config.resolve_key", lambda p: "sk-ant")
+    ok, msg = d._check_llm_mode()
+    assert ok is True
+    assert "anthropic" in msg
+
+
+@pytest.mark.unit
 def test_doctor_llm_mode_heuristic(monkeypatch):
     import argus.cli.cmd_doctor as d
-    monkeypatch.setattr("argus.user_config.resolve_openai_key", lambda: None)
+    monkeypatch.setattr("argus.user_config.get_provider", lambda: "openai")
+    monkeypatch.setattr("argus.user_config.resolve_key", lambda p: None)
     monkeypatch.setattr("argus.cloud.SUPABASE_URL", None)
     ok, msg = d._check_llm_mode()
     assert "heuristic" in msg.lower()
@@ -1255,3 +1296,199 @@ def test_approve_shared_falls_back_to_local_when_no_cloud(tmp_path, monkeypatch)
     res = cs.approve_candidate_shared(cid)
     assert res is not None  # did not fail
     assert (tmp_path / ".argus" / "custom_signatures.json").exists()  # stored locally
+
+
+# ── Multi-provider LLM support (VAR-99) ─────────────────────────────────────
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        import json as _json
+        self._data = _json.dumps(payload).encode()
+
+    def read(self):
+        return self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _mock_urlopen(monkeypatch, capture):
+    def fake(req, timeout=None):
+        import json as _json
+        capture["url"] = req.full_url
+        capture["headers"] = dict(req.headers)
+        capture["body"] = _json.loads(req.data)
+        return _FakeResp(capture["response"])
+
+    import argus.providers as providers
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake)
+
+
+@pytest.mark.unit
+def test_provider_for_model():
+    from argus.providers import provider_for_model
+
+    assert provider_for_model("gpt-4o-mini") == "openai"
+    assert provider_for_model("o3-mini") == "openai"
+    assert provider_for_model("claude-3-5-haiku-latest") == "anthropic"
+    assert provider_for_model("gemini-2.5-flash") == "google"
+    assert provider_for_model("some-unknown-model") == "openai"
+
+
+@pytest.mark.unit
+def test_resolve_model_tier_remap():
+    from argus.providers import resolve_model
+
+    # OpenAI passes through unchanged (zero regression)
+    assert resolve_model("openai", "gpt-4o", {}) == "gpt-4o"
+    # cheap tier (mini) -> provider cheap default
+    assert resolve_model("anthropic", "gpt-4o-mini", {}) == "claude-3-5-haiku-latest"
+    assert resolve_model("google", "gpt-4o-mini", {}) == "gemini-2.5-flash"
+    # capable tier (no cheap marker) -> provider capable default
+    assert resolve_model("anthropic", "gpt-4o", {}) == "claude-sonnet-4-5"
+    assert resolve_model("google", "gpt-4o", {}) == "gemini-2.5-pro"
+    # user override wins
+    assert resolve_model("anthropic", "gpt-4o", {"capable": "claude-opus-4"}) == "claude-opus-4"
+
+
+@pytest.mark.unit
+def test_call_anthropic_normalizes_to_openai_shape(monkeypatch):
+    from argus.providers import call_anthropic
+
+    capture = {"response": {
+        "content": [{"type": "text", "text": '{"pass": true}'}],
+        "usage": {"input_tokens": 11, "output_tokens": 7},
+    }}
+    _mock_urlopen(monkeypatch, capture)
+
+    out = call_anthropic(
+        api_key="sk-ant",
+        model="claude-3-5-haiku-latest",
+        messages=[
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "hi"},
+        ],
+        max_tokens=150,
+    )
+    # request: system hoisted out of messages, correct headers
+    assert capture["body"]["system"] == "be terse"
+    assert capture["body"]["messages"] == [{"role": "user", "content": "hi"}]
+    assert capture["headers"]["X-api-key"] == "sk-ant"
+    assert "anthropic-version" in {k.lower(): v for k, v in capture["headers"].items()}
+    # response: normalized to OpenAI shape
+    assert out["choices"][0]["message"]["content"] == '{"pass": true}'
+    assert out["usage"]["prompt_tokens"] == 11
+    assert out["usage"]["completion_tokens"] == 7
+
+
+@pytest.mark.unit
+def test_call_google_normalizes_to_openai_shape(monkeypatch):
+    from argus.providers import call_google
+
+    capture = {"response": {
+        "candidates": [{"content": {"parts": [{"text": '{"pass": false}'}]}}],
+        "usageMetadata": {"promptTokenCount": 20, "candidatesTokenCount": 3},
+    }}
+    _mock_urlopen(monkeypatch, capture)
+
+    out = call_google(
+        api_key="g-key",
+        model="gemini-2.5-flash",
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+        ],
+        response_format={"type": "json_object"},
+    )
+    assert "gemini-2.5-flash:generateContent" in capture["url"]
+    assert capture["body"]["systemInstruction"]["parts"][0]["text"] == "sys"
+    assert capture["body"]["generationConfig"]["responseMimeType"] == "application/json"
+    assert out["choices"][0]["message"]["content"] == '{"pass": false}'
+    assert out["usage"]["prompt_tokens"] == 20
+    assert out["usage"]["completion_tokens"] == 3
+
+
+@pytest.mark.unit
+def test_multi_provider_config(tmp_path, monkeypatch):
+    import argus.user_config as uc
+
+    monkeypatch.setattr(uc, "_CONFIG_DIR", tmp_path / ".argus")
+    monkeypatch.setattr(uc, "_CONFIG_FILE", tmp_path / ".argus" / "config.json")
+    for env in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(env, raising=False)
+
+    assert uc.get_provider() == "openai"  # default when nothing set
+
+    uc.set_key("anthropic", "sk-ant")
+    uc.set_provider("anthropic")
+    assert uc.get_saved_key("anthropic") == "sk-ant"
+    assert uc.get_provider() == "anthropic"
+    assert uc.resolve_key("anthropic") == "sk-ant"
+
+    # env overrides saved
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-ant")
+    assert uc.resolve_key("anthropic") == "sk-env-ant"
+
+    # google falls back to GOOGLE_API_KEY
+    monkeypatch.setenv("GOOGLE_API_KEY", "g-key")
+    assert uc.resolve_key("google") == "g-key"
+
+    assert set(uc.configured_providers()) >= {"anthropic", "google"}
+
+    uc.clear_key("anthropic")
+    assert uc.get_saved_key("anthropic") is None
+
+
+@pytest.mark.unit
+def test_config_migrates_legacy_openai_key(tmp_path, monkeypatch):
+    import json as _json
+
+    import argus.user_config as uc
+
+    cfg_dir = tmp_path / ".argus"
+    cfg_dir.mkdir(exist_ok=True)
+    (cfg_dir / "config.json").write_text(_json.dumps({"openai_api_key": "sk-legacy"}))
+    monkeypatch.setattr(uc, "_CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(uc, "_CONFIG_FILE", cfg_dir / "config.json")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    assert uc.get_saved_key("openai") == "sk-legacy"
+    assert uc.resolve_openai_key() == "sk-legacy"
+
+
+@pytest.mark.unit
+def test_cmd_key_provider_flow(tmp_path, monkeypatch, capsys):
+    import argus.cli.cmd_key as ck
+    import argus.user_config as uc
+
+    monkeypatch.setattr(uc, "_CONFIG_DIR", tmp_path / ".argus")
+    monkeypatch.setattr(uc, "_CONFIG_FILE", tmp_path / ".argus" / "config.json")
+    for env in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(env, raising=False)
+
+    ck.key_set("sk-anthropic-abcd1234", provider="anthropic")
+    assert uc.get_saved_key("anthropic") == "sk-anthropic-abcd1234"
+    assert uc.get_provider() == "anthropic"  # set activates
+
+    # use requires an existing key
+    ck.key_use("google")
+    out = capsys.readouterr().out.lower()
+    assert "no google key" in out
+    assert uc.get_provider() == "anthropic"  # unchanged
+
+    ck.key_show()
+    out = capsys.readouterr().out
+    assert "sk-anthropic-abcd1234" not in out  # masked
+    assert "1234" in out
+    assert "anthropic" in out
+
+    ck.key_set("sk-openai-wxyz5678", provider="openai")
+    ck.key_use("anthropic")
+    assert uc.get_provider() == "anthropic"
+
+    ck.key_clear()  # clears all
+    assert uc.configured_providers() == []

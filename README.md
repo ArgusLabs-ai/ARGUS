@@ -31,29 +31,34 @@ This gets the full product: the `argus` CLI, the LangGraph adapter, and AI-power
 pip install argus-agents            # framework-agnostic library only (ArgusSession)
 pip install "argus-agents[cli]"     # + the `argus` command-line tool
 pip install "argus-agents[langgraph]"  # + the ArgusWatcher LangGraph adapter
-pip install "argus-agents[llm]"     # + OpenAI-powered semantic features
+pip install "argus-agents[llm]"     # + LLM-powered semantic features (OpenAI/Anthropic/Google)
 pip install "argus-agents[all]"     # everything (recommended)
 ```
 </details>
 
 ## Bring Your Own Key (BYOK)
 
-AI-powered detection (the semantic judge, LLM investigator, learned trends) uses **your own** OpenAI key. Set it once and it's saved locally for every future session:
+AI-powered detection (the semantic judge, LLM investigator, learned trends) uses **your own** key from the provider of your choice — **OpenAI**, **Anthropic** (Claude), or **Google** (Gemini). Set it once and it's saved locally for every future session:
 
 ```bash
-argus key set            # prompts, hidden input — saved to ~/.argus/config.json
-# or pass it directly:
-argus key set sk-...
-# or just export it:
-export OPENAI_API_KEY=sk-...
+argus key set                          # OpenAI by default — prompts, hidden input
+argus key set --provider anthropic     # or Anthropic (Claude)
+argus key set --provider google        # or Google (Gemini)
+# pass it directly instead of being prompted:
+argus key set sk-... --provider openai
+# or just export it (env wins over the saved key):
+export OPENAI_API_KEY=sk-...           # or ANTHROPIC_API_KEY / GEMINI_API_KEY
 ```
 
-Resolution order: `OPENAI_API_KEY` env var → saved key → (hosted proxy, if you're on the cloud tier) → heuristic-only. Check what's active anytime:
+Configured more than one? Switch the active provider anytime:
 
 ```bash
-argus key show           # masked key + where it came from
-argus doctor             # reports BYOK / hosted / heuristic-only mode
+argus key use anthropic  # activate a provider you already have a key for
+argus key show           # list configured providers (masked); * marks the active one
+argus doctor             # reports BYOK provider / hosted / heuristic-only mode
 ```
+
+You pick the **provider**; ARGUS picks a sensible balanced model for each internal call (a cheap model for the frequent per-node checks, a stronger one for root-cause reasoning). Per-provider resolution order: env var (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) → saved key → (hosted proxy, if you're on the cloud tier) → heuristic-only.
 
 No key? ARGUS still works — it falls back to heuristic-only detection, no crashes.
 
@@ -171,7 +176,7 @@ For subtle quality issues that pattern matching can't catch:
 watcher = ArgusWatcher(graph, semantic_judge=True)  # enabled by default
 ```
 
-LLM evaluates output quality on every node. Catches wrong tone, unhelpful responses, outdated info. Requires an OpenAI key — set via `argus key set` or `OPENAI_API_KEY` (see [BYOK](#bring-your-own-key-byok)).
+LLM evaluates output quality on every node. Catches wrong tone, unhelpful responses, outdated info. Requires a provider key (OpenAI, Anthropic, or Google) — set via `argus key set [--provider ...]` (see [BYOK](#bring-your-own-key-byok)).
 
 The judge receives **all prior evidence** — validator failures, anomaly signals, inspection results — so it rules with full context, not just input/output. Every decision includes an audit trail:
 
@@ -234,9 +239,10 @@ argus diff <id-a> <id-b>             # compare two runs
 argus stats                          # signature hit stats, disable/enable/dispute signatures
 argus ui                             # web dashboard
 argus doctor                         # check setup health + LLM mode (BYOK/hosted/heuristic)
-argus key set                        # save your OpenAI key locally (BYOK)
-argus key show                       # show the active key (masked) and its source
-argus key clear                      # remove the saved key
+argus key set [--provider ...]       # save a provider key locally (OpenAI/Anthropic/Google) — BYOK
+argus key use <provider>             # switch the active provider
+argus key show                       # list configured providers (masked); * marks active
+argus key clear [--provider ...]     # remove one provider's key, or all
 argus login                          # (optional) sign in for hosted cloud sync
 argus logout                         # clear stored credentials
 argus whoami                         # show current login status
@@ -285,7 +291,7 @@ Works with any framework — Prefect, Temporal, plain Python.
 
 - Python 3.9+
 - LangGraph 0.2+ (only for `ArgusWatcher`)
-- An OpenAI key for semantic features — set via `argus key set` or `OPENAI_API_KEY` (optional; all heuristic detection works without it)
+- A provider key (OpenAI, Anthropic, or Google) for semantic features — set via `argus key set [--provider ...]` (optional; all heuristic detection works without it)
 
 For AI setup prompts and integration guides, visit **[arguslabs.in](https://arguslabs.in)**.
 

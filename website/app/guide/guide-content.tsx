@@ -330,8 +330,8 @@ export default function GuideContent() {
 
         <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-4">AI Analysis</h3>
         <p className="text-[15px] text-muted-foreground leading-[1.7] mb-5">
-          When <Code>OPENAI_API_KEY</Code> is set, ARGUS investigates non-clean runs automatically.
-          The analysis panel has three sections:
+          When a provider key is set (OpenAI, Anthropic, or Google — via <Code>argus key set</Code>),
+          ARGUS investigates non-clean runs automatically. The analysis panel has three sections:
         </p>
         <div className="space-y-3 mb-8 pl-1">
           <Row label="Root Cause Node" text="The node that first produced broken state." />
@@ -457,8 +457,9 @@ export default function GuideContent() {
 
     # --- LLM semantic judge ---
     semantic_judge=True,    # LLM reviews every node's output for subtle quality issues.
-                            # (default: True) needs OPENAI_API_KEY.
-    judge_model="gpt-4o",  # or "gpt-4o-mini" for cheaper runs.
+                            # (default: True) needs a provider key — see 'argus key set'.
+    judge_model="gpt-4o",  # tier hint: capable model. Auto-mapped to your active
+                            # provider (Claude/Gemini). "gpt-4o-mini" = cheaper tier.
 
     # --- Latency thresholds ---
     config=ArgusConfig(
@@ -513,7 +514,7 @@ watcher.finalize()          # ALWAYS call — persists the run to .argus/runs/`}
           <Row label="Per-node" text="Each output evaluated in context of its input and the pipeline's purpose." />
         </div>
         <p className="text-[15px] text-muted-foreground leading-[1.7]">
-          Requires <Code>OPENAI_API_KEY</Code>.
+          Requires a provider key (OpenAI, Anthropic, or Google) — set via <Code>argus key set</Code>.
           {' '}<strong className="text-foreground font-medium">Enable</strong> for complex multi-agent pipelines.
           {' '}<strong className="text-foreground font-medium">Skip</strong> for simple pipelines or zero-cost monitoring.
         </p>

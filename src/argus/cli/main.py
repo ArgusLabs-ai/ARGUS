@@ -17,7 +17,7 @@ except ImportError:
 
 from argus.cli.cmd_diff import diff_runs
 from argus.cli.cmd_doctor import doctor
-from argus.cli.cmd_key import key_clear, key_set, key_show
+from argus.cli.cmd_key import key_clear, key_set, key_show, key_use
 from argus.cli.cmd_locate import locate_sources
 from argus.cli.cmd_login import login, logout, whoami
 from argus.cli.cmd_open_ui import open_ui
@@ -37,30 +37,48 @@ app = typer.Typer(
 open_app = typer.Typer(help="Open Argus tools.", no_args_is_help=True)
 app.add_typer(open_app, name="open")
 
-key_app = typer.Typer(help="Manage your BYOK OpenAI API key.", no_args_is_help=True)
+key_app = typer.Typer(
+    help="Manage your BYOK LLM API keys (OpenAI / Anthropic / Google).",
+    no_args_is_help=True,
+)
 app.add_typer(key_app, name="key")
 
 
 @key_app.command("set")
 def cmd_key_set(
     value: Optional[str] = typer.Argument(
-        None, help="OpenAI API key. Omit to be prompted with hidden input."
+        None, help="API key. Omit to be prompted with hidden input."
+    ),
+    provider: str = typer.Option(
+        "openai", "--provider", "-p", help="Provider: openai | anthropic | google."
     ),
 ) -> None:
-    """Save your OpenAI API key locally (~/.argus/config.json)."""
-    key_set(value)
+    """Save an LLM API key locally and activate that provider."""
+    key_set(value, provider)
+
+
+@key_app.command("use")
+def cmd_key_use(
+    provider: str = typer.Argument(help="Provider to activate: openai | anthropic | google."),
+) -> None:
+    """Switch the active LLM provider (must already have a key)."""
+    key_use(provider)
 
 
 @key_app.command("show")
 def cmd_key_show() -> None:
-    """Show the currently resolved key (masked) and its source."""
+    """List configured providers (masked) and the active one."""
     key_show()
 
 
 @key_app.command("clear")
-def cmd_key_clear() -> None:
-    """Remove the saved local key."""
-    key_clear()
+def cmd_key_clear(
+    provider: Optional[str] = typer.Option(
+        None, "--provider", "-p", help="Provider to clear. Omit to clear all keys."
+    ),
+) -> None:
+    """Remove one provider's key, or all saved keys."""
+    key_clear(provider)
 
 _console = Console()
 
