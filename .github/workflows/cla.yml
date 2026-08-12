@@ -36,7 +36,9 @@ jobs:
           path-to-signatures: 'signatures/cla.json'
           path-to-document: 'https://github.com/VaradDurge/ARGUS/blob/master/CLA.md'
           branch: 'cla-signatures'
-          # Maintainers are exempt from signing the CLA.
-          allowlist: VaradDurge,abhisheksharma001,bot*,dependabot*
+          # Only the owner/licensor is exempt. Co-maintainers who contribute code
+          # (e.g. @abhisheksharma001) sign the CLA too, so the owner retains
+          # relicensing rights over their contributions for the open-core model.
+          allowlist: VaradDurge,bot*,dependabot*
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-allsigned-prcomment: 'All contributors have signed the CLA — thank you!'
