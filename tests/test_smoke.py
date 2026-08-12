@@ -1083,7 +1083,9 @@ def test_llm_proxy_uses_byok_when_key_present(monkeypatch):
     monkeypatch.setattr(lp, "_call_openai_direct", fake_direct)
     monkeypatch.setattr(lp, "resolve_openai_key", lambda: "sk-byok")
 
-    out = lp.create_chat_completion(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+    out = lp.create_chat_completion(
+        model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}]
+    )
     assert "error" not in out
     assert captured["api_key"] == "sk-byok"
     assert captured["model"] == "gpt-4o-mini"
@@ -1096,7 +1098,9 @@ def test_llm_proxy_errors_when_no_key_and_no_proxy(monkeypatch):
     monkeypatch.setattr(lp, "resolve_openai_key", lambda: None)
     monkeypatch.setattr(lp, "SUPABASE_URL", None)
 
-    out = lp.create_chat_completion(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+    out = lp.create_chat_completion(
+        model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}]
+    )
     assert "error" in out
 
 
@@ -1147,8 +1151,8 @@ def test_login_reports_hosted_only_when_unconfigured(monkeypatch, capsys):
 
 @pytest.mark.unit
 def test_cmd_key_set_show_clear(tmp_path, monkeypatch, capsys):
-    import argus.user_config as uc
     import argus.cli.cmd_key as ck
+    import argus.user_config as uc
 
     monkeypatch.setattr(uc, "_CONFIG_DIR", tmp_path / ".argus")
     monkeypatch.setattr(uc, "_CONFIG_FILE", tmp_path / ".argus" / "config.json")
@@ -1178,7 +1182,8 @@ def test_embedding_client_uses_resolved_key(monkeypatch):
 
     monkeypatch.setattr(es, "_client", None)
     monkeypatch.setattr("argus.user_config.resolve_openai_key", lambda: "sk-embed")
-    import sys, types
+    import sys
+    import types
     fake_mod = types.ModuleType("openai")
     fake_mod.OpenAI = FakeOpenAI
     monkeypatch.setitem(sys.modules, "openai", fake_mod)
@@ -1233,8 +1238,8 @@ def test_approve_shared_falls_back_to_local_when_no_cloud(tmp_path, monkeypatch)
     import argus.cloud as cloud
     monkeypatch.setattr(cloud, "SUPABASE_URL", None)
 
-    from argus.models import SuggestedSignature
     import argus.candidate_store as cs
+    from argus.models import SuggestedSignature
 
     sig = SuggestedSignature(
         pattern="placeholder local fallback test",
