@@ -4,15 +4,16 @@
 # matching path, and (with branch protection) their approval is REQUIRED before
 # merge. This is the primary "nothing merges without us" control.
 #
-# NOTE: add your co-maintainer's GitHub handle next to @VaradDurge below once
-# you have it (e.g. `* @VaradDurge @their-handle`). They must also be added as a
-# repo collaborator with at least "write"/"maintain" access for reviews to count.
+# Maintainers: @VaradDurge (owner) and @abhisheksharma001 (co-maintainer).
+# Both are added as repo collaborators so their reviews count toward the
+# required code-owner approval.
 
-# Default owner for everything in the repo.
-*                       @VaradDurge
+# Default owners for everything in the repo — either maintainer can approve
+# core changes.
+*                       @VaradDurge @abhisheksharma001
 
-# Proprietary / enterprise + release-critical paths — owner-only, never open to
-# external contribution.
+# Proprietary / enterprise + release-critical paths — OWNER-ONLY. These control
+# the business and licensing, so only @VaradDurge can approve changes here.
 /cloud/                 @VaradDurge
 /supabase/              @VaradDurge
 /LICENSE                @VaradDurge
