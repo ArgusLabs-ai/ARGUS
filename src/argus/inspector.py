@@ -1117,9 +1117,11 @@ def build_root_cause_chain(
 ) -> list[str]:
     """Walk backward through NodeEvents to find where a failure first originated.
 
-    Each node name appears at most once in the result (deduplicated), preserving
-    chronological order of first occurrence. This handles cyclic graphs where the
-    same node may run multiple times across iterations.
+    Deduplication is keyed by (node_name, attempt_index), preserving chronological
+    order of first occurrence. In an acyclic run every node has attempt_index 0, so
+    each node still appears at most once. In a cyclic graph a node that fails on
+    more than one iteration is cited once per failing attempt — losing that
+    distinction hid which iteration actually broke.
 
     Parallel fan-out guard: fields provided by any node in the run are excluded
     from "missing field" blame. A field flagged missing on analyst_a is not a
@@ -1152,7 +1154,10 @@ def build_root_cause_chain(
             fields_by_node[event.node_name] = existing
 
     chain: list[str] = []
-    seen_nodes: set[str] = set()
+    # Keyed by (node_name, attempt_index) so a node that fails on a later
+    # retry in a cyclic graph isn't silently deduped away by its earlier,
+    # successful attempt.
+    seen_nodes: set[tuple[str, int]] = set()
     seen_bad_fields: set[str] = set()
 
     # Phase 1: trace crash exceptions back to the upstream node that omitted
@@ -1192,9 +1197,10 @@ def build_root_cause_chain(
                 continue
             # This predecessor ran successfully but didn't output the key
             if prev.output_dict is not None and missing_key not in prev.output_dict:
-                if prev.node_name not in seen_nodes:
+                prev_key = (prev.node_name, prev.attempt_index)
+                if prev_key not in seen_nodes:
                     chain.append(prev.node_name)
-                    seen_nodes.add(prev.node_name)
+                    seen_nodes.add(prev_key)
                 break
 
     # Phase 2: inspection-based chain (silent failures, missing fields,
@@ -1250,9 +1256,10 @@ def build_root_cause_chain(
             or has_semantic_check_failure
             or is_semantic_fail_status
         ):
-            if event.node_name not in seen_nodes:
+            event_key = (event.node_name, event.attempt_index)
+            if event_key not in seen_nodes:
                 chain.append(event.node_name)
-                seen_nodes.add(event.node_name)
+                seen_nodes.add(event_key)
             seen_bad_fields.update(real_bad)
 
     chain.reverse()

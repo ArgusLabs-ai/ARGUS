@@ -1620,3 +1620,131 @@ def test_coverage_summary_omits_judge_when_never_run():
     summary = _compute_coverage_summary(events, ["a"])
     assert "judge" not in summary
     assert summary["structural"] == 1.0
+
+
+@pytest.mark.unit
+def test_cyclic_repeat_failure_stays_fail_not_degraded():
+    """A node re-running in a loop and failing again on fresh input must be
+    labelled 'fail' each time (an originating failure), not 'degraded_input'
+    blamed on its own earlier iteration (VAR-105)."""
+    from typing import TypedDict
+
+    from argus.models import LLMInvestigationConfig
+    from argus.session import ArgusSession
+
+    class NeedsPayload(TypedDict):
+        payload: str
+
+    s = ArgusSession(llm_investigation=LLMInvestigationConfig(enabled=False))
+
+    def gen(state):
+        return {"draft": "x"}  # never emits required 'payload'
+
+    def consume(state: NeedsPayload):
+        return {"ok": True}
+
+    wrapped = s.instrument(
+        {"gen": gen, "consume": consume},
+        edges={"gen": ["consume"], "consume": ["gen"]},  # back-edge => cyclic
+    )
+    for i in range(3):
+        wrapped["gen"]({"seed": f"v{i}"})  # fresh, non-degraded input each iteration
+    s.finalize()
+
+    loaded = load_run(s.run_id)
+    gen_events = [e for e in loaded.steps if e.node_name == "gen"]
+    assert [e.status for e in gen_events] == ["fail", "fail", "fail"]
+    assert [e.attempt_index for e in gen_events] == [0, 1, 2]
+
+
+@pytest.mark.unit
+def test_upstream_degradation_still_attributed_to_upstream_node():
+    """Regression guard for VAR-105 Part 1: a genuinely downstream node that
+    inherits a missing field from a *different* upstream node must still be
+    'degraded_input' blamed on that upstream — not relabelled as its own fault."""
+    from typing import TypedDict
+
+    from argus.models import LLMInvestigationConfig
+    from argus.session import ArgusSession
+
+    class NeedsPayload(TypedDict):
+        payload: str
+
+    s = ArgusSession(llm_investigation=LLMInvestigationConfig(enabled=False))
+
+    def a(state):
+        return {"other": "x"}  # a fails to produce 'payload'
+
+    def b(state: NeedsPayload):
+        return {"more": "y"}
+
+    def c(state: NeedsPayload):
+        return {"done": True}
+
+    wrapped = s.instrument(
+        {"a": a, "b": b, "c": c},
+        edges={"a": ["b"], "b": ["c"], "c": []},
+    )
+    st = wrapped["a"]({})
+    st = wrapped["b"](st)
+    wrapped["c"](st)
+    s.finalize()
+
+    loaded = load_run(s.run_id)
+    by_name = {e.node_name: e for e in loaded.steps}
+    assert by_name["a"].status == "fail"
+    assert by_name["b"].status == "degraded_input"
+    assert by_name["b"].inspection.degraded_upstream_node == "a"
+    assert loaded.root_cause_chain == ["a"]
+
+
+@pytest.mark.unit
+def test_root_cause_display_annotates_failing_iteration_on_cyclic_run():
+    """cmd_show renders which iteration(s) a cyclic node broke on, derived from
+    events — so a node that passed early then failed isn't shown identically to
+    one that failed from the start (VAR-105)."""
+    from argus.cli.cmd_show import _root_cause_chain_str
+    from argus.models import InspectionResult, RunRecord
+
+    def ev(attempt, status, silent):
+        insp = InspectionResult(
+            is_silent_failure=silent,
+            missing_fields=["payload"] if silent else [],
+            empty_fields=[],
+            type_mismatches=[],
+            severity="critical" if silent else "ok",
+            message="",
+        )
+        return NodeEvent(
+            step_index=attempt,
+            node_name="gen",
+            status=status,
+            input_state={},
+            output_dict={},
+            duration_ms=1.0,
+            timestamp_utc="2026-01-01T00:00:00Z",
+            attempt_index=attempt,
+            inspection=insp,
+        )
+
+    record = RunRecord(
+        run_id="r",
+        argus_version="0",
+        started_at="s",
+        completed_at="c",
+        duration_ms=1.0,
+        overall_status="silent_failure",
+        first_failure_step="gen",
+        root_cause_chain=["gen"],
+        graph_node_names=["gen"],
+        graph_edge_map={"gen": ["gen"]},
+        initial_state={},
+        steps=[ev(0, "pass", False), ev(1, "fail", True), ev(2, "fail", True)],
+        is_cyclic=True,
+    )
+    # iteration 1 passed, 2 & 3 failed
+    assert _root_cause_chain_str(record) == "gen (iterations 2, 3)"
+
+    # acyclic runs keep the plain arrow form
+    record.is_cyclic = False
+    assert _root_cause_chain_str(record) == "gen"

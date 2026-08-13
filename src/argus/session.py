@@ -747,6 +747,7 @@ class ArgusSession:
                     # failed, this node's failures are a symptom, not cause.
                     degraded_fields, upstream_node = self._check_degraded_input(
                         input_snap,
+                        current_node=node_name,
                     )
                     if degraded_fields:
                         status = "degraded_input"
@@ -761,6 +762,7 @@ class ArgusSession:
                     # from upstream (e.g. empty fields that weren't flagged)
                     degraded_fields, upstream_node = self._check_degraded_input(
                         input_snap,
+                        current_node=node_name,
                     )
                     if degraded_fields:
                         status = "degraded_input"
@@ -1043,16 +1045,25 @@ class ArgusSession:
     def _check_degraded_input(
         self,
         input_snap: dict[str, Any],
+        current_node: str | None = None,
     ) -> tuple[list[str], str | None]:
         """Check if any upstream node failed and left fields missing from input.
 
         Returns (degraded_fields, upstream_node_name) or ([], None).
         Evidence-based: only flags fields that a failed upstream node explicitly
         reported as missing AND are also absent/empty in this node's input.
+
+        A node's OWN earlier iterations are never treated as upstream: in a
+        cyclic graph a node re-running and failing again is originating a fresh
+        failure, not inheriting degradation from itself. Blaming the earlier
+        iteration would demote every repeat failure to ``degraded_input`` and
+        hide which iteration actually broke (VAR-105).
         """
         for event in self._events:
             if event.status != "fail" or event.inspection is None:
                 continue
+            if current_node is not None and event.node_name == current_node:
+                continue  # own prior iteration is not upstream degradation
             missing_from_upstream = event.inspection.missing_fields
             if not missing_from_upstream:
                 continue
