@@ -78,7 +78,12 @@ def _compact_dict(d: dict[str, Any]) -> dict[str, str]:
 
 
 def _skip_result(reason: str, model: str, ms: float) -> SemanticCheckResult:
-    """Return a passing result for skipped/errored checks."""
+    """Return a passing result for skipped/errored checks.
+
+    `evaluated=False` records that the judge never actually ran — distinct
+    from a real judged pass, so callers that need to tell the two apart
+    (coverage accounting, display) can.
+    """
     return SemanticCheckResult(
         passed=True,
         reason=reason,
@@ -89,6 +94,7 @@ def _skip_result(reason: str, model: str, ms: float) -> SemanticCheckResult:
         duration_ms=round(ms, 2),
         evidence_considered=(),
         overridden_signals=(),
+        evaluated=False,
     )
 
 

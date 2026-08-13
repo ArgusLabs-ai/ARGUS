@@ -351,6 +351,39 @@ def _match_semantic_similarity(sig: dict[str, Any], value: str) -> tuple[bool, f
     return (False, 0.0)
 
 
+def semantic_similarity_active(registry: list[dict[str, Any]] | None = None) -> bool:
+    """Whether the semantic_similarity match strategy is actually live.
+
+    `_ensure_pattern_embeddings` fails open (registry.py:325-326) when the
+    embedding backend is unavailable — this lets callers (coverage
+    accounting, `argus doctor`) tell "no semantic_similarity sigs defined"
+    apart from "sigs defined but silently disabled."
+    """
+    sigs = registry if registry is not None else _REGISTRY
+    _ensure_pattern_embeddings(sigs)
+    sem_sigs = [s for s in sigs if s.get("match_strategy") == "semantic_similarity"]
+    if not sem_sigs:
+        return True  # nothing to be inactive
+    return any(s.get("_pattern_embedding") is not None for s in sem_sigs)
+
+
+def heuristic_coverage(registry: list[dict[str, Any]] | None = None) -> float:
+    """Fraction of registry signatures actually usable this run, 0.0–1.0.
+
+    Keyword/regex/repetition strategies always run. Only semantic_similarity
+    can be silently disabled (no embedding backend); when that happens, those
+    signatures contribute nothing, so coverage is the fraction of signatures
+    that are not dead weight.
+    """
+    sigs = registry if registry is not None else _REGISTRY
+    if not sigs:
+        return 1.0
+    if semantic_similarity_active(sigs):
+        return 1.0
+    inactive = sum(1 for s in sigs if s.get("match_strategy") == "semantic_similarity")
+    return round((len(sigs) - inactive) / len(sigs), 4)
+
+
 # Strategy dispatch — avoids if/elif chain; each entry is a callable that
 # receives (sig, value) but exact_ci / contains_ci / prefix_ci only need
 # (pattern, value), so we wrap them below.

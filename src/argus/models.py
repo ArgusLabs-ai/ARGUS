@@ -26,6 +26,11 @@ class SemanticCheckResult:
     evidence_considered: tuple[str, ...] = ()
     # Which prior signals the LLM chose to override (pass despite signal)
     overridden_signals: tuple[str, ...] = ()
+    # False when the judge never actually ran (not logged in, empty I/O,
+    # provider error, timeout) — `passed` defaults True in that case for
+    # backward-compat verdict behavior, but callers that need to know
+    # whether a real judgment happened must check this instead.
+    evaluated: bool = True
 
 
 @dataclass
@@ -269,6 +274,10 @@ class RunRecord:
     loop_analyses: list[LoopAnalysisResult] = field(default_factory=list)
     tool_chain_findings: list[ToolChainFinding] = field(default_factory=list)
     dry_run: bool = False  # True if this run skipped persistence (VAR-75)
+    # Fraction of the run actually evaluated by each detection layer, 0.0–1.0.
+    # Keys: "structural", "heuristic", "judge". Empty on old runs / when a layer
+    # ran on no nodes. Distinguishes "checked, clean" from "never checked".
+    coverage_summary: dict[str, float] = field(default_factory=dict)
 
 
 # ── Correlation layer dataclasses ──────────────────────────────────────────────

@@ -306,6 +306,7 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         loop_analyses=loop_analyses,
         tool_chain_findings=tool_chain_findings,
         dry_run=data.get("dry_run", False),
+        coverage_summary=data.get("coverage_summary", {}),
     )
 
 
