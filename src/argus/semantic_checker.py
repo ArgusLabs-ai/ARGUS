@@ -11,6 +11,7 @@ Uses gpt-4o-mini by default — ~600 tokens in, ~150 tokens out.
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
@@ -43,6 +44,10 @@ _SYSTEM_PROMPT = (
     "directly answer the input — it may be an intermediate transformation "
     "(e.g. parsing, filtering, extracting, classifying). As long as the output "
     "is a plausible processing step on the input data, pass it.\n"
+    "- Forwarding an intermediate pipeline field to the next node (copying "
+    "`draft` to `reply`, `summary` to `answer`, and similar handoffs) is a "
+    "legitimate passthrough, NOT input echo. Only fail echo when the node "
+    "repeats the user prompt, query, or question as its answer.\n"
     "- The input/output shown may be TRUNCATED. Do NOT fail a node because "
     "the output references content that was truncated from the input. "
     "If a value ends with '... (truncated)' it was cut short — assume the "
@@ -85,6 +90,82 @@ def _compact_dict(d: dict[str, Any]) -> dict[str, str]:
             break
         out[k] = t
     return out
+
+
+def _extract_json_object(raw: str) -> dict[str, Any] | None:
+    """Parse a judge JSON object, repairing truncated / fenced payloads.
+
+    Returns None if no object can be recovered — callers should fail closed
+    to heuristics rather than treating the skip as a pass.
+    """
+    if not raw or not str(raw).strip():
+        return None
+    text = str(raw).strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+
+    def _as_dict(value: Any) -> dict[str, Any] | None:
+        return value if isinstance(value, dict) else None
+
+    try:
+        parsed = _as_dict(json.loads(text))
+        if parsed is not None:
+            return parsed
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    start = text.find("{")
+    if start < 0:
+        return None
+    end = text.rfind("}")
+    if end > start:
+        try:
+            parsed = _as_dict(json.loads(text[start : end + 1]))
+            if parsed is not None:
+                return parsed
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    return _repair_truncated_json(text[start:])
+
+
+def _repair_truncated_json(fragment: str) -> dict[str, Any] | None:
+    """Close an unterminated JSON object (truncated string / missing braces)."""
+    s = fragment.rstrip()
+    if not s.startswith("{"):
+        return None
+    in_string = False
+    escape = False
+    stack: list[str] = []
+    for ch in s:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in "}]" and stack and stack[-1] == ch:
+            stack.pop()
+
+    candidate = s
+    if in_string:
+        candidate += '"'
+    candidate = candidate.rstrip().rstrip(",")
+    candidate += "".join(reversed(stack))
+    try:
+        parsed = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _skip_result(reason: str, model: str, ms: float) -> SemanticCheckResult:
@@ -215,7 +296,13 @@ def check_semantic_coherence(
 
         choices = result.get("choices", [])
         raw = choices[0]["message"]["content"] if choices else "{}"
-        parsed = json.loads(raw)
+        parsed = _extract_json_object(raw)
+        if parsed is None:
+            return _skip_result(
+                "check skipped: Unterminated string / invalid JSON from judge",
+                model,
+                elapsed,
+            ), []
         usage = result.get("usage", {})
 
         sc = SemanticCheckResult(

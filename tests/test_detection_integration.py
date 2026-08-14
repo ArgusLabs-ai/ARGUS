@@ -85,6 +85,19 @@ class TestToolFailureDetection:
         loaded = load_run(session.run_id)
         event = loaded.steps[0]
         assert any(tf.failure_type == "empty_result" for tf in event.inspection.tool_failures)
+        assert event.status == "fail"
+        assert loaded.overall_status == "silent_failure"
+
+    def test_empty_documents_overall_not_clean(self):
+        session = _session()
+        session.set_node_names(["retrieve"])
+        retrieve = session.wrap("retrieve", lambda s: {"documents": []})
+        retrieve({"query": "refund"})
+        session.finalize()
+
+        loaded = load_run(session.run_id)
+        assert loaded.overall_status != "clean"
+        assert loaded.steps[0].status == "fail"
 
 @pytest.mark.unit
 class TestValidators:

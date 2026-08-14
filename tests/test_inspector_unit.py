@@ -60,9 +60,14 @@ class TestRule2HttpStatus:
         result = inspect_tool_outputs({"status_code": 200})
         assert not result.tool_failures
 
-    def test_status_string_not_caught(self):
-        """Status must be int, string '500' is not caught."""
+    def test_status_string_coerced(self):
+        """Numeric string status codes must count as HTTP errors."""
         result = inspect_tool_outputs({"status_code": "500"})
+        assert any(tf.failure_type == "error_response" for tf in result.tool_failures)
+        assert result.has_tool_failure
+
+    def test_status_non_numeric_string_ignored(self):
+        result = inspect_tool_outputs({"status_code": "ok"})
         assert not any(tf.failure_type == "error_response" for tf in result.tool_failures)
 
     def test_status_400(self):
@@ -111,6 +116,25 @@ class TestRule3EmptyResults:
     def test_empty_list(self):
         result = inspect_tool_outputs({"results": []})
         assert any(tf.failure_type == "empty_result" for tf in result.tool_failures)
+        assert result.has_tool_failure
+
+    def test_empty_documents_fails_node(self):
+        result = inspect_tool_outputs({"documents": [], "query": "refund policy"})
+        assert any(
+            tf.failure_type == "empty_result" and tf.field_name == "documents"
+            for tf in result.tool_failures
+        )
+        assert result.has_tool_failure
+        assert result.severity == "critical"
+
+    def test_empty_optional_string_not_promoted(self):
+        """policy_notes='' is an optional blank, not a failed retrieval."""
+        result = inspect_tool_outputs({"policy_notes": "", "answer": "Approved."})
+        assert not any(
+            tf.field_name == "policy_notes" and tf.severity == "critical"
+            for tf in result.tool_failures
+        )
+        assert not result.has_tool_failure
 
     def test_none_result(self):
         result = inspect_tool_outputs({"data": None})
@@ -205,19 +229,40 @@ class TestRule6NestedDicts:
     def test_nested_error_key(self):
         result = inspect_tool_outputs({"api_result": {"error": "failed"}})
         assert any(
-            tf.field_name == "api_result.error" and tf.severity == "warning"
+            tf.field_name == "api_result.error" and tf.severity == "critical"
             for tf in result.tool_failures
         )
+        assert result.has_tool_failure
 
     def test_nested_status_code(self):
         result = inspect_tool_outputs({"response": {"status_code": 500}})
         assert any(tf.field_name == "response.status_code" for tf in result.tool_failures)
+        assert result.has_tool_failure
 
-    def test_two_levels_deep_not_caught_by_rule6(self):
-        """Rule 6 only scans one level deep."""
+    def test_two_levels_deep_nested_error(self):
         result = inspect_tool_outputs({"outer": {"middle": {"error": "deep"}}})
-        nested_rule6 = [tf for tf in result.tool_failures if tf.field_name == "outer.middle.error"]
-        assert not nested_rule6
+        nested = [tf for tf in result.tool_failures if tf.field_name == "outer.middle.error"]
+        assert nested
+        assert nested[0].severity == "critical"
+        assert result.has_tool_failure
+
+    def test_three_levels_deep_success_false(self):
+        result = inspect_tool_outputs(
+            {"payload": {"tool": {"result": {"success": False}}}}
+        )
+        assert any(
+            tf.field_name.endswith("success") and tf.severity == "critical"
+            for tf in result.tool_failures
+        )
+        assert result.has_tool_failure
+
+    def test_nested_string_status_code(self):
+        result = inspect_tool_outputs({"response": {"body": {"status_code": "503"}}})
+        assert any(
+            tf.failure_type == "error_response" and "503" in tf.evidence
+            for tf in result.tool_failures
+        )
+        assert result.has_tool_failure
 
 
 # ── Rule 7: Semantic heuristics ──────────────────────────────────────────────
@@ -262,6 +307,13 @@ class TestRule7SemanticHeuristics:
         assert matching
         assert matching[0].severity == "warning"
 
+    def test_i_dont_know_signature_hit(self):
+        result = inspect_tool_outputs({"answer": "I don't know."})
+        assert result.semantic_signals or any(
+            "SP-014" in (tf.evidence or "") or "don't know" in (tf.evidence or "").lower()
+            for tf in result.tool_failures
+        )
+
 
 # ── Rule 8: Truncated output ─────────────────────────────────────────────────
 
@@ -277,6 +329,22 @@ class TestRule8Truncation:
         )
         result = inspect_tool_outputs({"analysis": text})
         assert any(tf.failure_type == "truncated_output" for tf in result.tool_failures)
+        # non-main field stays a warning
+        trunc = next(tf for tf in result.tool_failures if tf.failure_type == "truncated_output")
+        assert trunc.severity == "warning"
+
+    def test_truncated_main_llm_field_is_critical(self):
+        text = (
+            "The quarterly earnings report showed a significant increase in "
+            "revenue across all major business segments, with particularly "
+            "strong growth observed in the technology division where "
+            "new product launches contributed to higher than expected sa"
+        )
+        result = inspect_tool_outputs({"answer": text})
+        trunc = [tf for tf in result.tool_failures if tf.failure_type == "truncated_output"]
+        assert trunc
+        assert trunc[0].severity == "critical"
+        assert result.has_tool_failure
 
     def test_short_string_not_flagged(self):
         result = inspect_tool_outputs({"title": "Short ti"})
@@ -482,6 +550,28 @@ class TestRule14InputEcho:
         )
         assert not any(tf.failure_type == "input_echo" for tf in result.tool_failures)
 
+    def test_draft_to_reply_handoff_not_echo(self):
+        draft = (
+            "Here is the drafted customer reply covering the refund window, "
+            "shipping exceptions, and the next steps we recommend they take. "
+        ) * 2
+        result = inspect_tool_outputs(
+            {"reply": draft},
+            input_state={"draft": draft, "query": "Please write a reply"},
+        )
+        assert not any(tf.failure_type == "input_echo" for tf in result.tool_failures)
+
+    def test_query_echoed_as_answer_still_flagged(self):
+        prompt = (
+            "The market outlook is very bullish with strong momentum and "
+            "positive indicators across every major sector this quarter. "
+        ) * 2
+        result = inspect_tool_outputs(
+            {"answer": prompt},
+            input_state={"query": prompt},
+        )
+        assert any(tf.failure_type == "input_echo" for tf in result.tool_failures)
+
 
 # ── Rule 15: Contradictory transformation ────────────────────────────────────
 
@@ -556,7 +646,7 @@ class TestStructuralInspection:
         result = inspect_transition("node_a", {"error": "boom"}, {}, [])
         assert result.has_tool_failure
 
-    def test_missing_field_detected(self):
+    def test_missing_field_detected_when_dropped(self):
         from typing import TypedDict
 
         class NextState(TypedDict):
@@ -571,8 +661,29 @@ class TestStructuralInspection:
             {"other_key": "value"},
             {"other_key": "value"},
             [successor],
+            input_state={"summary": "kept", "score": 1},
         )
+        # Dropped from input → missing. Unrelated extra keys do not invent this.
         assert "summary" in result.missing_fields or "score" in result.missing_fields
+
+    def test_unknown_key_does_not_match_unrelated_schema_field(self):
+        from typing import TypedDict
+
+        class NextState(TypedDict, total=False):
+            attempts: int
+            query: str
+
+        def successor(state: NextState) -> dict:
+            return state
+
+        result = inspect_transition(
+            "node_a",
+            {"status_code": 200, "query": "hello"},
+            {"status_code": 200, "query": "hello"},
+            [successor],
+            input_state={"query": "hello"},
+        )
+        assert "attempts" not in result.missing_fields
 
 
 # ── build_root_cause_chain ───────────────────────────────────────────────────
@@ -630,6 +741,68 @@ class TestRootCauseChain:
         ]
         chain = build_root_cause_chain(events)
         assert "node_a" in chain
+
+    def test_silent_field_drop_blames_retrieve_not_synthesize(self):
+        """LangGraph: retrieve omits documents; synthesize KeyErrors on it."""
+        events = [
+            make_event(
+                "retrieve",
+                "pass",
+                output={"query": "refund policy", "corpus_id": "kb-1"},
+                input_state={"query": "refund policy"},
+                step_index=0,
+            ),
+            make_event(
+                "synthesize",
+                "crashed",
+                output=None,
+                step_index=1,
+                exception=(
+                    "KeyError: 'documents'\n"
+                    "Traceback (most recent call last):\n"
+                    "KeyError: 'documents'"
+                ),
+            ),
+        ]
+        chain = build_root_cause_chain(
+            events,
+            edge_map={"retrieve": ["synthesize"]},
+        )
+        assert "retrieve" in chain
+        assert "synthesize" not in chain
+
+    def test_silent_field_drop_walks_past_passthrough(self):
+        """retrieve omits documents; rerank passthrough; synthesize KeyErrors."""
+        events = [
+            make_event(
+                "retrieve",
+                "pass",
+                output={"query": "q", "retrieved_docs": ["a"]},
+                input_state={"query": "q"},
+                step_index=0,
+            ),
+            make_event(
+                "rerank",
+                "pass",
+                output={"query": "q", "retrieved_docs": ["a"]},
+                input_state={"query": "q", "retrieved_docs": ["a"]},
+                step_index=1,
+            ),
+            make_event(
+                "synthesize",
+                "crashed",
+                output=None,
+                step_index=2,
+                exception="KeyError('documents')",
+            ),
+        ]
+        chain = build_root_cause_chain(
+            events,
+            edge_map={"retrieve": ["rerank"], "rerank": ["synthesize"]},
+        )
+        assert "retrieve" in chain
+        assert "synthesize" not in chain
+        assert "rerank" not in chain
 
 
 # ── Typo detection via edit distance ────────────────────────────────────────
@@ -701,7 +874,7 @@ class TestTypedDictIntrospection:
         )
         assert result.severity == "ok"
 
-    def test_typeddict_missing_field_flagged(self):
+    def test_unrelated_extra_key_does_not_invent_missing_fields(self):
         from typing import TypedDict
 
         class ExpectedOutput(TypedDict):
@@ -717,7 +890,9 @@ class TestTypedDictIntrospection:
             {"wrong_key": "value"},
             [successor],
         )
-        assert "answer" in result.missing_fields or "confidence" in result.missing_fields
+        # Unrelated extra keys must not be fuzzy-matched onto answer/confidence.
+        assert "answer" not in result.missing_fields
+        assert "confidence" not in result.missing_fields
 
     def test_typeddict_type_mismatch_flagged(self):
         from typing import TypedDict

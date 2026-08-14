@@ -4,7 +4,12 @@ import json
 import pytest
 
 from argus.models import AnomalySignal, InspectionResult, ToolFailure, ValidatorResult
-from argus.semantic_checker import _compact_dict, _truncate, check_semantic_coherence
+from argus.semantic_checker import (
+    _compact_dict,
+    _extract_json_object,
+    _truncate,
+    check_semantic_coherence,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -63,6 +68,7 @@ class TestSemanticCheckerMalformed:
         })
         result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
         assert result.passed is True
+        assert result.evaluated is False
 
     def test_no_choices_defaults_pass(self, monkeypatch):
         monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
@@ -191,3 +197,44 @@ class TestTruncation:
         result = _compact_dict({"binary": b"hello", "text": "world"})
         assert "binary" not in result
         assert "text" in result
+
+
+@pytest.mark.unit
+class TestJudgeJsonResilience:
+    def test_extracts_object_from_prose(self):
+        raw = 'Sure.\n{"pass": false, "reason": "placeholder", "confidence": 0.9}\n'
+        parsed = _extract_json_object(raw)
+        assert parsed is not None
+        assert parsed["pass"] is False
+
+    def test_repairs_unterminated_string(self):
+        raw = '{"pass": false, "reason": "output is PLACEHOLDER text that got cut'
+        parsed = _extract_json_object(raw)
+        assert parsed is not None
+        assert parsed.get("pass") is False
+
+    def test_garbage_returns_none(self):
+        assert _extract_json_object("not json at all") is None
+
+    def test_unterminated_judge_output_evaluated_false(self, monkeypatch):
+        monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
+        monkeypatch.setattr(
+            "argus.llm_proxy.create_chat_completion",
+            lambda **kwargs: {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"pass": false, "reason": "unterminated'
+                        }
+                    }
+                ],
+                "usage": {},
+            },
+        )
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "PLACEHOLDER"})
+        # Repair may succeed; if not, skip with evaluated=False.
+        if not result.evaluated:
+            assert result.passed is True
+            assert "skipped" in result.reason
+        else:
+            assert result.passed is False

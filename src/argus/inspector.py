@@ -105,7 +105,7 @@ _ANTONYM_PAIRS: list[tuple[frozenset[str], frozenset[str]]] = [
     ),
 ]
 
-# SP-series hedging phrases (must stay in sync with signatures.json SP-009..SP-013)
+# SP-series hedging phrases (must stay in sync with signatures.json SP-009..SP-018)
 _HEDGING_PHRASES = [
     "i'm not sure",
     "not certain",
@@ -121,6 +121,10 @@ _HEDGING_PHRASES = [
     "i apologize",
     "my knowledge cutoff",
     "i don't have the ability",
+    "i don't know",
+    "i do not know",
+    "i don't have enough information",
+    "i do not have enough information",
 ]
 
 # ── Tool output detection patterns ───────────────────────────────────────────
@@ -147,6 +151,41 @@ _ERROR_STR_RE = re.compile(
 
 _SEVERITY_RANK = {"critical": 2, "warning": 1}
 
+# Nested tool-failure scan (dict/list payloads)
+_MAX_TOOL_SCAN_DEPTH = 5
+
+# Empty lists on these keys are failed retrievals, not optional blanks.
+_RETRIEVAL_LIST_KEYS = frozenset(
+    {"documents", "docs", "results", "hits", "sources", "items"}
+)
+
+# Main LLM text fields — truncated output here is a node failure.
+_MAIN_LLM_OUTPUT_KEYS = frozenset({"answer", "draft", "summary", "reply", "content"})
+
+# Intermediate fields whose copy into a differently named output is a handoff,
+# not "the model echoed the user prompt."
+_HANDOFF_SOURCE_KEYS = frozenset(
+    {
+        "draft",
+        "summary",
+        "analysis",
+        "report",
+        "findings",
+        "context",
+        "ranked",
+        "documents",
+        "answer",
+        "reply",
+        "recommendation",
+        "synthesis",
+        "response",
+    }
+)
+
+# Unknown-key ↔ schema matching: typo-sized edits only (see _is_likely_typo).
+_UNKNOWN_KEY_MAX_EDIT = 2
+_UNKNOWN_KEY_MAX_LEN_DIFF = 3
+
 # ── Semantic registry failure-type mapping ────────────────────────────────────
 
 _CATEGORY_TO_FAILURE: dict[str, str] = {
@@ -161,6 +200,248 @@ _CATEGORY_TO_FAILURE: dict[str, str] = {
 }
 
 
+def _coerce_http_status(value: Any) -> int | None:
+    """Coerce int or numeric-string HTTP codes. Ignore bools and non-numeric strings."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+    return None
+
+
+def _leaf_key(field_path: str) -> str:
+    """Last path component, without list-index suffixes."""
+    leaf = field_path.rsplit(".", 1)[-1]
+    return re.sub(r"\[\d+\]$", "", leaf)
+
+
+def _is_retrieval_list_key(field_path: str) -> bool:
+    return _leaf_key(field_path).lower() in _RETRIEVAL_LIST_KEYS
+
+
+def _empty_result_severity(field_path: str, value: Any) -> str:
+    """Empty retrieval lists fail the node; other empty result-like fields warn."""
+    if _is_retrieval_list_key(field_path) and isinstance(value, list):
+        return "critical"
+    if _is_retrieval_list_key(field_path) and value is None:
+        return "critical"
+    return "warning"
+
+
+def _add_http_status_failure(
+    add: Any,
+    field_path: str,
+    status: int,
+    nested: bool,
+) -> None:
+    prefix = "nested " if nested else ""
+    if status == 429:
+        add(
+            ToolFailure(
+                failure_type="rate_limit",
+                field_name=field_path,
+                severity="warning",
+                evidence=f"{prefix}HTTP 429 rate limit".strip(),
+            )
+        )
+    else:
+        add(
+            ToolFailure(
+                failure_type="error_response",
+                field_name=field_path,
+                severity="critical",
+                evidence=f"{prefix}HTTP {status} error response".strip(),
+            )
+        )
+
+
+def _apply_tool_shape_rules(
+    key: str,
+    value: Any,
+    field_path: str,
+    depth: int,
+    add: Any,
+) -> None:
+    """Apply error / HTTP / empty-result / partial-failure rules at one field."""
+    nested = depth > 0
+    key_l = key.lower()
+
+    # Rule 1 — error key with truthy value
+    if key in _ERROR_KEYS:
+        if value:
+            as_str = str(value)
+            if _RATE_LIMIT_RE.search(as_str):
+                add(
+                    ToolFailure(
+                        failure_type="rate_limit",
+                        field_name=field_path,
+                        severity="warning",
+                        evidence=(
+                            f"{'nested ' if nested else ''}"
+                            f"rate limit detected: {as_str[:120]!r}"
+                        ),
+                    )
+                )
+            else:
+                add(
+                    ToolFailure(
+                        failure_type="error_response",
+                        field_name=field_path,
+                        severity="critical",
+                        evidence=(
+                            f"{'nested error field' if nested else 'error field set'}: "
+                            f"{as_str[:120]!r}"
+                        ),
+                    )
+                )
+        return
+
+    # Rule 2 — HTTP status (int or numeric string)
+    if key in _STATUS_KEYS:
+        status = _coerce_http_status(value)
+        if status is not None and 400 <= status <= 599:
+            _add_http_status_failure(add, field_path, status, nested)
+            return
+
+    # Rule 2b — boolean success field set to False
+    if key_l in _SUCCESS_KEYS and isinstance(value, bool) and not value:
+        add(
+            ToolFailure(
+                failure_type="error_response",
+                field_name=field_path,
+                severity="critical",
+                evidence=(
+                    f"{'nested ' if nested else ''}success indicator '{key}' is False"
+                ),
+            )
+        )
+        return
+
+    # Rule 2c — boolean failure field set to True
+    if key_l in _FAILURE_KEYS and isinstance(value, bool) and value:
+        add(
+            ToolFailure(
+                failure_type="error_response",
+                field_name=field_path,
+                severity="critical",
+                evidence=(
+                    f"{'nested ' if nested else ''}failure indicator '{key}' is True"
+                ),
+            )
+        )
+        return
+
+    # Rule 3 — empty result field with results-like name
+    if _RESULT_NAME_RE.search(key):
+        if value is None or value == [] or value == {} or value == "":
+            add(
+                ToolFailure(
+                    failure_type="empty_result",
+                    field_name=field_path,
+                    severity=_empty_result_severity(field_path, value),
+                    evidence="tool returned no results",
+                )
+            )
+            return
+        if isinstance(value, (list, dict)):
+            items = value if isinstance(value, list) else list(value.values())
+            if items and all(_is_empty_element(v) for v in items):
+                add(
+                    ToolFailure(
+                        failure_type="empty_result",
+                        field_name=field_path,
+                        severity=_empty_result_severity(
+                            field_path, [] if isinstance(value, list) else value
+                        ),
+                        evidence=f"tool returned {len(items)} items but all are empty/null",
+                    )
+                )
+                return
+
+    # Rule 4 — error string in a non-error field
+    if isinstance(value, str) and _ERROR_STR_RE.match(value):
+        add(
+            ToolFailure(
+                failure_type="error_in_data",
+                field_name=field_path,
+                severity="warning",
+                evidence=f"field contains error-like string: {value[:80]!r}",
+            )
+        )
+        return
+
+    # Rule 5 — partial failure inside a list
+    if isinstance(value, list) and value:
+        error_count = sum(1 for item in value if isinstance(item, dict) and item.get("error"))
+        if error_count > 0:
+            add(
+                ToolFailure(
+                    failure_type="partial_failure",
+                    field_name=field_path,
+                    severity="warning",
+                    evidence=f"{error_count} of {len(value)} items contain errors",
+                )
+            )
+
+
+def _scan_payload_for_tool_failures(
+    obj: Any,
+    prefix: str,
+    depth: int,
+    add: Any,
+) -> None:
+    """Recursively scan dict/list payloads for tool-failure shapes (max depth 5)."""
+    if depth > _MAX_TOOL_SCAN_DEPTH:
+        return
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            field_path = f"{prefix}.{key}" if prefix else str(key)
+            _apply_tool_shape_rules(key, value, field_path, depth, add)
+            if isinstance(value, dict):
+                _scan_payload_for_tool_failures(value, field_path, depth + 1, add)
+            elif isinstance(value, list):
+                _scan_payload_for_tool_failures(value, field_path, depth + 1, add)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, (dict, list)):
+                item_path = f"{prefix}[{i}]"
+                _scan_payload_for_tool_failures(item, item_path, depth + 1, add)
+
+
+def is_legitimate_field_handoff(
+    input_state: dict[str, Any] | None,
+    output_dict: dict[str, Any] | None,
+) -> bool:
+    """True when output copies an intermediate field under a new name.
+
+    Used to keep passthrough closers (draft→reply) from being judged as
+    the model echoing the user prompt.
+    """
+    if not input_state or not output_dict:
+        return False
+    for out_key, out_val in output_dict.items():
+        if not isinstance(out_val, str) or len(out_val) < 80:
+            continue
+        for in_key, in_val in input_state.items():
+            if not isinstance(in_val, str) or len(in_val) < 80:
+                continue
+            if in_key.lower() not in _HANDOFF_SOURCE_KEYS:
+                continue
+            if out_key.lower() == in_key.lower():
+                continue
+            if out_val == in_val or (
+                len(out_val) > 40
+                and len(in_val) > 40
+                and (out_val[:80] == in_val[:80] or out_val[-80:] == in_val[-80:])
+            ):
+                return True
+    return False
+
+
 def inspect_tool_outputs(
     output_dict: dict[str, Any],
     strict: bool = False,
@@ -170,9 +451,10 @@ def inspect_tool_outputs(
 ) -> InspectionResult:
     """Scan a node's output dict for tool call failure patterns.
 
-    Detects: error keys, HTTP error codes, empty result fields, error strings
-    in data fields, and partial failures inside lists.
-    Also scans one level deep into nested dicts for error patterns (BS-02 fix).
+    Detects: error keys, HTTP error codes (int or numeric string), empty
+    retrieval/result fields, error strings in data fields, and partial
+    failures inside lists. Recursively scans dict/list payloads up to
+    depth 5 so nested ``success: false`` / HTTP 4xx–5xx can fail the node.
     Returns an InspectionResult with tool_failures and semantic_signals populated.
 
     strict: if True, all warning-severity failures are promoted to critical.
@@ -188,194 +470,9 @@ def inspect_tool_outputs(
         if existing is None or _SEVERITY_RANK[tf.severity] > _SEVERITY_RANK[existing.severity]:
             by_field[tf.field_name] = tf
 
-    for key, value in output_dict.items():
-        # Rule 1 — error key with truthy value
-        if key in _ERROR_KEYS:
-            if value:  # truthy: non-None, non-empty string, non-empty list, etc.
-                as_str = str(value)
-                if _RATE_LIMIT_RE.search(as_str):
-                    _add(
-                        ToolFailure(
-                            failure_type="rate_limit",
-                            field_name=key,
-                            severity="warning",
-                            evidence=f"rate limit detected: {as_str[:120]!r}",
-                        )
-                    )
-                else:
-                    _add(
-                        ToolFailure(
-                            failure_type="error_response",
-                            field_name=key,
-                            severity="critical",
-                            evidence=f"error field set: {as_str[:120]!r}",
-                        )
-                    )
-            continue  # don't apply other rules to known error keys
-
-        # Rule 2 — HTTP status code in a status field
-        if key in _STATUS_KEYS and isinstance(value, int) and 400 <= value <= 599:
-            if value == 429:
-                _add(
-                    ToolFailure(
-                        failure_type="rate_limit",
-                        field_name=key,
-                        severity="warning",
-                        evidence="HTTP 429 rate limit",
-                    )
-                )
-            else:
-                _add(
-                    ToolFailure(
-                        failure_type="error_response",
-                        field_name=key,
-                        severity="critical",
-                        evidence=f"HTTP {value} error response",
-                    )
-                )
-            continue
-
-        # Rule 2b — boolean success field set to False
-        if key.lower() in _SUCCESS_KEYS and isinstance(value, bool) and not value:
-            _add(
-                ToolFailure(
-                    failure_type="error_response",
-                    field_name=key,
-                    severity="critical",
-                    evidence=f"success indicator '{key}' is False",
-                )
-            )
-            continue
-
-        # Rule 2c — boolean failure field set to True
-        if key.lower() in _FAILURE_KEYS and isinstance(value, bool) and value:
-            _add(
-                ToolFailure(
-                    failure_type="error_response",
-                    field_name=key,
-                    severity="critical",
-                    evidence=f"failure indicator '{key}' is True",
-                )
-            )
-            continue
-
-        # Rule 3 — empty result field with results-like name
-        if _RESULT_NAME_RE.search(key):
-            if value is None or value == [] or value == {} or value == "":
-                _add(
-                    ToolFailure(
-                        failure_type="empty_result",
-                        field_name=key,
-                        severity="warning",
-                        evidence="tool returned no results",
-                    )
-                )
-                continue  # don't also flag as error_in_data
-            # Non-empty collection whose every element is empty/null — a tool
-            # that "returned N results" that are all hollow looks successful but
-            # carries no content. Worse than an empty list because it passes a
-            # naive length check.
-            if isinstance(value, (list, dict)):
-                items = value if isinstance(value, list) else list(value.values())
-                if items and all(_is_empty_element(v) for v in items):
-                    _add(
-                        ToolFailure(
-                            failure_type="empty_result",
-                            field_name=key,
-                            severity="warning",
-                            evidence=f"tool returned {len(items)} items but all are empty/null",
-                        )
-                    )
-                    continue  # don't also flag as error_in_data
-
-        # Rule 4 — error string in a non-error field
-        if isinstance(value, str) and _ERROR_STR_RE.match(value):
-            _add(
-                ToolFailure(
-                    failure_type="error_in_data",
-                    field_name=key,
-                    severity="warning",
-                    evidence=f"field contains error-like string: {value[:80]!r}",
-                )
-            )
-            continue
-
-        # Rule 5 — partial failure inside a list
-        if isinstance(value, list) and value:
-            error_count = sum(1 for item in value if isinstance(item, dict) and item.get("error"))
-            if error_count > 0:
-                _add(
-                    ToolFailure(
-                        failure_type="partial_failure",
-                        field_name=key,
-                        severity="warning",
-                        evidence=f"{error_count} of {len(value)} items contain errors",
-                    )
-                )
-
-        # Rule 6 — nested dict scan (BS-02 fix): check one level deep for error patterns
-        if isinstance(value, dict):
-            for inner_key, inner_value in value.items():
-                field_path = f"{key}.{inner_key}"
-                if inner_key in _ERROR_KEYS and inner_value:
-                    as_str = str(inner_value)
-                    if _RATE_LIMIT_RE.search(as_str):
-                        _add(
-                            ToolFailure(
-                                failure_type="rate_limit",
-                                field_name=field_path,
-                                severity="warning",
-                                evidence=f"nested rate limit: {as_str[:120]!r}",
-                            )
-                        )
-                    else:
-                        _add(
-                            ToolFailure(
-                                failure_type="error_response",
-                                field_name=field_path,
-                                severity="warning",
-                                evidence=f"nested error field: {as_str[:120]!r}",
-                            )
-                        )
-                elif (
-                    inner_key in _STATUS_KEYS
-                    and isinstance(inner_value, int)
-                    and 400 <= inner_value <= 599
-                ):
-                    _add(
-                        ToolFailure(
-                            failure_type="error_response",
-                            field_name=field_path,
-                            severity="warning",
-                            evidence=f"nested HTTP {inner_value} error",
-                        )
-                    )
-                elif (
-                    inner_key.lower() in _SUCCESS_KEYS
-                    and isinstance(inner_value, bool)
-                    and not inner_value
-                ):
-                    _add(
-                        ToolFailure(
-                            failure_type="error_response",
-                            field_name=field_path,
-                            severity="warning",
-                            evidence=f"nested success indicator '{inner_key}' is False",
-                        )
-                    )
-                elif (
-                    inner_key.lower() in _FAILURE_KEYS
-                    and isinstance(inner_value, bool)
-                    and inner_value
-                ):
-                    _add(
-                        ToolFailure(
-                            failure_type="error_response",
-                            field_name=field_path,
-                            severity="warning",
-                            evidence=f"nested failure indicator '{inner_key}' is True",
-                        )
-                    )
+    # Rules 1–6 — recursive tool-failure shapes (error keys, HTTP status,
+    # success/failure booleans, empty retrieval, nested dict/list payloads)
+    _scan_payload_for_tool_failures(output_dict, "", 0, _add)
 
     # Rule 7 — deep recursive semantic heuristic scan
     # Use pre-computed signals if available (avoids double-scan)
@@ -401,16 +498,27 @@ def inspect_tool_outputs(
         )
 
     # Rule 8 — truncated output detection
-    for key, value in output_dict.items():
-        if isinstance(value, str) and _is_truncated(value):
-            _add(
-                ToolFailure(
-                    failure_type="truncated_output",
-                    field_name=key,
-                    severity="warning",
-                    evidence=f"string appears truncated mid-word: {value[-30:]!r}",
-                )
+    def _flag_truncated(field_path: str, text: str) -> None:
+        if not _is_truncated(text):
+            return
+        leaf = _leaf_key(field_path).lower()
+        severity = "critical" if leaf in _MAIN_LLM_OUTPUT_KEYS else "warning"
+        _add(
+            ToolFailure(
+                failure_type="truncated_output",
+                field_name=field_path,
+                severity=severity,
+                evidence=f"string appears truncated mid-word: {text[-30:]!r}",
             )
+        )
+
+    for key, value in output_dict.items():
+        if isinstance(value, str):
+            _flag_truncated(key, value)
+        elif isinstance(value, dict):
+            for inner_key, inner_val in value.items():
+                if isinstance(inner_val, str):
+                    _flag_truncated(f"{key}.{inner_key}", inner_val)
 
     # Rule 9 — hallucinated success contradiction
     # Detect: success/status field is truthy AND result field is empty
@@ -589,6 +697,13 @@ def inspect_tool_outputs(
                 if not isinstance(value, str) or len(value) < 80:
                     continue
                 for in_key, in_val in input_str_fields:
+                    # Legitimate pipeline handoff: closer copies draft→reply
+                    # (or similar) rather than repeating the user prompt.
+                    if (
+                        in_key.lower() in _HANDOFF_SOURCE_KEYS
+                        and key.lower() != in_key.lower()
+                    ):
+                        continue
                     if max(len(value), len(in_val)) > 5000:
                         ratio = 1.0 if value == in_val else (
                             1.0 - abs(len(value) - len(in_val)) / max(len(value), len(in_val))
@@ -834,8 +949,10 @@ def inspect_transition(
                     continue  # present and non-empty — fine
                 candidates.append(field_name)
 
-            # Match unknown keys to candidates by edit distance (best
-            # matches first), capped at len(unknown_novel) total flags.
+            # Match unknown keys to candidates by edit distance only when the
+            # names look like typos (edit distance ≤ 2, length diff ≤ 3).
+            # Unrelated extras (status_code vs attempts) must not invent
+            # contract violations.
             matched: list[str] = []
             for uk in unknown_novel:
                 best_field = None
@@ -847,7 +964,7 @@ def inspect_transition(
                     if d < best_dist:
                         best_dist = d
                         best_field = c
-                if best_field is not None:
+                if best_field is not None and _is_likely_typo([uk], best_field):
                     matched.append(best_field)
 
             for field_name in matched:
@@ -1013,9 +1130,9 @@ def _is_likely_typo(unknown_keys: list[str], schema_field: str) -> bool:
     "compresd" vs "compressed").
     """
     for key in unknown_keys:
-        if abs(len(key) - len(schema_field)) > 3:
+        if abs(len(key) - len(schema_field)) > _UNKNOWN_KEY_MAX_LEN_DIFF:
             continue
-        if _edit_distance(key, schema_field) <= 2:
+        if _edit_distance(key, schema_field) <= _UNKNOWN_KEY_MAX_EDIT:
             return True
     return False
 
@@ -1105,15 +1222,24 @@ def _build_message(
 
 
 def _extract_missing_key_from_exception(exc_str: str) -> str | None:
-    """Extract the missing key name from a KeyError traceback."""
-    import re
+    """Extract the missing key name from a KeyError traceback.
 
-    m = re.search(r"KeyError: '([^']+)'", exc_str)
-    if m:
-        return m.group(1)
-    m = re.search(r'KeyError: "([^"]+)"', exc_str)
-    if m:
-        return m.group(1)
+    Handles quoted, unquoted, and ``KeyError('name')`` forms used by CPython
+    and LangGraph wrappers.
+    """
+    if not exc_str:
+        return None
+    patterns = (
+        r"KeyError:\s*'([^']+)'",
+        r'KeyError:\s*"([^"]+)"',
+        r"KeyError\(\s*'([^']+)'\s*\)",
+        r'KeyError\(\s*"([^"]+)"\s*\)',
+        r"KeyError:\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+    )
+    for pat in patterns:
+        m = re.search(pat, exc_str)
+        if m:
+            return m.group(1)
     return None
 
 
@@ -1200,12 +1326,13 @@ def build_root_cause_chain(
         if not missing_key:
             continue
 
-        # If the key was already provided by ANY node that ran before the
-        # crash, the crashed node had it available — this is a
+        # If a non-empty value was already provided by ANY node that ran
+        # before the crash, the crashed node had it available — this is a
         # self-contained crash, not an upstream omission.
         key_was_available = any(
             prev.output_dict is not None
             and missing_key in prev.output_dict
+            and not _is_empty(prev.output_dict.get(missing_key))
             and prev.step_index < event.step_index
             and prev.status != "crashed"
             for prev in steps_so_far
@@ -1216,23 +1343,40 @@ def build_root_cause_chain(
         # Determine actual graph predecessors of the crashed node
         upstream = predecessor_map.get(event.node_name, set())
 
-        # Walk backward — only consider actual graph predecessors
+        # Walk backward. Skip pure passthrough nodes that never had the key
+        # so a retrieve→rerank→synthesize drop blames retrieve, not rerank.
+        origin = None
         for prev in reversed(steps_so_far):
             if prev.step_index >= event.step_index:
                 continue
             if prev.status == "crashed":
                 continue
-            # Skip nodes that are not graph predecessors (when we have
-            # topology). Without edge_map, fall back to step-order.
             if upstream and prev.node_name not in upstream:
                 continue
-            # This predecessor ran successfully but didn't output the key
-            if prev.output_dict is not None and missing_key not in prev.output_dict:
-                prev_key = (prev.node_name, prev.attempt_index)
-                if prev_key not in seen_nodes:
-                    chain.append(prev.node_name)
-                    seen_nodes.add(prev_key)
+            if prev.output_dict is None:
+                continue
+            out = prev.output_dict
+            inp = prev.input_state or {}
+            if missing_key in out and not _is_empty(out.get(missing_key)):
                 break
+            dropped = (
+                missing_key in inp
+                and not _is_empty(inp.get(missing_key))
+                and (missing_key not in out or _is_empty(out.get(missing_key)))
+            )
+            novel_keys = set(out.keys()) - set(inp.keys())
+            is_passthrough = bool(inp) and set(out.keys()) <= set(inp.keys())
+            if dropped or novel_keys or not is_passthrough:
+                origin = prev
+                break
+            if origin is None:
+                origin = prev
+
+        if origin is not None:
+            prev_key = (origin.node_name, origin.attempt_index)
+            if prev_key not in seen_nodes:
+                chain.append(origin.node_name)
+                seen_nodes.add(prev_key)
 
     # Phase 2: inspection-based chain (silent failures, missing fields,
     # semantic degradation, tool failures, etc.)

@@ -15,6 +15,11 @@ from argus.registry import (
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
+
+@pytest.fixture
+def registry():
+    return get_registry()
+
 def _make_sig(sid, pattern, strategy, category="placeholder_outputs", severity="warning"):
     sig = {
         "id": sid, "pattern": pattern, "match_strategy": strategy,
@@ -230,3 +235,38 @@ class TestCustomSignatures:
 
         registry = _load_registry()
         assert len(registry) > 0
+
+
+@pytest.mark.unit
+class TestNaturalUncertaintySignatures:
+    def test_i_dont_know_hits(self, registry):
+        matches = scan_value("I don't know.", registry)
+        ids = {m.sig_id for m in matches}
+        assert "SP-014" in ids
+
+    def test_i_do_not_know_hits(self, registry):
+        matches = scan_value("I do not know the answer.", registry)
+        ids = {m.sig_id for m in matches}
+        assert "SP-015" in ids
+
+    def test_not_enough_information_hits(self, registry):
+        matches = scan_value("I don't have enough information to answer that.", registry)
+        ids = {m.sig_id for m in matches}
+        assert "SP-016" in ids
+
+    def test_know_alone_does_not_match(self, registry):
+        matches = scan_value("Let me know if you need anything else.", registry)
+        ids = {m.sig_id for m in matches}
+        assert "SP-014" not in ids
+        assert "SP-015" not in ids
+
+    def test_na_not_newly_worsened(self, registry):
+        """NL-007 still exact-matches 'Na'; new phrases must not contain-match it."""
+        matches = scan_value("Na", registry)
+        new_ids = {m.sig_id for m in matches if m.sig_id.startswith("SP-01")}
+        assert not (new_ids & {"SP-014", "SP-015", "SP-016", "SP-017", "SP-018"})
+
+    def test_n_slash_a_not_newly_worsened(self, registry):
+        matches = scan_value("N/A", registry)
+        new_ids = {m.sig_id for m in matches if m.sig_id in {"SP-014", "SP-015", "SP-016"}}
+        assert not new_ids

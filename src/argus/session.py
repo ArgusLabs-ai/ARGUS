@@ -39,7 +39,11 @@ from typing import Any, Callable
 
 from argus import __version__
 from argus.anomaly_detector import detect_anomalies
-from argus.inspector import build_root_cause_chain, inspect_transition
+from argus.inspector import (
+    build_root_cause_chain,
+    inspect_transition,
+    is_legitimate_field_handoff,
+)
 from argus.llm_tracker import create_tracker, extract_usage, install_handler, remove_handler
 from argus.models import (
     AnomalySignal,
@@ -858,6 +862,7 @@ class ArgusSession:
                         status, semantic_check_result, disambiguation_results,
                         inspection, validator_results, anomaly_signals,
                         node_name, behavior_type_val, output_snap,
+                        input_snap=input_snap,
                     )
                 else:
                     # Async path: fire LLM in background, don't block
@@ -1009,6 +1014,7 @@ class ArgusSession:
         node_name: str,
         behavior_type_val: str | None,
         output_snap: dict | None,
+        input_snap: dict | None = None,
     ) -> str:
         """Apply LLM disambiguation + coherence verdict to status. Returns new status."""
         if disambiguation_results and inspection is not None:
@@ -1048,6 +1054,9 @@ class ArgusSession:
                     status = "semantic_fail"
 
         if semantic_check_result is not None:
+            if not semantic_check_result.evaluated:
+                # Judge did not produce a verdict. Keep heuristic status.
+                return status
             sc_passed = semantic_check_result.passed
             sc_confident = semantic_check_result.confidence >= 0.7
             if sc_passed and sc_confident:
@@ -1110,7 +1119,9 @@ class ArgusSession:
                     except Exception:
                         pass
             elif not sc_passed and sc_confident:
-                if status == "pass":
+                if status == "pass" and not is_legitimate_field_handoff(
+                    input_snap, output_snap
+                ):
                     status = "semantic_fail"
 
         return status
@@ -1138,6 +1149,7 @@ class ArgusSession:
                 pj.node_name,
                 pj.event.behavior_type,
                 pj.output_snap,
+                input_snap=pj.input_snap,
             )
             pj.event.status = new_status
             pj.event.semantic_check = semantic_check_result

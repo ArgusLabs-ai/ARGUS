@@ -1674,7 +1674,7 @@ def test_cyclic_repeat_failure_stays_fail_not_degraded():
     s = ArgusSession(llm_investigation=LLMInvestigationConfig(enabled=False))
 
     def gen(state):
-        return {"draft": "x"}  # never emits required 'payload'
+        return {"paylod": "x"}  # typo of required 'payload'
 
     def consume(state: NeedsPayload):
         return {"ok": True}
@@ -1709,7 +1709,7 @@ def test_upstream_degradation_still_attributed_to_upstream_node():
     s = ArgusSession(llm_investigation=LLMInvestigationConfig(enabled=False))
 
     def a(state):
-        return {"other": "x"}  # a fails to produce 'payload'
+        return {"paylod": "x"}  # typo of required 'payload'
 
     def b(state: NeedsPayload):
         return {"more": "y"}

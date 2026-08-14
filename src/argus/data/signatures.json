@@ -647,6 +647,81 @@
       }
     },
     {
+      "id": "SP-014",
+      "category": "suspicious_phrases",
+      "pattern": "I don't know",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "Natural LLM uncertainty phrase — I don't know",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-015",
+      "category": "suspicious_phrases",
+      "pattern": "I do not know",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "Natural LLM uncertainty phrase — I do not know",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-016",
+      "category": "suspicious_phrases",
+      "pattern": "I don't have enough information",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "LLM context-insufficiency refusal — not enough information",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-017",
+      "category": "suspicious_phrases",
+      "pattern": "I do not have enough information",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "LLM context-insufficiency refusal — do not have enough information",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-018",
+      "category": "suspicious_phrases",
+      "pattern": "I don't have enough context",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "LLM context-insufficiency refusal — not enough context",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
       "id": "MP-001",
       "category": "malformed_payload",
       "pattern": "^\\{\\s*\\}$",
