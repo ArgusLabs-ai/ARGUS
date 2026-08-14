@@ -49,6 +49,10 @@ def key_set(value: str | None = None, provider: str = "openai") -> None:
         f"  [green]Saved[/green] {provider} key {_mask(value)} to ~/.argus/config.json"
     )
     _console.print(
+        "  [green]Judge enabled.[/green] Pass [bold]semantic_judge=True[/bold] on "
+        "ArgusWatcher to use the LLM judge (default is heuristics-only)."
+    )
+    _console.print(
         f"  [dim]BYOK enabled — AI-powered detection now uses your {provider} key.\n"
         "  Switch providers anytime with [bold]argus key use <provider>[/bold].\n"
         "  Check status with [bold]argus doctor[/bold].[/dim]"

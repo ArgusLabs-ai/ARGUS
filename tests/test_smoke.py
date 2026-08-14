@@ -495,7 +495,7 @@ def test_argus_config_defaults():
     cfg = ArgusConfig()
     assert cfg.max_field_size == 50_000
     assert cfg.strict is False
-    assert cfg.semantic_judge is True
+    assert cfg.semantic_judge is False
     assert cfg.on_judge_failure == "warn"
     assert cfg.judge_max_retries == 1
     assert cfg.judge_retry_backoff == 0.5
@@ -603,6 +603,7 @@ def test_config_valid_combinations_pass():
     ArgusConfig(investigate=True, semantic_judge=True)
     ArgusConfig(investigate="always", persist_state=True)
     ArgusConfig(investigate=False, semantic_judge=False)
+    ArgusConfig(investigate=False)  # valid: judge defaults off
     ArgusConfig(on_judge_failure="abort", judge_max_retries=3)
     ArgusConfig(sample_rate=0.0, persist_failures=True)  # OK: failures still persisted
     ArgusConfig(sample_rate=0.5, persist_failures=False)  # OK: some runs persisted
@@ -1189,6 +1190,9 @@ def test_cmd_key_set_show_clear(tmp_path, monkeypatch, capsys):
 
     ck.key_set("sk-abcdef123456")
     assert uc.get_saved_openai_key() == "sk-abcdef123456"
+    out = capsys.readouterr().out
+    assert "Judge enabled" in out
+    assert "sk-abcdef123456" not in out
 
     ck.key_show()
     out = capsys.readouterr().out
@@ -1250,6 +1254,36 @@ def test_doctor_llm_mode_heuristic(monkeypatch):
     monkeypatch.setattr("argus.cloud.SUPABASE_URL", None)
     ok, msg = d._check_llm_mode()
     assert "heuristic" in msg.lower()
+    assert "argus login" not in msg.lower()
+    assert "not logged in" not in msg.lower()
+
+
+@pytest.mark.unit
+def test_doctor_llm_mode_hosted_login_optional(monkeypatch):
+    """Hosted backend configured but no key: heuristic-only, login is optional."""
+    import argus.cli.cmd_doctor as d
+
+    monkeypatch.setattr("argus.user_config.get_provider", lambda: "openai")
+    monkeypatch.setattr("argus.user_config.resolve_key", lambda p: None)
+    monkeypatch.setattr("argus.cloud.SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr("argus.cloud.is_logged_in", lambda: False)
+    ok, msg = d._check_llm_mode()
+    assert ok is True
+    assert "heuristic" in msg.lower()
+    assert "optional" in msg.lower()
+    assert "not logged in" not in msg.lower()
+
+
+@pytest.mark.unit
+def test_watcher_defaults_judge_off(monkeypatch):
+    """Env keys must not turn the per-node judge on (VAR-111)."""
+    from argus.models import LLMInvestigationConfig
+    from argus.watcher import ArgusWatcher
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-should-not-enable-judge")
+    watcher = ArgusWatcher()
+    assert watcher._config.semantic_judge is False
+    assert LLMInvestigationConfig().semantic_check is False
 
 
 @pytest.mark.unit

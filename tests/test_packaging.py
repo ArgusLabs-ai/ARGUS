@@ -138,3 +138,12 @@ def test_cli_import_error_mentions_default_package_not_cli_extra():
     assert "pip install argus-agents" in source
     assert "argus-agents[cli]" not in source
     assert "not 'argus'" in source
+
+@pytest.mark.unit
+def test_setup_prompt_does_not_require_typeddict():
+    """AI setup prompt must attach ARGUS without rewriting state to TypedDict."""
+    prompt = (Path(__file__).resolve().parents[1] / "website/app/guide/guide-content.tsx").read_text(encoding="utf-8")
+    assert "Do not convert plain-dict state to TypedDict" in prompt
+    assert "Convert plain dict state to TypedDict" not in prompt
+    assert "semantic_judge is off" in prompt
+

@@ -109,7 +109,7 @@ _COMMANDS = [
     ("inspect <id> --step <node>", "dump raw input / output state for a node"),
     ("diff <id>", "diff a replay run against its original"),
     ("diff <id-a> <id-b>", "diff any two runs side-by-side"),
-    ("login", "sign in with Google to sync runs to the cloud"),
+    ("login", "(optional) hosted cloud sync — only if a hosted backend is configured"),
     ("logout", "clear stored credentials"),
     ("whoami", "show current login status"),
     ("key set", "save your OpenAI API key locally for BYOK mode"),

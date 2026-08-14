@@ -430,7 +430,7 @@ class LLMInvestigationConfig:
     max_origins_for_ambiguity: int = 2  # trigger if >= this many competing origins
     always_investigate: bool = False  # bypass trigger logic (for debugging)
     suggest_signatures: bool = True  # whether to ask LLM for new patterns
-    semantic_check: bool = True  # per-node coherence check on passing nodes
+    semantic_check: bool = False  # per-node LLM judge; opt-in with semantic_judge=True
     semantic_check_model: str = "gpt-4o-mini"  # cheap model for per-node checks
     # Auto-resolve LLM overrides above this confidence (0.0 = disabled)
     false_positive_auto_approve_threshold: float = 0.85
@@ -462,7 +462,7 @@ class ArgusConfig:
     redact_patterns: bool = False  # auto-detect secret-shaped values
     persist_state: bool = True
     record_http: bool = True
-    semantic_judge: bool = True
+    semantic_judge: bool = False  # opt-in; heuristics-only until semantic_judge=True
     judge_model: str = "gpt-4o"
     # Failure policy for the per-node semantic judge LLM call.
     # "warn"  — log warning, continue with heuristic results (default)

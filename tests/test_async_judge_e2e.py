@@ -88,7 +88,7 @@ def _build_and_run(nodes: dict, input_state: dict | None = None):
         g.add_edge(names[i], names[i + 1])
     g.add_edge(names[-1], END)
 
-    watcher = ArgusWatcher(g)
+    watcher = ArgusWatcher(g, semantic_judge=True)
     app = g.compile()
     app.invoke(input_state or {"query": "What is ARGUS?"})
     watcher.finalize()
@@ -169,7 +169,7 @@ class TestAsyncJudgeE2E:
         g.add_edge("generate", "score")
         g.add_edge("score", END)
 
-        watcher = ArgusWatcher(g)
+        watcher = ArgusWatcher(g, semantic_judge=True)
         app = g.compile()
         try:
             app.invoke({"query": "test"})
@@ -313,7 +313,7 @@ class TestAsyncJudgeFiveNodePipeline:
         g.add_edge("summarize", "output")
         g.add_edge("output", END)
 
-        watcher = ArgusWatcher(g)
+        watcher = ArgusWatcher(g, semantic_judge=True)
         app = g.compile()
         app.invoke({"query": "test"})
         watcher.finalize()
@@ -352,7 +352,7 @@ class TestAsyncJudgeFiveNodePipeline:
             g.add_edge(a, b)
         g.add_edge("n5", END)
 
-        watcher = ArgusWatcher(g)
+        watcher = ArgusWatcher(g, semantic_judge=True)
         app = g.compile()
         app.invoke({"query": "test"})
         watcher.finalize()

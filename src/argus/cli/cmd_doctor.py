@@ -185,7 +185,10 @@ def _check_llm_mode() -> tuple[bool, str]:
 
         if is_logged_in():
             return True, "hosted proxy (logged in)"
-        return True, "hosted available — run: argus login (or set OPENAI_API_KEY)"
+        return True, (
+            "heuristic-only — no key set "
+            "(argus key set to enable LLM; argus login optional for hosted)"
+        )
     return True, "heuristic-only — no key set (argus key set to enable LLM checks)"
 
 

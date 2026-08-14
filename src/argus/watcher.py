@@ -54,8 +54,8 @@ class ArgusWatcher:
             "*": lambda out: ("error" not in out, f"Error: {out.get('error')}"),
         })
 
-    Usage (disable LLM semantic judge):
-        watcher = ArgusWatcher(graph, semantic_judge=False)   # skip LLM checks
+    Usage (opt in to LLM semantic judge — default is off / heuristics-only):
+        watcher = ArgusWatcher(graph, semantic_judge=True)    # after argus key set
 
     Usage (framework-agnostic, without LangGraph):
         from argus import ArgusSession   # use ArgusSession directly
@@ -75,7 +75,7 @@ class ArgusWatcher:
         redact_patterns: bool = False,
         persist_state: bool = True,
         record_http: bool = True,
-        semantic_judge: bool = True,
+        semantic_judge: bool = False,
         judge_model: str = "gpt-4o",
     ) -> None:
         # Build config from typed object or loose kwargs (backward compat)

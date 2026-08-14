@@ -162,7 +162,7 @@ External API calls (OpenAI, etc.) are recorded by default — replays are free a
 For subtle quality issues that pattern matching can't catch:
 
 ```python
-watcher = ArgusWatcher(graph, semantic_judge=True)  # enabled by default
+watcher = ArgusWatcher(graph, semantic_judge=True)  # opt-in; default is off
 ```
 
 LLM evaluates output quality on every node. Catches wrong tone, unhelpful responses, outdated info. Requires a provider key (OpenAI, Anthropic, or Google) — set via `argus key set [--provider ...]` (see [BYOK](#bring-your-own-key-byok)).
@@ -203,7 +203,7 @@ Validator failures cannot be overridden by the LLM judge — they are hard const
 from argus import ArgusWatcher, ArgusConfig
 
 config = ArgusConfig(
-    semantic_judge=True,           # LLM judge on every node (default: True)
+    semantic_judge=True,           # LLM judge on every node (default: False)
     judge_model="gpt-4o",          # model for the judge
     node_timeout_ms=30000,         # flag outputs at ≥95% of this
     min_expected_ms=500,           # flag suspiciously fast LLM nodes

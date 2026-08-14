@@ -5,59 +5,22 @@ import { useState } from 'react'
 
 // ── Prompt ─────────────────────────────────────────────────────────────────
 
-const LLM_PROMPT = `I want to add ARGUS monitoring to my LangGraph pipeline. Before writing any code, audit my codebase and then integrate it properly.
+const LLM_PROMPT = `I want to add ARGUS monitoring to my LangGraph pipeline. Attach it with a small diff. Do not rewrite my state type or node signatures.
 
-## STEP 1 — AUDIT MY PIPELINE
+Heuristics, tool-failure scan, placeholders, empty outputs, and crashes work without TypedDict. Do not convert plain-dict state to TypedDict. Do not change node return shapes — returning {**state, ...} is fine. Type hints can be suggested after the first run; they are not a setup gate.
 
-Find the file where my StateGraph is defined and check these things:
+## STEP 1 — FIND THE GRAPH
 
-1. STATE TYPE: Find my state class. ARGUS works best when state is a TypedDict (or Pydantic model / dataclass). If my state is just a plain dict, convert it to a TypedDict with proper field annotations. Example:
+Find the file where my StateGraph is defined (or the already-compiled app). Note whether nodes are sync or async. Linear, fan-out/fan-in, and cyclic graphs all persist automatically after the outermost invoke()/batch()/stream() returns — no finalize() call needed.
 
-   # BAD — plain dict, ARGUS can't check field contracts
-   app = graph.compile()
-   result = app.invoke({"query": "...", "results": []})
+Print a short summary, then integrate. Do not "fix compatibility" by rewriting types first.
 
-   # GOOD — TypedDict lets ARGUS verify fields between nodes
-   class AgentState(TypedDict):
-       query: str
-       results: list[str]
-       summary: str
-
-2. NODE RETURN TYPES: Check every node function. Each should:
-   - Accept the state type as its first parameter (type-annotated)
-   - Return a dict with only the fields it's responsible for
-   - NOT return the entire state — just the fields it modifies
-
-   # BAD — no type hint, returns everything
-   def search(state):
-       return {**state, "results": [...]}
-
-   # GOOD — typed, returns only what it produces
-   def search(state: AgentState) -> dict:
-       return {"results": [...]}
-
-3. GRAPH STRUCTURE: Linear, fan-out/fan-in (DAG), and cyclic (loops / back-edges) all persist automatically after the outermost invoke()/batch()/stream() returns — no finalize() call needed.
-
-4. ASYNC CHECK: If node functions are async (async def), ARGUS handles both — just make sure you're using await app.ainvoke() not app.invoke().
-
-5. EXTERNAL CALLS: List which nodes make external API calls (OpenAI, search APIs, databases).
-
-Print a summary of what you found and any fixes needed before proceeding.
-
-## STEP 2 — FIX COMPATIBILITY ISSUES
-
-If you found issues in Step 1, fix them now:
-- Convert plain dict state to TypedDict
-- Add type annotations to node function parameters
-- Make nodes return only their output fields (not the full state)
-- Ensure all fields referenced by downstream nodes exist in the TypedDict
-
-## STEP 3 — INTEGRATE ARGUS
+## STEP 2 — INTEGRATE ARGUS
 
 Install: pip install argus-agents
-(The PyPI package is argus-agents, not argus. Default install includes the CLI, LangGraph adapter, and UI. LLM judge is optional: run argus key set — no extra pip extra.)
+(The PyPI package is argus-agents, not argus. Default install includes the CLI, LangGraph adapter, and UI. LLM judge is off by default — heuristics only. Optional later: argus key set, then pass semantic_judge=True.)
 
-Add ArgusWatcher to the file where the graph is built:
+Add ArgusWatcher to the file where the graph is built. Keep my existing state and node functions as-is:
 
 from argus import ArgusWatcher
 
@@ -72,39 +35,21 @@ watcher = ArgusWatcher(graph)          # uncompiled StateGraph
 app = graph.compile()
 result = app.invoke(initial_state)
 
-## STEP 4 — PICK THE RIGHT CONFIG
+If node functions are async, use await app.ainvoke().
 
-Choose parameters based on what you found in the audit.
-Note: record_http, semantic_judge, investigate, and persist_state are all enabled by default.
+## STEP 3 — OPTIONAL CONFIG
 
-watcher = ArgusWatcher(graph,
-    # DETECTION STRICTNESS — catches empty lists, nested errors, type mismatches
-    strict=True,
+Defaults are heuristics-first: semantic_judge is off. record_http and persist_state are on. Do not enable semantic_judge unless I already ran argus key set.
 
-    # IF you want automatic root cause analysis on failures (default: True)
-    investigate=True,         # or "always" to investigate every run
-
-    # IF any fields contain secrets or tokens
-    redact_keys={"token", "api_key", "password"},
-
-    # ADD validators for nodes that produce critical output:
-    validators={
-        # example: ensure summaries aren't empty stubs
-        "summarize": lambda o: (len(o.get("summary", "")) > 10, "Summary too short"),
-        # wildcard: runs on every node
-        "*": lambda o: ("error" not in o, "error key present"),
-    },
-)
-
-app = watcher.attach(graph)
-result = app.invoke(initial_state)
-# persisted automatically — finalize() is optional
+Only add extra kwargs if needed (redact_keys, validators, strict=True). Do not add a large config block by default.
 
 After running the pipeline:
   argus list              # see all recorded runs
   argus show last         # inspect the most recent run
   argus show <id>         # inspect a specific run by ID
-  argus ui                # open the web dashboard`
+  argus ui                # open the web dashboard
+
+After the first run, the dashboard may suggest type hints to catch field-drop bugs. That is optional follow-up, not part of this integration.`
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -143,7 +88,7 @@ export default function GuideContent() {
       <section className="mb-16">
         <h2 className="text-xl font-semibold text-foreground mb-3">Quick Start</h2>
         <p className="text-[15px] text-muted-foreground leading-[1.7] mb-6">
-          Get ARGUS monitoring on your pipeline in 5 steps.
+          Get ARGUS monitoring on your pipeline in 5 steps. Heuristics work without login or an API key.
         </p>
 
         <div className="space-y-5 mb-8">
@@ -165,7 +110,6 @@ export default function GuideContent() {
         <div className="space-y-3 mb-6">
           <Row label="RUN PIPELINE" text="Run your LangGraph pipeline normally in the terminal." />
           <Row label="CHECK DASHBOARD" text="Takes 1-2 seconds — refresh the page if a new run doesn't appear immediately." />
-          <Row label="LOGIN (OPTIONAL)" text='Run argus login in terminal and sign in with Google to sync runs to the cloud.' />
         </div>
       </section>
 
@@ -198,7 +142,7 @@ export default function GuideContent() {
         <CodeBlock title="Diff two runs">{`argus diff <run-id-a> <run-id-b>`}</CodeBlock>
 
         <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-4 mt-8">Account &amp; diagnostics</h3>
-        <CodeBlock title="Sign in to sync runs to the cloud">{`argus login`}</CodeBlock>
+        <CodeBlock title="Optional: hosted cloud sync (only if a hosted backend is configured)">{`argus login`}</CodeBlock>
         <CodeBlock title="Sign out and clear stored credentials">{`argus logout`}</CodeBlock>
         <CodeBlock title="Check current login status">{`argus whoami`}</CodeBlock>
         <CodeBlock title="Diagnose integration issues">{`argus doctor`}</CodeBlock>
@@ -214,8 +158,8 @@ export default function GuideContent() {
         </h2>
         <p className="text-[15px] text-muted-foreground mb-5 leading-relaxed max-w-[620px]">
           This is the full prompt copied by the AI Setup Prompt button. Paste it into
-          Claude Code, Cursor, or Copilot. It audits your pipeline for compatibility,
-          fixes issues, and adds ARGUS with the right config.
+          Claude Code, Cursor, or Copilot. It attaches ARGUS without rewriting your
+          state types or node signatures.
         </p>
         <div
           className="rounded-lg overflow-hidden"
@@ -453,7 +397,7 @@ export default function GuideContent() {
 
     # --- LLM semantic judge ---
     semantic_judge=True,    # LLM reviews every node's output for subtle quality issues.
-                            # (default: True) needs a provider key — see 'argus key set'.
+                            # (default: False) opt in after 'argus key set'.
     judge_model="gpt-4o",  # tier hint: capable model. Auto-mapped to your active
                             # provider (Claude/Gemini). "gpt-4o-mini" = cheaper tier.
 
@@ -469,9 +413,9 @@ result = app.invoke(initial_state)`}
         </CodeBlock>
 
         <p className="text-[15px] text-muted-foreground leading-[1.7] mb-4">
-          Access <Code>watcher.run_id</Code> after the run. Most parameters are
-          enabled by default — <Code>record_http</Code>, <Code>semantic_judge</Code>,
-          <Code>investigate</Code>, and <Code>persist_state</Code> are all <Code>True</Code> out of the box.
+          Access <Code>watcher.run_id</Code> after the run. <Code>record_http</Code>,
+          <Code>investigate</Code>, and <Code>persist_state</Code> default to <Code>True</Code>.
+          <Code>semantic_judge</Code> defaults to <Code>False</Code> (heuristics-only until you opt in).
         </p>
         <div
           className="rounded-lg px-5 py-4 mb-8"
