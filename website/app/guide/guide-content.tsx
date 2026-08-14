@@ -55,7 +55,7 @@ If you found issues in Step 1, fix them now:
 ## STEP 3 — INTEGRATE ARGUS
 
 Install: pip install argus-agents
-(The PyPI package is argus-agents, not argus. Default install includes the CLI, LangGraph adapter, and UI. LLM judge is optional: run `argus key set` — no extra pip extra.)
+(The PyPI package is argus-agents, not argus. Default install includes the CLI, LangGraph adapter, and UI. LLM judge is optional: run argus key set — no extra pip extra.)
 
 Add ArgusWatcher to the file where the graph is built:
 
