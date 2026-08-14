@@ -313,6 +313,9 @@ class ArgusSession:
         self._initial_state: dict[str, Any] = {}
         self._started_at = datetime.now(timezone.utc).isoformat()
         self._completed = False
+        # True while nested inside batch/abatch (or stream→invoke): last-node
+        # auto-finalize must wait so items 2..N are not dropped after _completed.
+        self._defer_auto_finalize = False
         self._is_cyclic = False
         self._conditional_sources: set[str] = set()
         self._has_conditional_edges: bool = False
@@ -915,10 +918,13 @@ class ArgusSession:
             # Uses terminal-node tracking: finalize only when ALL expected DAG
             # leaves have completed. For conditional graphs, unchosen branch
             # terminals don't block finalization.
-            should_finalize = status in ("crashed", "interrupted") or (
-                not self._is_cyclic
-                and self._terminal_nodes
-                and self._completed_terminals >= self._expected_terminals()
+            should_finalize = (not self._defer_auto_finalize) and (
+                status in ("crashed", "interrupted")
+                or (
+                    not self._is_cyclic
+                    and self._terminal_nodes
+                    and self._completed_terminals >= self._expected_terminals()
+                )
             )
 
         # finalize outside the lock to avoid holding it during I/O
@@ -1485,5 +1491,6 @@ class ArgusSession:
             self._initial_state = {}
             self._started_at = datetime.now(timezone.utc).isoformat()
             self._completed = False
+            self._defer_auto_finalize = False
             self._node_attempt_counts = {}
             self._completed_terminals = set()

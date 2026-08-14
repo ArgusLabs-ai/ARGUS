@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 from typing import TypedDict
 
 import pytest
@@ -186,3 +188,110 @@ def test_watch_rejects_compiled_and_points_at_attach():
     watcher = ArgusWatcher(**_WATCH_KW)
     with pytest.raises(ValueError, match="attach"):
         watcher.watch(compiled)
+
+
+def _count_saves(monkeypatch) -> list[str]:
+    from argus import session as session_mod
+
+    calls: list[str] = []
+    original = session_mod.save_run
+
+    def counting_save(record):
+        calls.append(record.run_id)
+        return original(record)
+
+    monkeypatch.setattr(session_mod, "save_run", counting_save)
+    return calls
+
+
+def _run_coro(coro):
+    """Run a coroutine without closing the loop (asyncio.run breaks later tests)."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("closed")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
+
+@pytest.mark.unit
+def test_attach_batch_persists_all_items_once(monkeypatch):
+    """batch() of 3 inputs: LangGraph calls invoke per item; persist once with all events.
+
+    Intended semantics: one run record for the batch, not one per item. Events
+    from items 2..N must not be dropped after item 1's invoke returns.
+    """
+    calls = _count_saves(monkeypatch)
+    watcher = ArgusWatcher(**_WATCH_KW)
+    app = watcher.attach(_linear_state_graph())
+
+    invoke_hits: list[int] = []
+    persist_wrapped_invoke = app.invoke
+
+    def counting_invoke(*args, **kwargs):
+        invoke_hits.append(1)
+        return persist_wrapped_invoke(*args, **kwargs)
+
+    app.invoke = counting_invoke
+
+    inputs = [{"n": 0}, {"n": 10}, {"n": 100}]
+    results = app.batch(inputs)
+
+    assert results == [{"n": 2}, {"n": 12}, {"n": 102}]
+    assert len(invoke_hits) == 3, "LangGraph batch() must call invoke() once per item"
+    assert len(calls) == 1
+    assert watcher._session is not None
+    assert watcher._session._completed
+
+    record = load_run(watcher.run_id)
+    executed = [e.node_name for e in record.steps if e.node_name in {"a", "b"}]
+    assert executed.count("a") == 3
+    assert executed.count("b") == 3
+
+
+@pytest.mark.unit
+def test_attach_abatch_persists_all_items_once(monkeypatch):
+    """abatch() of 2+ inputs persists one run that includes every item's nodes."""
+    calls = _count_saves(monkeypatch)
+    watcher = ArgusWatcher(**_WATCH_KW)
+    app = watcher.attach(_linear_state_graph())
+
+    ainvoke_hits: list[int] = []
+    persist_wrapped_ainvoke = app.ainvoke
+
+    async def counting_ainvoke(*args, **kwargs):
+        ainvoke_hits.append(1)
+        return await persist_wrapped_ainvoke(*args, **kwargs)
+
+    app.ainvoke = counting_ainvoke
+
+    inputs = [{"n": 0}, {"n": 10}]
+    results = _run_coro(app.abatch(inputs))
+
+    assert results == [{"n": 2}, {"n": 12}]
+    assert len(ainvoke_hits) == 2
+    assert len(calls) == 1
+    record = load_run(watcher.run_id)
+    executed = [e.node_name for e in record.steps if e.node_name in {"a", "b"}]
+    assert executed.count("a") == 2
+    assert executed.count("b") == 2
+
+
+@pytest.mark.unit
+def test_attach_astream_is_async_generator_and_persists():
+    """astream wrapper must be an async generator; persist when it is exhausted."""
+    watcher = ArgusWatcher(**_WATCH_KW)
+    app = watcher.attach(_linear_state_graph())
+    assert inspect.isasyncgenfunction(app.astream)
+
+    async def _consume():
+        return [chunk async for chunk in app.astream({"n": 0})]
+
+    chunks = _run_coro(_consume())
+    assert chunks
+    assert watcher._session is not None
+    assert watcher._session._completed
+    record = load_run(watcher.run_id)
+    assert {e.node_name for e in record.steps} >= {"a", "b"}

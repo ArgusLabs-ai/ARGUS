@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import inspect
 import os
+import threading
 from typing import Any, Callable
 
 from argus.checkpoints import mark_checkpoint_resumed
@@ -30,8 +31,9 @@ class ArgusWatcher:
     """LangGraph adapter for ArgusSession.
 
     One public API — ``attach()`` works for both uncompiled StateGraphs and
-    already-compiled apps. Runs persist when ``invoke()`` / ``ainvoke()``
-    returns; ``finalize()`` is optional and idempotent.
+    already-compiled apps. Runs persist when the outermost graph call
+    (``invoke``, ``batch``, ``stream``, …) returns; ``finalize()`` is
+    optional and idempotent.
 
         watcher = ArgusWatcher()
         app = watcher.attach(graph)     # StateGraph or compiled app
@@ -97,6 +99,8 @@ class ArgusWatcher:
         self._http_recorder_ctx = None
         self._http_recorder = None
         self._session: ArgusSession | None = None
+        self._persist_depth = 0
+        self._persist_lock = threading.Lock()
 
         # If graph was passed to constructor, instrument it. Compiled apps
         # go through attach() (aliases invoke onto the original object).
@@ -138,7 +142,8 @@ class ArgusWatcher:
 
         One call covers both cases — no need to know whether the graph has
         been compiled yet. Always returns a compiled app with monitoring.
-        ``invoke()`` / ``ainvoke()`` persist the run when they return;
+        The run is persisted when the outermost ``invoke`` / ``ainvoke`` /
+        ``stream`` / ``astream`` / ``batch`` / ``abatch`` call returns;
         ``finalize()`` is optional.
 
         Args:
@@ -313,104 +318,111 @@ class ArgusWatcher:
         graph._argus_compile_wrapped = True
 
     def _install_auto_persist(self, compiled: Any) -> Any:
-        """Wrap runtime methods so the run is saved when the call finishes."""
+        """Wrap runtime methods so the run is saved when the outermost call finishes.
+
+        LangGraph ``batch()`` / ``abatch()`` call ``invoke()`` / ``ainvoke()``
+        once per item. A shared depth counter finalizes only when the
+        outermost user-facing call returns, so later items are not dropped.
+        """
         if getattr(compiled, "_argus_auto_persist", False):
             return compiled
+        self._wrap_runtime_call(compiled, "invoke", is_async=False)
+        self._wrap_runtime_call(compiled, "ainvoke", is_async=True)
+        self._wrap_runtime_gen(compiled, "stream", is_async=False)
+        self._wrap_runtime_gen(compiled, "astream", is_async=True)
+        self._wrap_runtime_call(compiled, "batch", is_async=False)
+        self._wrap_runtime_call(compiled, "abatch", is_async=True)
+        compiled._argus_auto_persist = True
+        return compiled
 
-        def _persist() -> None:
+    def _enter_persist_scope(self) -> None:
+        with self._persist_lock:
+            self._persist_depth += 1
+            if self._session is not None:
+                # Nested invoke (batch item, stream internals): don't mark the
+                # session complete until the outermost call returns.
+                self._session._defer_auto_finalize = self._persist_depth > 1
+
+    def _exit_persist_scope(self) -> None:
+        should_persist = False
+        with self._persist_lock:
+            self._persist_depth = max(0, self._persist_depth - 1)
+            if self._session is not None:
+                self._session._defer_auto_finalize = self._persist_depth > 1
+            should_persist = self._persist_depth == 0
+        if should_persist:
             self.finalize()
 
-        original_invoke = compiled.invoke
+    def _wrap_runtime_call(self, compiled: Any, name: str, *, is_async: bool) -> None:
+        original = getattr(compiled, name, None)
+        if not callable(original):
+            return
+        if is_async:
 
-        @functools.wraps(original_invoke)
-        def _invoke(*args: Any, **kwargs: Any) -> Any:
-            try:
-                return original_invoke(*args, **kwargs)
-            finally:
-                _persist()
-
-        compiled.invoke = _invoke
-
-        original_ainvoke = getattr(compiled, "ainvoke", None)
-        if callable(original_ainvoke):
-
-            @functools.wraps(original_ainvoke)
-            async def _ainvoke(*args: Any, **kwargs: Any) -> Any:
+            @functools.wraps(original)
+            async def _async_call(*args: Any, **kwargs: Any) -> Any:
+                self._enter_persist_scope()
                 try:
-                    return await original_ainvoke(*args, **kwargs)
+                    return await original(*args, **kwargs)
                 finally:
-                    _persist()
+                    self._exit_persist_scope()
 
-            compiled.ainvoke = _ainvoke
+            setattr(compiled, name, _async_call)
+            return
 
-        original_stream = getattr(compiled, "stream", None)
-        if callable(original_stream):
+        @functools.wraps(original)
+        def _sync_call(*args: Any, **kwargs: Any) -> Any:
+            self._enter_persist_scope()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                self._exit_persist_scope()
 
-            @functools.wraps(original_stream)
-            def _stream(*args: Any, **kwargs: Any) -> Any:
-                iterator = original_stream(*args, **kwargs)
+        setattr(compiled, name, _sync_call)
+
+    def _wrap_runtime_gen(self, compiled: Any, name: str, *, is_async: bool) -> None:
+        original = getattr(compiled, name, None)
+        if not callable(original):
+            return
+        if is_async:
+
+            @functools.wraps(original)
+            async def _async_gen(*args: Any, **kwargs: Any) -> Any:
+                self._enter_persist_scope()
+                try:
+                    agen = original(*args, **kwargs)
+                    if inspect.isawaitable(agen):
+                        agen = await agen
+                    async for item in agen:
+                        yield item
+                finally:
+                    self._exit_persist_scope()
+
+            setattr(compiled, name, _async_gen)
+            return
+
+        @functools.wraps(original)
+        def _sync_gen(*args: Any, **kwargs: Any) -> Any:
+            iterator = original(*args, **kwargs)
+            if hasattr(iterator, "__iter__") and not isinstance(
+                iterator, (dict, list, tuple, str, bytes)
+            ):
 
                 def _gen() -> Any:
+                    self._enter_persist_scope()
                     try:
                         yield from iterator
                     finally:
-                        _persist()
+                        self._exit_persist_scope()
 
-                if hasattr(iterator, "__iter__") and not isinstance(
-                    iterator, (dict, list, tuple, str, bytes)
-                ):
-                    return _gen()
-                _persist()
+                return _gen()
+            self._enter_persist_scope()
+            try:
                 return iterator
+            finally:
+                self._exit_persist_scope()
 
-            compiled.stream = _stream
-
-        original_astream = getattr(compiled, "astream", None)
-        if callable(original_astream):
-
-            @functools.wraps(original_astream)
-            def _astream(*args: Any, **kwargs: Any) -> Any:
-                agen = original_astream(*args, **kwargs)
-
-                async def _agen() -> Any:
-                    try:
-                        async for item in agen:
-                            yield item
-                    finally:
-                        _persist()
-
-                if hasattr(agen, "__aiter__"):
-                    return _agen()
-                return agen
-
-            compiled.astream = _astream
-
-        original_batch = getattr(compiled, "batch", None)
-        if callable(original_batch):
-
-            @functools.wraps(original_batch)
-            def _batch(*args: Any, **kwargs: Any) -> Any:
-                try:
-                    return original_batch(*args, **kwargs)
-                finally:
-                    _persist()
-
-            compiled.batch = _batch
-
-        original_abatch = getattr(compiled, "abatch", None)
-        if callable(original_abatch):
-
-            @functools.wraps(original_abatch)
-            async def _abatch(*args: Any, **kwargs: Any) -> Any:
-                try:
-                    return await original_abatch(*args, **kwargs)
-                finally:
-                    _persist()
-
-            compiled.abatch = _abatch
-
-        compiled._argus_auto_persist = True
-        return compiled
+        setattr(compiled, name, _sync_gen)
 
     def _alias_runtime(self, dest: Any, src: Any) -> None:
         """Copy src runtime methods onto dest so the original compiled object stays live."""
@@ -426,9 +438,9 @@ class ArgusWatcher:
     def finalize(self) -> None:
         """Persist the run record.
 
-        Optional — ``attach()`` wraps invoke/ainvoke so runs are saved when
-        the call returns, including cyclic graphs. Safe to call explicitly
-        (tests, early flush); a second call is a no-op.
+        Optional — ``attach()`` persists when the outermost graph call
+        returns, including cyclic graphs. Safe to call explicitly (tests,
+        early flush); a second call is a no-op.
         """
         if self._session is not None:
             self._session.finalize()
