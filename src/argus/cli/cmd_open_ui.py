@@ -22,6 +22,14 @@ from argus.cli.cmd_doctor import (
     _check_replay_readiness,
     _check_storage,
 )
+from argus.cli.ui_serving import (
+    count_run_json_files,
+    format_port_busy_lines,
+    format_ui_startup_lines,
+    probe_running_ui,
+)
+from argus.storage import argus_dir, resolve_project_root
+from argus.storage import runs_dir as resolved_runs_dir
 
 _console = Console()
 _UI_PORT = 7842
@@ -265,7 +273,9 @@ def _sanitize_run_for_report(run_data: dict) -> dict:
     return report
 
 
-_CONFIG_PATH = Path(".") / ".argus" / "config.json"
+def _config_path() -> Path:
+    return argus_dir() / "config.json"
+
 
 _LINEAR_API_URL = "https://api.linear.app/graphql"
 
@@ -282,21 +292,21 @@ _CATEGORY_LABEL_MAP = {
 def _load_config() -> dict:
     """Read the full .argus/config.json."""
     try:
-        return json.loads(_CONFIG_PATH.read_text())
+        return json.loads(_config_path().read_text())
     except Exception:
         return {}
 
 
 def _save_config(data: dict) -> None:
     """Write the full .argus/config.json (merge with existing)."""
-    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _config_path().parent.mkdir(parents=True, exist_ok=True)
     try:
-        existing = json.loads(_CONFIG_PATH.read_text())
+        existing = json.loads(_config_path().read_text())
     except Exception:
         existing = {}
     existing.update(data)
-    _CONFIG_PATH.write_text(json.dumps(existing, indent=2))
-    _CONFIG_PATH.chmod(0o600)
+    _config_path().write_text(json.dumps(existing, indent=2))
+    _config_path().chmod(0o600)
 
 
 def _linear_graphql(api_key: str, query: str, variables: dict | None = None) -> dict:
@@ -428,7 +438,7 @@ def _save_aliases(aliases: dict[str, str], project_dir: Path) -> None:
 def _load_config_app_factory() -> str | None:
     """Read default app factory from .argus/config.json in CWD."""
     try:
-        data = json.loads(_CONFIG_PATH.read_text())
+        data = json.loads(_config_path().read_text())
         return data.get("app") or None
     except Exception:
         return None
@@ -436,13 +446,13 @@ def _load_config_app_factory() -> str | None:
 
 def _save_config_app_factory(app: str) -> None:
     """Write app factory to .argus/config.json."""
-    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _config_path().parent.mkdir(parents=True, exist_ok=True)
     try:
-        existing = json.loads(_CONFIG_PATH.read_text())
+        existing = json.loads(_config_path().read_text())
     except Exception:
         existing = {}
     existing["app"] = app
-    _CONFIG_PATH.write_text(json.dumps(existing, indent=2))
+    _config_path().write_text(json.dumps(existing, indent=2))
 
 
 def _import_factory_for_ui(spec: str):
@@ -804,6 +814,13 @@ def _make_handler(
 
                 data = load_feedback()
                 self._send_json(data)
+            elif path == "/api/serving":
+                self._send_json(
+                    {
+                        "project_root": str(_project_dir),
+                        "runs_dir": str(runs_dir),
+                    }
+                )
             elif path == "/api/doctor":
                 self._send_json(_collect_doctor_info())
             elif path == "/api/settings":
@@ -1726,17 +1743,24 @@ def open_ui(app_module_str: str | None = None) -> None:
         )
         raise SystemExit(1)
 
+    project_dir = resolve_project_root()
+    runs_dir = resolved_runs_dir(create=False)
+    logs_dir = argus_dir() / "logs"
+
     if _port_in_use():
-        _console.print(f"Argus UI already running at [bold]{_UI_URL}[/bold]")
+        remote = probe_running_ui()
+        for line in format_port_busy_lines(runs_dir, remote):
+            if line.startswith("warning:"):
+                _console.print(f"  [yellow]{line}[/yellow]")
+            elif line.startswith("Argus UI already"):
+                _console.print(f"Argus UI already running at [bold]{_UI_URL}[/bold]")
+            else:
+                _console.print(f"  [dim]{line}[/dim]")
         webbrowser.open(_UI_URL)
         return
 
     # Resolve factory: --app flag → .argus/config.json → None
     effective = app_module_str or _load_config_app_factory()
-
-    project_dir = Path(".").resolve()
-    runs_dir = project_dir / ".argus" / "runs"
-    logs_dir = project_dir / ".argus" / "logs"
 
     handler = _make_handler(runs_dir, logs_dir, effective, project_dir)
     server = ThreadingHTTPServer(("localhost", _UI_PORT), handler)
@@ -1744,8 +1768,16 @@ def open_ui(app_module_str: str | None = None) -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    _console.print(f"Argus UI running at [bold]{_UI_URL}[/bold]")
-    _console.print(f"  [dim]serving runs from[/dim] {runs_dir}")
+    run_count = count_run_json_files(runs_dir)
+    for line in format_ui_startup_lines(runs_dir, run_count):
+        if line.startswith("warning:"):
+            _console.print(f"  [yellow]{line}[/yellow]")
+        elif line.startswith("Argus UI running"):
+            _console.print(f"Argus UI running at [bold]{_UI_URL}[/bold]")
+        elif line.startswith("serving runs from"):
+            _console.print(f"  [dim]serving runs from[/dim] {runs_dir}")
+        else:
+            _console.print(f"  {line}")
     _console.print("  [dim]replay[/dim] [bold]auto-detect[/bold] [dim](zero-config)[/dim]")
     webbrowser.open(_UI_URL)
 

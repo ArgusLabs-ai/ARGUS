@@ -9,7 +9,6 @@ from __future__ import annotations
 import importlib
 import json
 import sys
-from pathlib import Path
 
 from rich.console import Console
 from rich.text import Text
@@ -64,18 +63,27 @@ def _check_langgraph() -> tuple[bool, str]:
 
 
 def _check_storage() -> tuple[bool, str]:
-    argus_dir = Path.cwd() / ".argus"
-    runs_dir = argus_dir / "runs"
+    from argus.storage import argus_dir, runs_dir  # noqa: PLC0415
 
-    if not argus_dir.exists():
-        return True, ".argus/ not yet created (will be created on first run)"
+    stored_argus = argus_dir()
+    stored_runs = runs_dir(create=False)
+    hint = (
+        "If you expected runs: call watcher.attach(graph) before invoke; "
+        "files go under the project root (git / pyproject.toml / $ARGUS_DIR), "
+        "not the process cwd; cyclic graphs persist when invoke() returns "
+        "(no finalize() needed with attach()); "
+        "install with pip install argus-agents so the argus command is available."
+    )
 
-    if not runs_dir.exists():
-        return True, ".argus/runs/ not yet created"
+    if not stored_argus.exists():
+        return True, f".argus/ not yet created at {stored_argus} — {hint}"
 
-    run_files = list(runs_dir.glob("*.json"))
+    if not stored_runs.exists():
+        return True, f".argus/runs/ not yet created at {stored_runs} — {hint}"
+
+    run_files = list(stored_runs.glob("*.json"))
     if not run_files:
-        return True, ".argus/runs/ exists, 0 runs stored"
+        return True, f"0 runs stored in {stored_runs}. {hint}"
 
     # Try loading the most recent run to check integrity
     errors = 0
@@ -93,11 +101,13 @@ def _check_storage() -> tuple[bool, str]:
 
 def _check_replay_readiness() -> tuple[bool, str]:
     """Check if the most recent run has node_fn_refs for factory-free replay."""
-    runs_dir = Path.cwd() / ".argus" / "runs"
-    if not runs_dir.exists():
+    from argus.storage import runs_dir  # noqa: PLC0415
+
+    stored_runs = runs_dir(create=False)
+    if not stored_runs.exists():
         return True, "no runs yet — replay readiness will be checked after first run"
 
-    run_files = sorted(runs_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    run_files = sorted(stored_runs.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not run_files:
         return True, "no runs yet"
 

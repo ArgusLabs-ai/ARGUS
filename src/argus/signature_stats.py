@@ -41,7 +41,11 @@ class SignatureStats:
 
 # ── Dispute storage ──────────────────────────────────────────────────────────
 
-_DISPUTES_PATH = Path(".argus/signature_disputes.json")
+
+def _disputes_path() -> Path:
+    from argus.storage import argus_dir  # noqa: PLC0415
+
+    return argus_dir() / "signature_disputes.json"
 
 
 def _ensure_parent(path: Path) -> None:
@@ -51,15 +55,16 @@ def _ensure_parent(path: Path) -> None:
 def load_disputes() -> list[dict[str, Any]]:
     """Load all disputes from disk."""
     try:
-        data = json.loads(_DISPUTES_PATH.read_text(encoding="utf-8"))
+        data = json.loads(_disputes_path().read_text(encoding="utf-8"))
         return data.get("disputes", [])
     except Exception:
         return []
 
 
 def _save_disputes(disputes: list[dict[str, Any]]) -> None:
-    _ensure_parent(_DISPUTES_PATH)
-    _DISPUTES_PATH.write_text(
+    path = _disputes_path()
+    _ensure_parent(path)
+    path.write_text(
         json.dumps({"disputes": disputes}, indent=2),
         encoding="utf-8",
     )
@@ -155,7 +160,9 @@ def compute_stats(
     Returns:
         Dict mapping sig_id to SignatureStats.
     """
-    runs_dir = Path(".argus/runs")
+    from argus.storage import runs_dir as _resolved_runs_dir  # noqa: PLC0415
+
+    runs_dir = _resolved_runs_dir(create=False)
     if not runs_dir.exists():
         return {}
 

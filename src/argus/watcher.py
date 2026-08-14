@@ -124,9 +124,9 @@ class ArgusWatcher:
             import warnings
 
             warnings.warn(
-                f"ArgusWatcher for cyclic graph was garbage-collected without finalize(). "
-                f"Call watcher.finalize() after app.invoke() to persist run data. "
-                f"Run ID: {self._session.run_id}",
+                f"ArgusWatcher for cyclic graph was garbage-collected before invoke() "
+                f"returned. Runs persist when the outermost invoke() returns "
+                f"(finalize() is optional). Run ID: {self._session.run_id}",
                 stacklevel=1,
             )
 
