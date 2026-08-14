@@ -39,10 +39,47 @@ _RUNS_DIR = "runs"
 SCHEMA_VERSION = "1"
 
 
-def _runs_path() -> Path:
-    base = Path(os.getcwd()) / _ARGUS_DIR / _RUNS_DIR
-    base.mkdir(parents=True, exist_ok=True)
+def resolve_project_root(start: Path | None = None) -> Path:
+    """Directory that owns ``.argus/`` (runs, checkpoints, UI).
+
+    Precedence:
+    1. ``ARGUS_DIR`` if set (explicit override)
+    2. nearest ancestor with ``.git`` or ``pyproject.toml``
+    3. nearest ancestor that already has a ``.argus/`` directory
+    4. ``start`` (default: cwd)
+    """
+    env = os.environ.get("ARGUS_DIR", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+
+    here = (start or Path.cwd()).resolve()
+    found_argus: Path | None = None
+    for directory in [here, *here.parents]:
+        if (directory / ".git").exists() or (directory / "pyproject.toml").is_file():
+            return directory
+        if found_argus is None and (directory / _ARGUS_DIR).is_dir():
+            found_argus = directory
+    return found_argus or here
+
+
+def argus_dir(start: Path | None = None) -> Path:
+    """``<project-root>/.argus`` — does not create the directory."""
+    return resolve_project_root(start) / _ARGUS_DIR
+
+
+def runs_dir(*, create: bool = False) -> Path:
+    """``<project-root>/.argus/runs``.
+
+    Pass ``create=True`` when writing (same as ``_runs_path()``).
+    """
+    base = argus_dir() / _RUNS_DIR
+    if create:
+        base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def _runs_path() -> Path:
+    return runs_dir(create=True)
 
 
 def _to_json_serializable(obj: Any) -> Any:
@@ -90,51 +127,71 @@ def save_run(record: RunRecord) -> Path:
     return path
 
 
+def _run_search_roots() -> list[Path]:
+    """Roots to scan for leftover ``.argus/runs`` dirs (legacy cwd writes).
+
+    Project root is always first. Cwd is added only when it is outside the
+    project tree — never walk an ancestor (e.g. ``/``) which would scan the
+    whole filesystem.
+    """
+    project = resolve_project_root()
+    roots = [project]
+    cwd = Path.cwd().resolve()
+    if cwd != project and cwd not in project.parents:
+        roots.append(cwd)
+    return roots
+
+
+def _candidate_runs_dirs() -> list[Path]:
+    """Project-root runs dir first, then nested/legacy ``.argus/runs`` dirs."""
+    primary = _runs_path()
+    seen = {primary.resolve()}
+    dirs = [primary]
+    for root in _run_search_roots():
+        try:
+            for sub_runs in root.rglob(".argus/runs"):
+                resolved = sub_runs.resolve()
+                if resolved in seen or not sub_runs.is_dir():
+                    continue
+                seen.add(resolved)
+                dirs.append(sub_runs)
+        except OSError:
+            continue
+    return dirs
+
+
 def load_run_text(run_id: str) -> str:
     """Return the raw JSON text for a run (by id or 8-char prefix)."""
-    runs_dir = _runs_path()
-    try:
-        return _resolve_run_path(run_id, runs_dir).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        pass
-    cwd = Path(os.getcwd())
-    for sub_runs in cwd.rglob(".argus/runs"):
-        if sub_runs == runs_dir or not sub_runs.is_dir():
-            continue
+    last_error: FileNotFoundError | None = None
+    for directory in _candidate_runs_dirs():
         try:
-            return _resolve_run_path(run_id, sub_runs).read_text(encoding="utf-8")
-        except (FileNotFoundError, ValueError):
+            return _resolve_run_path(run_id, directory).read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            last_error = exc
             continue
-    raise FileNotFoundError(f"No run found for id '{run_id}' under {cwd}")
+    root = resolve_project_root()
+    raise FileNotFoundError(f"No run found for id '{run_id}' under {root}") from last_error
 
 
 def load_run(run_id: str) -> RunRecord:
     """Load a RunRecord by run-id (or 8-char prefix).
 
-    Searches the CWD-level .argus/runs/ first, then recurses into
-    subdirectories so runs recorded from child folders are found.
+    Prefers ``<project-root>/.argus/runs/`` so CLI and UI agree, then
+    searches nested/legacy ``.argus/runs`` directories under the project
+    (and cwd, if cwd is outside the project).
     """
-    runs_dir = _runs_path()
-    try:
-        path = _resolve_run_path(run_id, runs_dir)
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return _deserialize_run(data)
-    except FileNotFoundError:
-        pass
-
-    # Search all .argus/runs/ directories under CWD
-    cwd = Path(os.getcwd())
-    for sub_runs in cwd.rglob(".argus/runs"):
-        if sub_runs == runs_dir or not sub_runs.is_dir():
-            continue
+    last_error: FileNotFoundError | None = None
+    for directory in _candidate_runs_dirs():
         try:
-            path = _resolve_run_path(run_id, sub_runs)
+            path = _resolve_run_path(run_id, directory)
             data = json.loads(path.read_text(encoding="utf-8"))
             return _deserialize_run(data)
-        except (FileNotFoundError, ValueError):
+        except FileNotFoundError as exc:
+            last_error = exc
             continue
 
-    raise FileNotFoundError(f"No run found for id '{run_id}' under {cwd}")
+    root = resolve_project_root()
+    raise FileNotFoundError(f"No run found for id '{run_id}' under {root}") from last_error
 
 
 def _run_json_files_newest_first(runs_dir: Path) -> list[Path]:

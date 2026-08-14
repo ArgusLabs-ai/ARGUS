@@ -630,6 +630,7 @@ def test_cyclic_graph_warns_without_finalize():
         watcher.__del__()
         assert len(w) == 1
         assert "cyclic graph" in str(w[0].message).lower()
+        assert "invoke()" in str(w[0].message)
         assert "finalize()" in str(w[0].message)
 
 

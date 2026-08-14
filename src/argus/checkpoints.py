@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_ARGUS_DIR = ".argus"
+from argus.storage import argus_dir
+
 _CHECKPOINTS_DIR = "checkpoints"
 
 
 def _checkpoints_path() -> Path:
-    base = Path(os.getcwd()) / _ARGUS_DIR / _CHECKPOINTS_DIR
+    base = argus_dir() / _CHECKPOINTS_DIR
     base.mkdir(parents=True, exist_ok=True)
     return base
 

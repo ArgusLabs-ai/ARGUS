@@ -267,18 +267,10 @@ def save_http_interactions(run_id: str, interactions: list[dict[str, Any]]) -> P
 
 def load_http_interactions(run_id: str) -> list[dict[str, Any]] | None:
     """Load recorded HTTP interactions for a run. Returns None if not found."""
-    from argus.storage import _runs_path
+    from argus.storage import _candidate_runs_dirs  # noqa: PLC0415
 
-    path = _runs_path() / f"{run_id}.http.json"
-    if not path.exists():
-        # Search subdirectories
-        import os
-        from pathlib import Path as P
-
-        cwd = P(os.getcwd())
-        for sub_runs in cwd.rglob(".argus/runs"):
-            candidate = sub_runs / f"{run_id}.http.json"
-            if candidate.exists():
-                return json.loads(candidate.read_text(encoding="utf-8"))
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    for directory in _candidate_runs_dirs():
+        candidate = directory / f"{run_id}.http.json"
+        if candidate.exists():
+            return json.loads(candidate.read_text(encoding="utf-8"))
+    return None
