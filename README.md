@@ -14,15 +14,41 @@ Your LangGraph pipeline runs fine — no exception. But three nodes later, somet
 
 ---
 
-## Install
+## How to use ARGUS
+
+**1. Install**
 
 ```bash
 pip install argus-agents
 ```
 
-This is the full product: the `argus` CLI, the LangGraph adapter, and the local UI (`argus ui`). ARGUS runs **fully local** — runs are stored in `.argus/runs/`, no account, no cloud, no signup. Heuristic detection (150+ signatures) works out of the box.
+CLI, LangGraph adapter, and UI. Fully local. Package name is **`argus-agents`**, not `argus`.
 
-The PyPI package is **`argus-agents`**, not `argus`.
+**2. Paste the AI setup prompt**
+
+Go to [arguslabs.in](https://arguslabs.in), copy **AI Setup Prompt**, paste it into Cursor / Claude / ChatGPT. It wires `attach()` into your graph.
+
+<img src="https://github.com/VaradDurge/ARGUS/blob/master/assets/Argus%20Guidelines%20and%20Contribution.png?raw=true" width="700"/>
+
+**3. Run your pipeline**
+
+Same as always. ARGUS watches in the background and saves the run.
+
+**4. See what it caught**
+
+```bash
+argus ui
+# or
+argus show last
+```
+
+**Optional — smarter detection**
+
+```bash
+argus key set
+```
+
+Skip this and you still get heuristics.
 
 ## Bring Your Own Key (BYOK)
 
@@ -50,42 +76,11 @@ You pick the **provider**; ARGUS picks a sensible balanced model for each intern
 
 No key? ARGUS still works — it falls back to heuristic-only detection, no crashes.
 
-## Getting Started (AI-Powered Setup)
-
-The fastest way to set up ARGUS — let your AI assistant handle the integration:
-
-**1. Go to [arguslabs.in](https://arguslabs.in)**
-
-**2. Click on "AI Setup Prompt"**
-
-<img src="https://github.com/VaradDurge/ARGUS/blob/master/assets/Argus%20Guidelines%20and%20Contribution.png?raw=true" width="700"/>
-
-**3. Copy the prompt and paste it into your AI assistant** (Claude, ChatGPT, Cursor, etc.) — it will handle the full setup for you. This is the **most important step**.
-
-**4. (Optional) Log in for hosted cloud sync**
-
-```bash
-argus login
-```
-
-Signing in with Google enables **hosted** cloud sync and the shared trends registry — part of the managed/enterprise tier. It is **entirely optional**: the open-source package is fully local and needs no login. (`argus login` reports "hosted-only feature" unless a hosted backend is configured.)
-
-**5. Open the dashboard**
-
-```bash
-argus ui
-```
-
-That's it. ARGUS is set up and ready to go.
-
-### After Setup
-
-- Run your LangChain/LangGraph pipeline as usual (in terminal)
-- Check the dashboard for your recent run (takes 1–2 seconds to appear — refresh if needed)
+Hosted cloud sync (`argus login`) is optional and only applies if a hosted backend is configured.
 
 ---
 
-## Quick Start
+## Quick Start (manual)
 
 ```python
 from argus import ArgusWatcher
