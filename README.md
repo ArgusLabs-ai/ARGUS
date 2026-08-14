@@ -24,16 +24,6 @@ This is the full product: the `argus` CLI, the LangGraph adapter, and the local 
 
 The PyPI package is **`argus-agents`**, not `argus`.
 
-<details>
-<summary>Optional extras</summary>
-
-LLM-powered features (semantic judge, investigator) stay optional:
-
-```bash
-pip install "argus-agents[llm]"     # OpenAI client + python-dotenv for the LLM judge
-```
-</details>
-
 ## Bring Your Own Key (BYOK)
 
 AI-powered detection (the semantic judge, LLM investigator, learned trends) uses **your own** key from the provider of your choice — **OpenAI**, **Anthropic** (Claude), or **Google** (Gemini). Set it once and it's saved locally for every future session:

@@ -20,8 +20,6 @@ body:
       label: How did you install it?
       options:
         - "pip install argus-agents"
-        - "pip install 'argus-agents[llm]'"
-        - "pip install 'argus-agents[all]'"
         - "other / from source"
     validations:
       required: true

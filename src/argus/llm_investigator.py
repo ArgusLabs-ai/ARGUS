@@ -8,7 +8,7 @@ confidently explain.
 The LLM acts as a semantic forensic investigator — it never becomes the primary
 detector, never mutates runtime execution, and never auto-modifies heuristics.
 
-Requires: pip install openai   (or argus-agents[llm])
+LLM calls use a saved key (`argus key set`) or env var. No extra pip extra.
 """
 
 from __future__ import annotations

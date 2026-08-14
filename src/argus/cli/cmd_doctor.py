@@ -160,30 +160,8 @@ def _check_package_identity() -> tuple[bool, str]:
 
 
 def _check_optional_deps() -> tuple[bool, str]:
-    parts: list[str] = []
-
-    # OpenAI for LLM investigation (optional extra)
-    try:
-        import openai  # type: ignore[import]  # noqa: F401
-
-        from argus.llm_proxy import is_available as _llm_ok
-
-        if _llm_ok():
-            parts.append("openai ✓ (proxy active)")
-        else:
-            parts.append("openai ✓ (not logged in — run: argus login)")
-    except ImportError:
-        parts.append("openai ✗ (pip install argus-agents[llm])")
-
-    # python-dotenv
-    try:
-        import dotenv  # type: ignore[import]  # noqa: F401
-
-        parts.append("dotenv ✓")
-    except ImportError:
-        parts.append("dotenv ✗ (pip install argus-agents[llm])")
-
-    return True, ", ".join(parts)
+    """UI report payload only. LLM is key-gated; no pip extra."""
+    return True, "no extra packages required (LLM: argus key set)"
 
 
 def _check_llm_mode() -> tuple[bool, str]:
@@ -227,7 +205,6 @@ def doctor() -> None:
         ("storage", _check_storage),
         ("llm", _check_llm_mode),
         ("replay", _check_replay_readiness),
-        ("optional deps", _check_optional_deps),
     ]
 
     all_passed = True

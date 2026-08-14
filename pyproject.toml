@@ -35,13 +35,10 @@ cli = [
 langgraph = [
     "langgraph>=0.2.0",
 ]
-llm = [
-    "openai>=1.0.0",
-    "python-dotenv>=1.0.0",
-]
-all = [
-    "argus-agents[llm]",
-]
+# Empty: LLM features use stdlib HTTP + `argus key set`. Kept so older
+# `pip install argus-agents[llm]` / `[all]` commands still resolve.
+llm = []
+all = []
 dev = [
     "argus-agents[all]",
     "pytest>=8.0.0",

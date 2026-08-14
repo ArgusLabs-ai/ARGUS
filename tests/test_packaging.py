@@ -39,10 +39,11 @@ def test_default_install_does_not_pull_openai():
 
 
 @pytest.mark.unit
-def test_llm_extra_is_optional():
+def test_llm_extra_is_empty_noop():
+    """Older `pip install argus-agents[llm]` still resolves; it installs nothing extra."""
     llm = _joined(_extra_requirements("llm"))
-    assert "openai" in llm
-    assert "python-dotenv" in llm or "dotenv" in llm
+    assert "openai" not in llm
+    assert "dotenv" not in llm
 
 
 @pytest.mark.unit
@@ -91,13 +92,13 @@ def test_doctor_langgraph_missing_points_at_default_install(monkeypatch):
 
 
 @pytest.mark.unit
-def test_doctor_optional_deps_does_not_suggest_cli_or_langgraph_extra():
+def test_doctor_does_not_suggest_install_extras():
     import argus.cli.cmd_doctor as d
 
-    ok, msg = d._check_optional_deps()
-    assert ok is True
-    assert "[cli]" not in msg
-    assert "[langgraph]" not in msg
+    source = Path(d.__file__).read_text(encoding="utf-8")
+    assert "[cli]" not in source
+    assert "[langgraph]" not in source
+    assert "[llm]" not in source
 
 
 @pytest.mark.unit
