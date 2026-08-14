@@ -31,10 +31,7 @@ LLM-powered features (semantic judge, investigator) stay optional:
 
 ```bash
 pip install "argus-agents[llm]"     # OpenAI client + python-dotenv for the LLM judge
-pip install "argus-agents[all]"     # same as [llm] — default product + LLM extra
 ```
-
-`[cli]` and `[langgraph]` extras still exist so older install commands keep working; both already ship in the default install.
 </details>
 
 ## Bring Your Own Key (BYOK)

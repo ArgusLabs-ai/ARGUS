@@ -464,9 +464,8 @@ export default function GuideContent() {
     ),
 )
 
-app = graph.compile()
-result = app.invoke(initial_state)
-# persisted automatically — or app = watcher.attach(compiled_app)`}
+app = watcher.attach(graph)
+result = app.invoke(initial_state)`}
         </CodeBlock>
 
         <p className="text-[15px] text-muted-foreground leading-[1.7] mb-4">
