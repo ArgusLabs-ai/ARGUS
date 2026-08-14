@@ -36,7 +36,7 @@ Find the file where my StateGraph is defined and check these things:
    def search(state: AgentState) -> dict:
        return {"results": [...]}
 
-3. GRAPH STRUCTURE: Linear, fan-out/fan-in (DAG), and cyclic (loops / back-edges) all persist automatically after invoke() — no finalize() call needed.
+3. GRAPH STRUCTURE: Linear, fan-out/fan-in (DAG), and cyclic (loops / back-edges) all persist automatically after the outermost invoke()/batch()/stream() returns — no finalize() call needed.
 
 4. ASYNC CHECK: If node functions are async (async def), ARGUS handles both — just make sure you're using await app.ainvoke() not app.invoke().
 
@@ -480,7 +480,7 @@ result = app.invoke(initial_state)`}
           <p className="text-[14px] leading-[1.7]">
             <strong className="text-foreground">Use <Code>watcher.attach(graph)</Code> — one call for StateGraph or compiled apps.</strong>
             <span className="text-muted-foreground">
-              {' '}Runs persist when <Code>invoke()</Code> returns, including cyclic graphs.
+              {' '}Runs persist when the outermost <Code>invoke()</Code> / <Code>batch()</Code> / <Code>stream()</Code> returns, including cyclic graphs.
               <Code>finalize()</Code> is an optional idempotent flush, not required.
             </span>
           </p>

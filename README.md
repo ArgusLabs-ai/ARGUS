@@ -107,7 +107,7 @@ result = app.invoke(initial_state)  # run is persisted automatically
 
 ARGUS monitors every node, detects failures, and saves the run. No changes to your node functions.
 
-> **`finalize()` is optional.** `attach()` wraps `invoke()` / `ainvoke()` so the run is written to `.argus/runs/` when the call returns — including cyclic graphs. Calling `watcher.finalize()` afterwards is a no-op.
+> **`finalize()` is optional.** `attach()` wraps `invoke()` / `ainvoke()` / `batch()` / `abatch()` / `stream()` so the run is written to `.argus/runs/` when the outermost call returns — including cyclic graphs. Calling `watcher.finalize()` afterwards is a no-op.
 
 Constructor form still works if you compile yourself:
 
