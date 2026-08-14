@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0 — 2026-08-14
+
+- Default `pip install argus-agents` ships CLI, LangGraph adapter, and UI
+- `ArgusWatcher.attach(graph)` is the one API (StateGraph or compiled); `invoke()` persists — no `finalize()` required
+- `batch` / `abatch` / `stream` persist once when the outermost call returns
+- LLM judge is opt-in via `argus key set` (or env); no `[llm]` extra. No key → heuristics only
+- README, guide, and arguslabs.in docs match the new install and attach path
+
 ## 0.4.4 — 2026-05-26
 
 - Detection engine expanded: 7 new failure patterns across truncated outputs, retrieval quality, hallucinated success, confidence-behavior mismatch, shallow summaries, partial tool failures, corrupted structured output
