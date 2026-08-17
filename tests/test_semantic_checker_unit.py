@@ -3,8 +3,15 @@ import json
 
 import pytest
 
-from argus.models import AnomalySignal, InspectionResult, ToolFailure, ValidatorResult
+from argus.models import (
+    AnomalySignal,
+    InspectionResult,
+    SemanticSignal,
+    ToolFailure,
+    ValidatorResult,
+)
 from argus.semantic_checker import (
+    _coerce_verdict,
     _compact_dict,
     _extract_json_object,
     _truncate,
@@ -70,7 +77,8 @@ class TestSemanticCheckerMalformed:
         assert result.passed is True
         assert result.evaluated is False
 
-    def test_no_choices_defaults_pass(self, monkeypatch):
+    def test_no_choices_is_a_skip_not_a_pass(self, monkeypatch):
+        """No completion means no verdict — must not read as an evaluated pass."""
         monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
         monkeypatch.setattr("argus.llm_proxy.create_chat_completion", lambda **kwargs: {
             "choices": [],
@@ -78,6 +86,8 @@ class TestSemanticCheckerMalformed:
         })
         result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
         assert result.passed is True
+        assert result.evaluated is False
+        assert "no completion" in result.reason
 
     def test_error_in_result(self, monkeypatch):
         monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
@@ -238,3 +248,163 @@ class TestJudgeJsonResilience:
             assert "skipped" in result.reason
         else:
             assert result.passed is False
+
+
+@pytest.mark.unit
+class TestCoerceVerdict:
+    """A judge field is a verdict only if it is present and interpretable."""
+
+    def test_real_booleans_pass_through(self):
+        assert _coerce_verdict(True) is True
+        assert _coerce_verdict(False) is False
+
+    def test_string_booleans_are_read_by_value(self):
+        # bool("false") is True — reading these with bool() inverts the verdict.
+        assert _coerce_verdict("false") is False
+        assert _coerce_verdict("no") is False
+        assert _coerce_verdict("true") is True
+        assert _coerce_verdict("yes") is True
+
+    def test_string_booleans_tolerate_case_and_padding(self):
+        assert _coerce_verdict("  FALSE  ") is False
+        assert _coerce_verdict("True") is True
+
+    def test_uninterpretable_values_are_not_verdicts(self):
+        for value in (None, "", "maybe", "pass", 1, 0, 0.9, [], {}, ["true"]):
+            assert _coerce_verdict(value) is None, value
+
+
+@pytest.mark.unit
+class TestJudgeVerdictRequired:
+    """A parseable judge response is not automatically a verdict.
+
+    Every one of these used to return passed=True with evaluated=True, which
+    is indistinguishable from a genuine pass at the call site.
+    """
+
+    def test_missing_pass_key_is_a_skip(self, monkeypatch):
+        _mock_llm(monkeypatch, {"reason": "ok"})
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
+        assert result.evaluated is False
+        assert result.passed is True  # skip results stay non-blocking
+        assert "no pass/fail verdict" in result.reason
+
+    def test_verdictless_response_carrying_confidence_is_a_skip(self, monkeypatch):
+        """The shape with teeth: no verdict, but confidence high enough to act on.
+
+        session._apply_judge_verdict overrides a heuristic failure to "pass"
+        when passed is True and confidence >= 0.7, and records the override in
+        the feedback store. A fabricated verdict must never reach that branch.
+        """
+        _mock_llm(monkeypatch, {"reason": "looks fine", "confidence": 0.95})
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
+        assert result.evaluated is False
+        assert result.confidence == 0.0
+
+    def test_empty_json_object_is_a_skip(self, monkeypatch):
+        _mock_llm(monkeypatch, {})
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
+        assert result.evaluated is False
+
+    def test_null_pass_is_a_skip(self, monkeypatch):
+        _mock_llm(monkeypatch, {"pass": None, "reason": "could not decide"})
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
+        assert result.evaluated is False
+
+    def test_non_boolean_pass_is_a_skip(self, monkeypatch):
+        _mock_llm(monkeypatch, {"pass": "maybe", "reason": "unsure", "confidence": 0.9})
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
+        assert result.evaluated is False
+
+    def test_string_false_verdict_is_a_fail(self, monkeypatch):
+        """bool("false") is True — this used to invert an explicit failure."""
+        _mock_llm(monkeypatch, {"pass": "false", "reason": "unrelated", "confidence": 0.9})
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
+        assert result.evaluated is True
+        assert result.passed is False
+        assert result.confidence == 0.9
+
+    def test_string_true_verdict_is_a_pass(self, monkeypatch):
+        _mock_llm(monkeypatch, {"pass": "true", "reason": "fine", "confidence": 0.8})
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
+        assert result.evaluated is True
+        assert result.passed is True
+
+    def test_genuine_verdicts_still_evaluate(self, monkeypatch):
+        """Guard against the fix swallowing real rulings."""
+        for verdict in (True, False):
+            _mock_llm(monkeypatch, {"pass": verdict, "reason": "r", "confidence": 0.9})
+            result, _ = check_semantic_coherence("node_a", {"q": "hi"}, {"a": "yo"})
+            assert result.evaluated is True
+            assert result.passed is verdict
+
+
+def _signal(sig_id="PH-001"):
+    return SemanticSignal(
+        sig_id=sig_id,
+        category="placeholder_outputs",
+        severity="warning",
+        description="looks like placeholder text",
+        field_path=("result", "summary"),
+        evidence="TODO: fill this in",
+        confidence=0.5,
+    )
+
+
+@pytest.mark.unit
+class TestDisambiguationVerdicts:
+    def test_string_false_is_failure_is_not_a_failure(self, monkeypatch):
+        """Same coercion trap as `pass`, on the per-signal verdicts."""
+        _mock_llm(
+            monkeypatch,
+            {
+                "pass": True,
+                "reason": "ok",
+                "confidence": 0.9,
+                "disambiguation_verdicts": [
+                    {"sig_id": "PH-001", "is_failure": "false", "confidence": 0.8,
+                     "reason": "legitimate"}
+                ],
+            },
+        )
+        _, dis = check_semantic_coherence(
+            "node_a", {"q": "hello"}, {"a": "world"}, ambiguous_signals=[_signal()]
+        )
+        assert len(dis) == 1
+        assert dis[0].llm_verdict is False
+
+    def test_uninterpretable_is_failure_keeps_the_conservative_default(self, monkeypatch):
+        """The prompt says "when in doubt, is_failure=true" — preserve that."""
+        _mock_llm(
+            monkeypatch,
+            {
+                "pass": True,
+                "reason": "ok",
+                "confidence": 0.9,
+                "disambiguation_verdicts": [
+                    {"sig_id": "PH-001", "confidence": 0.8, "reason": "no verdict given"}
+                ],
+            },
+        )
+        _, dis = check_semantic_coherence(
+            "node_a", {"q": "hello"}, {"a": "world"}, ambiguous_signals=[_signal()]
+        )
+        assert len(dis) == 1
+        assert dis[0].llm_verdict is True
+
+    def test_verdictless_coherence_response_drops_disambiguation(self, monkeypatch):
+        """Skips return no verdicts, matching every other skip path."""
+        _mock_llm(
+            monkeypatch,
+            {
+                "reason": "ok",
+                "disambiguation_verdicts": [
+                    {"sig_id": "PH-001", "is_failure": True, "confidence": 0.8}
+                ],
+            },
+        )
+        result, dis = check_semantic_coherence(
+            "node_a", {"q": "hello"}, {"a": "world"}, ambiguous_signals=[_signal()]
+        )
+        assert result.evaluated is False
+        assert dis == []
