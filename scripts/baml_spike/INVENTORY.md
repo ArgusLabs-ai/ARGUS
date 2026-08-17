@@ -49,7 +49,7 @@ argus.llm_correlator               1x      UNREACHABLE  shared proxy    yes
 argus.llm_investigator             3x      reachable    shared proxy    yes
 argus.loop_analyzer                1x      UNREACHABLE  shared proxy    MISSING
 argus.semantic_checker             1x      reachable    shared proxy    yes
-argus.signature_generalizer        1x      reachable    direct OpenAI   yes
+argus.signature_generalizer        1x      reachable    shared proxy    yes
 argus.source_locator               1x      reachable    shared proxy    yes
 ```
 
@@ -146,16 +146,28 @@ retry/timeout policy". Against the source:
 
 | Timeout | Site | Live? |
 |---|---|---|
-| 5.0s | `semantic_checker` (now `8.0 if amb else 5.0`) | ✅ |
+| 5.0s / 8.0s | `semantic_checker` (`8.0 if amb else 5.0`) | ✅ |
 | 8.0s | `heuristic_disambiguator` | ❌ dead |
 | 15.0s | `llm_correlator` | ❌ dead |
-| 30.0s default | `llm_investigator`, `source_locator`, `signature_generalizer` | ✅ |
+| 15.0s | `signature_generalizer` (added by B2, #18) | ✅ |
+| 30.0s default | `llm_investigator`, `source_locator` | ✅ |
 
-`semantic_checker` is the **only** live site that passes a `timeout=` at all —
-the other three take the 30.0s default. The live requirement is two distinct
-values, not four. That shrinks P7 considerably: the `threading.Timer` +
-`AbortController` wrapper FINDINGS.md called the sharpest constraint on
-adoption has to reproduce one explicit override, not a per-site matrix.
+Two live sites pass an explicit `timeout=`: `semantic_checker` and
+`signature_generalizer`. The other two take the 30.0s default. Neither of the
+tracker's own overrides — the 8.0s and the 15.0s — is on live code; the one
+live 15.0s is a different site that happens to share the number.
+
+So P7's `threading.Timer` + `AbortController` wrapper has to reproduce two
+explicit overrides plus a default, not the per-site matrix §4 implies. Smaller
+than four, larger than it looked before #18.
+
+> **This row moved.** Measured before #18, `signature_generalizer` was on a
+> direct OpenAI client with no timeout at all, and this section said
+> `semantic_checker` was the only live site passing one. #18 put it on the
+> shared proxy and gave it a 15.0s bound, which is why the table above differs
+> from the version first published here. `check_inventory.py` reads transport
+> from imports, so its output tracked the change on its own; this prose did
+> not, and was corrected by hand.
 
 **§5 / B3 — the recommended pilot is off the table**, and so is the fallback,
 since §5's two candidates were `semantic_checker` and
@@ -189,8 +201,8 @@ runtime data. A declared schema buys little where the shape is a map with
 arbitrary keys.
 
 **4. `signature_generalizer.py` — not a candidate.** It returns a raw regex
-string, not JSON. There is no schema to align. (B2 moves it onto the shared
-proxy path; that is a transport fix, unrelated to parsing.)
+string, not JSON. There is no schema to align. (B2/#18 moved it onto the shared
+proxy path; that was a transport fix, unrelated to parsing.)
 
 **Suggestion: `semantic_checker` for a low-risk integration proof, or
 `llm_investigator` if the pilot is meant to answer whether BAML earns its
