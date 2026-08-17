@@ -22,16 +22,12 @@ from __future__ import annotations
 
 import json
 import operator
-import os
-from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
-import pytest
 from langgraph.graph import END, StateGraph
 
 from argus import ArgusWatcher
 from argus.storage import load_run
-
 
 # ── State schemas ────────────────────────────────────────────────────────────
 
@@ -84,7 +80,10 @@ class TestHappyPath:
 
         def summarize(state, **kw):
             return {
-                "summary": "AI safety research covers alignment, interpretability, and robustness.",
+                "summary": (
+                    "AI safety research covers alignment, interpretability, "
+                    "and robustness."
+                ),
                 "messages": ["summarize: done"],
             }
 
@@ -234,7 +233,10 @@ class TestSemanticDegradation:
 
         def refusing_llm(state, **kw):
             return {
-                "summary": "I cannot provide information on this topic as it may violate guidelines.",
+                "summary": (
+                    "I cannot provide information on this topic as it may "
+                    "violate guidelines."
+                ),
                 "messages": ["refusing_llm: refused"],
             }
 
@@ -489,7 +491,8 @@ class TestRedaction:
             {"query": "test"},
             redact_keys={"api_key", "password"},
         )
-        record = load_run(run_id)
+        # The redacted record must still round-trip through the deserializer.
+        assert load_run(run_id) is not None
 
         # Load raw JSON to check redaction on disk
         run_path = tmp_path / ".argus" / "runs" / f"{run_id}.json"
