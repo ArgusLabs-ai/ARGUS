@@ -168,6 +168,40 @@ def _repair_truncated_json(fragment: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+_TRUE_STRINGS = frozenset({"true", "yes", "1"})
+_FALSE_STRINGS = frozenset({"false", "no", "0"})
+
+
+def _coerce_verdict(value: Any) -> bool | None:
+    """Read a judge's boolean field, or None if it isn't a usable verdict.
+
+    Accepts real booleans, the string forms models emit under JSON mode, and
+    the 0/1 integers they substitute for booleans. Everything else — a missing
+    key, null, a confidence-shaped float, a sentence — means the judge gave no
+    verdict, and the caller must skip rather than invent one.
+
+    `bool()` is the wrong tool here: bool("false") and bool("no") are both
+    True, so a judge explicitly saying no would be recorded as a yes.
+
+    0 and 1 are read rather than skipped because skipping loses a verdict the
+    judge did give. Only those two integers qualify; anything else in that
+    field is not a boolean the model got slightly wrong, and `1.0`/`0.9` are
+    excluded by the isinstance check because a float there reads as a
+    confidence that landed in the wrong key.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in _TRUE_STRINGS:
+            return True
+        if s in _FALSE_STRINGS:
+            return False
+    return None
+
+
 def _skip_result(reason: str, model: str, ms: float) -> SemanticCheckResult:
     return SemanticCheckResult(
         passed=True,
@@ -295,7 +329,10 @@ def check_semantic_coherence(
             return _skip_result(f"check skipped: {result['error']}", model, elapsed), []
 
         choices = result.get("choices", [])
-        raw = choices[0]["message"]["content"] if choices else "{}"
+        if not choices:
+            # No completion at all — the judge never ruled on anything.
+            return _skip_result("check skipped: judge returned no completion", model, elapsed), []
+        raw = choices[0]["message"]["content"]
         parsed = _extract_json_object(raw)
         if parsed is None:
             return _skip_result(
@@ -303,10 +340,22 @@ def check_semantic_coherence(
                 model,
                 elapsed,
             ), []
+
+        # A parseable body is not the same as a verdict. Defaulting a missing
+        # or uninterpretable "pass" to True reports a fabricated ruling as a
+        # real one (evaluated=True), which the caller may then act on.
+        verdict = _coerce_verdict(parsed.get("pass"))
+        if verdict is None:
+            return _skip_result(
+                "check skipped: judge response carried no pass/fail verdict",
+                model,
+                elapsed,
+            ), []
+
         usage = result.get("usage", {})
 
         sc = SemanticCheckResult(
-            passed=bool(parsed.get("pass", True)),
+            passed=verdict,
             reason=str(parsed.get("reason", "")),
             confidence=float(parsed.get("confidence", 0.0)),
             model=model,
@@ -325,6 +374,10 @@ def check_semantic_coherence(
                 if sid not in sig_map:
                     continue
                 signal = sig_map[sid]
+                # Same coercion trap as "pass" above. Here an unreadable
+                # verdict keeps the prompt's documented default (treat as a
+                # failure) instead of skipping the signal.
+                is_failure = _coerce_verdict(v.get("is_failure"))
                 dis_results.append(
                     DisambiguationResult(
                         sig_id=sid,
@@ -334,7 +387,7 @@ def check_semantic_coherence(
                             else signal.field_path
                         ),
                         original_confidence=signal.confidence,
-                        llm_verdict=bool(v.get("is_failure", True)),
+                        llm_verdict=True if is_failure is None else is_failure,
                         llm_confidence=float(v.get("confidence", 0.5)),
                         llm_reason=str(v.get("reason", "")),
                         model=model,

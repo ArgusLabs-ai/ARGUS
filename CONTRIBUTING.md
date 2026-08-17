@@ -68,6 +68,16 @@ The test suite is currently integration/smoke-style. Dedicated unit tests are ne
 - `heuristic_engine.py` — pattern matching and candidate promotion
 - `cloud.py` — Supabase sync logic
 
+### Detection Improvements for Complex Pipelines
+
+Stress-testing with real-world pipeline patterns revealed areas where detection could be stronger. These are concrete improvements, not bugs — the current behavior is conservative by design, but better coverage would catch more issues in production:
+
+- **Terminal node degradation** — when the last node in a pipeline operates on degraded upstream data but produces syntactically valid output, ARGUS marks it `pass`. It correctly blames the upstream node, but the terminal node looks clean. A `degraded_input` status on terminal nodes (even without successor validation) would give clearer signal.
+- **`has_tool_failure` vs warning-severity failures** — rate limits (HTTP 429), partial batch failures, and nested errors are all detected in `tool_failures` but with `severity="warning"`. The boolean `has_tool_failure` only fires on `"critical"`. Consumers checking only the boolean miss these. Options: a separate `has_tool_warnings` flag, or promote rate limits to critical.
+- **Domain-specific hedging detection** — the semantic registry catches "I apologize" and "As an AI" but misses domain hedging like "No documents available" or "Unable to retrieve data". More signatures in `data/signatures.json` for retrieval-failure and empty-result hedging would help.
+- **Subtle field drops in untyped pipelines** — if a node silently drops a field and no downstream node crashes or has type annotations, ARGUS stays quiet. This is correct (no consumer complained), but optional structural warnings for fields present in input but absent in output would catch data loss earlier.
+- **Confidence-mismatch escalation** — a node returning `confidence: 0.98` with `documents: []` gets flagged for the empty list but not for the contradiction. A cross-field coherence check (high confidence + empty/error data = suspicious) would catch nodes that lie about their certainty.
+
 ### Documentation
 
 - **Framework-specific guides** — step-by-step setup for CrewAI, Google ADK, AutoGen, etc. (once adapters ship)
@@ -127,6 +137,17 @@ For bug reports, include:
 - Keep PRs focused — one fix or feature per PR
 - For new detection logic, include a fixture run that the old code misses and the new code catches
 - Don't add co-author attribution in commits
+- **Update docs with your PR.** If your change adds, moves, or removes a module, updates a public API, or changes how something works — update `CLAUDE.md` (architecture notes, key files table) and any relevant docs in the same PR. Don't leave it for a follow-up.
+- **Add a label to your PR.** Pick the one that fits best:
+
+  | Label | When to use |
+  |-------|-------------|
+  | `bugfix` | Fixes a bug |
+  | `enhancement` | New feature or capability |
+  | `refactor` | Internal restructuring, no behavior change |
+  | `investigation` | Spike or research — no production code touched |
+  | `documentation` | Docs-only changes |
+  | `dead-code` | Removing unreachable or unused code |
 
 ## Contribution Terms (CLA)
 
