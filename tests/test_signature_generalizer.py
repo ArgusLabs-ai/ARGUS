@@ -10,6 +10,7 @@ import pytest
 from argus.models import SuggestedSignature
 from argus.signature_generalizer import (
     _heuristic_generalize,
+    _llm_generalize,
     cluster_with_existing,
     generalize_signature,
 )
@@ -150,6 +151,137 @@ def test_no_api_key_graceful_fallback():
     # Heuristic should still produce a regex
     assert result.match_strategy == "regex"
     assert result.generalized is True
+
+
+# ── LLM transport tests ─────────────────────────────────────────────────────
+
+
+def _mock_llm(monkeypatch, content, available=True):
+    """Point _llm_generalize at a fake shared LLM path, return captured kwargs."""
+    captured: dict[str, object] = {}
+
+    def _fake(**kw):
+        captured.update(kw)
+        return {"choices": [{"message": {"content": content}}]}
+
+    monkeypatch.setattr("argus.llm_proxy.is_available", lambda: available)
+    monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _fake)
+    return captured
+
+
+@pytest.mark.unit
+def test_llm_generalize_uses_shared_llm_path(monkeypatch):
+    """The regex comes back off llm_proxy, not a module-local OpenAI client."""
+    _mock_llm(monkeypatch, r"(?:cannot|can't)\s+(?:provide|give)\s+\S+\s+advice")
+    result = _llm_generalize(
+        "I cannot provide financial advice",
+        ("I cannot provide financial advice",),
+    )
+    assert result == r"(?:cannot|can't)\s+(?:provide|give)\s+\S+\s+advice"
+
+
+@pytest.mark.unit
+def test_llm_generalize_never_touches_embedding_store_client(monkeypatch):
+    """Generalization no longer needs the caller's own OPENAI_API_KEY.
+
+    A user on Anthropic or Gemini has no OpenAI client to build; before this
+    went through llm_proxy they got no LLM generalization at all.
+    """
+
+    def _boom():
+        raise AssertionError("_get_client must not be called")
+
+    monkeypatch.setattr("argus.embedding_store._get_client", _boom)
+    _mock_llm(monkeypatch, r"unable\s+to\s+\S+\s+guidance")
+    result = _llm_generalize(
+        "unable to offer guidance",
+        ("unable to offer guidance",),
+    )
+    assert result == r"unable\s+to\s+\S+\s+guidance"
+
+
+@pytest.mark.unit
+def test_llm_generalize_asks_for_the_cheap_tier_with_a_bounded_timeout(monkeypatch):
+    """The call is bounded and tier-hinted so resolve_model() can remap it."""
+    captured = _mock_llm(monkeypatch, r"a\s+b\s+c")
+    _llm_generalize("a b c", ("a b c",))
+    assert captured["model"] == "gpt-4o-mini"
+    assert captured["timeout"] == 15.0
+    assert captured["max_tokens"] == 300
+    assert captured["temperature"] == 0.0
+    # Free-text regex, not JSON — no response_format is imposed.
+    assert "response_format" not in captured
+
+
+@pytest.mark.unit
+def test_llm_generalize_returns_none_when_no_llm_configured(monkeypatch):
+    """No key and not logged in — skip the call entirely, caller falls back."""
+    _mock_llm(monkeypatch, "irrelevant", available=False)
+    assert _llm_generalize("a b c", ("a b c",)) is None
+
+
+@pytest.mark.unit
+def test_llm_generalize_returns_none_on_transport_error(monkeypatch):
+    """llm_proxy reports failure in-band as {"error": ...}, not by raising."""
+    monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
+    monkeypatch.setattr(
+        "argus.llm_proxy.create_chat_completion",
+        lambda **kw: {"error": "Daily limit reached (200 calls/day)."},
+    )
+    assert _llm_generalize("a b c", ("a b c",)) is None
+
+
+@pytest.mark.unit
+def test_llm_generalize_returns_none_on_exception(monkeypatch):
+    """An unexpected raise still fails open."""
+    monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
+
+    def _raise(**kw):
+        raise ConnectionError("timeout")
+
+    monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _raise)
+    assert _llm_generalize("a b c", ("a b c",)) is None
+
+
+@pytest.mark.unit
+def test_llm_generalize_strips_code_fences(monkeypatch):
+    """Models that wrap the regex in a fenced block still produce a pattern."""
+    _mock_llm(monkeypatch, "```python\ncannot\\s+provide\n```")
+    result = _llm_generalize("cannot provide", ("I cannot provide",))
+    assert result == r"cannot\s+provide"
+
+
+@pytest.mark.unit
+def test_llm_generalize_rejects_pattern_that_misses_evidence(monkeypatch):
+    """A regex too narrow for its own evidence is discarded."""
+    _mock_llm(monkeypatch, r"completely\s+unrelated")
+    assert _llm_generalize("a b c", ("I cannot provide advice",)) is None
+
+
+@pytest.mark.unit
+def test_llm_generalize_rejects_empty_response(monkeypatch):
+    """An empty pattern compiles and matches everything — reject it."""
+    _mock_llm(monkeypatch, "   ")
+    assert _llm_generalize("a b c", ("a b c",)) is None
+
+
+@pytest.mark.unit
+def test_llm_generalize_rejects_missing_choices(monkeypatch):
+    """A well-formed-but-empty response body is a failure, not a pattern."""
+    monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
+    monkeypatch.setattr("argus.llm_proxy.create_chat_completion", lambda **kw: {})
+    assert _llm_generalize("a b c", ("a b c",)) is None
+
+
+@pytest.mark.unit
+def test_generalize_signature_prefers_the_llm_regex(monkeypatch):
+    """End to end: an LLM pattern wins over the heuristic one."""
+    _mock_llm(monkeypatch, r"(?:cannot|unable\s+to)\s+\S+\s+financial\s+advice")
+    result = generalize_signature(_make_sig())
+    assert result.match_strategy == "regex"
+    assert result.generalized is True
+    assert result.pattern == r"(?:cannot|unable\s+to)\s+\S+\s+financial\s+advice"
+    assert result.original_pattern == "I cannot provide financial advice"
 
 
 # ── Clustering tests ────────────────────────────────────────────────────────
