@@ -28,10 +28,9 @@ rather than by importing anything. Call sites are discovered by scanning for
 diffed against §2, so a site the tracker missed surfaces as a finding instead
 of staying invisible.
 
-> `FINDINGS.md` and the rest of `scripts/baml_spike/` arrive with the B1
-> transport-fit spike, which is a separate PR. This file stands on its own —
-> the claims it borrows from that spike are restated where they are used — and
-> the links resolve once both have landed.
+> This continues the B1 transport-fit spike in `FINDINGS.md`, and retracts one
+> of its recommendations. It needs no BAML install to run — reachability is a
+> property of ARGUS's own source, not of anything BAML does.
 
 ---
 

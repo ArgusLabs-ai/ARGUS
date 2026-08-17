@@ -24,6 +24,8 @@ replica of the transport contract.
 | `baml_src/` | BAML client + function definitions under test. Mirrors the schema `semantic_checker.py` already asks for. |
 | `FINDINGS.md` | The writeup. |
 | `baml_client/` | Generated, gitignored. `run_spike.py` regenerates it (~0.1s). |
+| `check_inventory.py` | Answers **B3**, not B1, and needs no BAML install. Discovers every LLM call site in the package and checks which ones are reachable from the shipped entry points. |
+| `INVENTORY.md` | That writeup. Three of the seven sites are unreachable, including the pilot target FINDINGS.md originally recommended. |
 
 ## Why a replica instead of live Supabase
 
@@ -45,4 +47,6 @@ transport question.
 
 Spike only. Adds no dependency to `pyproject.toml`, imports nothing from
 `argus`, is imported by nothing in `argus`, and ships in neither the sdist nor
-the wheel. Delete the directory when the tracker's §7 questions close.
+the wheel. Delete the directory when the tracker's §7 questions close —
+`check_inventory.py` is the one piece worth keeping past that point if the
+dead call sites it found are still around.
