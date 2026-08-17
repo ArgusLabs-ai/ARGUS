@@ -177,20 +177,40 @@ def _heuristic_generalize(pattern: str) -> str | None:
 
 # ── LLM generalization ──────────────────────────────────────────────────────
 
+# Cheap tier. providers.resolve_model() maps this to the active provider's
+# equivalent (claude-3-5-haiku / gemini-2.5-flash) for non-OpenAI users.
+_LLM_MODEL = "gpt-4o-mini"
+_LLM_MAX_TOKENS = 300
+# Runs once per suggested signature in a loop at session end, so it needs a
+# bound. Not one of the per-node hot-path budgets; sized for a ≤300-token
+# completion with headroom.
+_LLM_TIMEOUT_S = 15.0
+
 
 def _llm_generalize(
     pattern: str,
     evidence: tuple[str, ...],
 ) -> str | None:
-    """Ask GPT-4o-mini to produce a generalized regex.
+    """Ask the cheap-tier model to produce a generalized regex.
 
-    Returns None on any failure (missing API key, network, bad regex).
+    Routed through llm_proxy, so this resolves the same way every other LLM
+    call in argus does: the active provider's own key (OpenAI, Anthropic, or
+    Google) if there is one, else the hosted proxy for logged-in users.
+
+    Returns None on any failure (no LLM configured, network, bad regex) and
+    the caller falls back to the heuristic.
     """
+    # Load .env if present (no-op if python-dotenv not installed)
     try:
-        from argus.embedding_store import _get_client  # noqa: PLC0415
+        from dotenv import load_dotenv  # noqa: PLC0415
 
-        client = _get_client()
-    except Exception:
+        load_dotenv(override=True)
+    except ImportError:
+        pass
+
+    from argus.llm_proxy import create_chat_completion, is_available  # noqa: PLC0415
+
+    if not is_available():
         return None
 
     prompt = _LLM_GENERALIZE_PROMPT.format(
@@ -199,17 +219,26 @@ def _llm_generalize(
     )
 
     try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+        result = create_chat_completion(
+            model=_LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=300,
+            max_tokens=_LLM_MAX_TOKENS,
+            timeout=_LLM_TIMEOUT_S,
         )
-        regex = resp.choices[0].message.content.strip()
+        if "error" in result:
+            return None
+
+        choices = result.get("choices", [])
+        if not choices:
+            return None
+        regex = (choices[0]["message"]["content"] or "").strip()
         # Strip code fences if the LLM wraps it
         regex = regex.strip("`").strip()
         if regex.startswith("python"):
             regex = regex[6:].strip()
+        if not regex:
+            return None  # empty pattern would match every output
 
         # Validate it compiles
         compiled = re.compile(regex, re.IGNORECASE)

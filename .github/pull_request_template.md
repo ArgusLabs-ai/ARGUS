@@ -20,7 +20,8 @@
       `cloud/` or `supabase/` (proprietary; maintainer-only).
 - [ ] Tests added/updated and `pytest` passes locally.
 - [ ] `ruff check .` passes.
-- [ ] Docs updated if behavior or the public API changed.
+- [ ] Docs updated if behavior or the public API changed (`CLAUDE.md`, relevant docs).
+- [ ] PR has a label (`bugfix`, `enhancement`, `refactor`, `investigation`, `documentation`, `dead-code`).
 
 ## Notes for reviewers
 

@@ -127,6 +127,17 @@ For bug reports, include:
 - Keep PRs focused — one fix or feature per PR
 - For new detection logic, include a fixture run that the old code misses and the new code catches
 - Don't add co-author attribution in commits
+- **Update docs with your PR.** If your change adds, moves, or removes a module, updates a public API, or changes how something works — update `CLAUDE.md` (architecture notes, key files table) and any relevant docs in the same PR. Don't leave it for a follow-up.
+- **Add a label to your PR.** Pick the one that fits best:
+
+  | Label | When to use |
+  |-------|-------------|
+  | `bugfix` | Fixes a bug |
+  | `enhancement` | New feature or capability |
+  | `refactor` | Internal restructuring, no behavior change |
+  | `investigation` | Spike or research — no production code touched |
+  | `documentation` | Docs-only changes |
+  | `dead-code` | Removing unreachable or unused code |
 
 ## Contribution Terms (CLA)
 
