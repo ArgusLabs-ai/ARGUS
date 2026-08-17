@@ -168,22 +168,31 @@ def _repair_truncated_json(fragment: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-_TRUE_STRINGS = frozenset({"true", "yes"})
-_FALSE_STRINGS = frozenset({"false", "no"})
+_TRUE_STRINGS = frozenset({"true", "yes", "1"})
+_FALSE_STRINGS = frozenset({"false", "no", "0"})
 
 
 def _coerce_verdict(value: Any) -> bool | None:
     """Read a judge's boolean field, or None if it isn't a usable verdict.
 
-    Accepts real booleans plus the string forms models emit under JSON mode.
-    Everything else — a missing key, null, a number, a sentence — means the
-    judge gave no verdict, and the caller must skip rather than invent one.
+    Accepts real booleans, the string forms models emit under JSON mode, and
+    the 0/1 integers they substitute for booleans. Everything else — a missing
+    key, null, a confidence-shaped float, a sentence — means the judge gave no
+    verdict, and the caller must skip rather than invent one.
 
     `bool()` is the wrong tool here: bool("false") and bool("no") are both
     True, so a judge explicitly saying no would be recorded as a yes.
+
+    0 and 1 are read rather than skipped because skipping loses a verdict the
+    judge did give. Only those two integers qualify; anything else in that
+    field is not a boolean the model got slightly wrong, and `1.0`/`0.9` are
+    excluded by the isinstance check because a float there reads as a
+    confidence that landed in the wrong key.
     """
     if isinstance(value, bool):
         return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
     if isinstance(value, str):
         s = value.strip().lower()
         if s in _TRUE_STRINGS:

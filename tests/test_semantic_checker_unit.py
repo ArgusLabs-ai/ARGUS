@@ -269,8 +269,33 @@ class TestCoerceVerdict:
         assert _coerce_verdict("  FALSE  ") is False
         assert _coerce_verdict("True") is True
 
+    def test_integer_booleans_are_verdicts(self):
+        """0/1 is a verdict the judge gave — skipping it loses a real ruling.
+
+        `bool(0)` already read this correctly before this fix existed; the
+        coercion must not regress it into a skip.
+        """
+        assert _coerce_verdict(0) is False
+        assert _coerce_verdict(1) is True
+        assert _coerce_verdict("0") is False
+        assert _coerce_verdict("1") is True
+
+    def test_only_zero_and_one_count_as_integer_verdicts(self):
+        """Any other number is not a boolean the model got slightly wrong."""
+        for value in (2, -1, 42):
+            assert _coerce_verdict(value) is None, value
+
+    def test_floats_are_never_verdicts(self):
+        """A float in a boolean field reads as a confidence in the wrong key.
+
+        1.0 == 1 in Python, so this only holds because the int branch is
+        isinstance-guarded rather than an equality test.
+        """
+        for value in (0.0, 1.0, 0.9):
+            assert _coerce_verdict(value) is None, value
+
     def test_uninterpretable_values_are_not_verdicts(self):
-        for value in (None, "", "maybe", "pass", 1, 0, 0.9, [], {}, ["true"]):
+        for value in (None, "", "maybe", "pass", [], {}, ["true"], [1]):
             assert _coerce_verdict(value) is None, value
 
 
@@ -330,6 +355,31 @@ class TestJudgeVerdictRequired:
         assert result.evaluated is True
         assert result.passed is True
 
+    def test_integer_zero_verdict_is_a_fail(self, monkeypatch):
+        """A model that emits 0 for false still failed the node.
+
+        The pre-fix `bool(parsed.get("pass", True))` got this right, so a
+        coercion that skipped it would drop a genuine failure — the one
+        outcome this module exists to catch.
+        """
+        _mock_llm(monkeypatch, {"pass": 0, "reason": "unrelated", "confidence": 0.9})
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
+        assert result.evaluated is True
+        assert result.passed is False
+        assert result.confidence == 0.9
+
+    def test_integer_one_verdict_is_a_pass(self, monkeypatch):
+        _mock_llm(monkeypatch, {"pass": 1, "reason": "fine", "confidence": 0.8})
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
+        assert result.evaluated is True
+        assert result.passed is True
+
+    def test_float_pass_is_a_skip(self, monkeypatch):
+        """0.9 in the verdict field is a misplaced confidence, not a ruling."""
+        _mock_llm(monkeypatch, {"pass": 0.9, "reason": "unsure", "confidence": 0.9})
+        result, _ = check_semantic_coherence("node_a", {"q": "hello"}, {"a": "world"})
+        assert result.evaluated is False
+
     def test_genuine_verdicts_still_evaluate(self, monkeypatch):
         """Guard against the fix swallowing real rulings."""
         for verdict in (True, False):
@@ -363,6 +413,26 @@ class TestDisambiguationVerdicts:
                 "confidence": 0.9,
                 "disambiguation_verdicts": [
                     {"sig_id": "PH-001", "is_failure": "false", "confidence": 0.8,
+                     "reason": "legitimate"}
+                ],
+            },
+        )
+        _, dis = check_semantic_coherence(
+            "node_a", {"q": "hello"}, {"a": "world"}, ambiguous_signals=[_signal()]
+        )
+        assert len(dis) == 1
+        assert dis[0].llm_verdict is False
+
+    def test_integer_zero_is_failure_is_not_a_failure(self, monkeypatch):
+        """0 clears the signal; the conservative default only covers no verdict."""
+        _mock_llm(
+            monkeypatch,
+            {
+                "pass": True,
+                "reason": "ok",
+                "confidence": 0.9,
+                "disambiguation_verdicts": [
+                    {"sig_id": "PH-001", "is_failure": 0, "confidence": 0.8,
                      "reason": "legitimate"}
                 ],
             },
