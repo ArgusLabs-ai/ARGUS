@@ -255,6 +255,8 @@ class ArgusSession:
         # set by ReplayEngine or ArgusWatcher for linked runs
         self.parent_run_id: str | None = parent_run_id
         self.replay_from_step: str | None = None
+        # patch applied to the replayed input state, recorded for provenance
+        self.state_patch: dict[str, Any] | None = None
 
         # frozen outputs for replay — maps node_name → list of saved output dicts (FIFO)
         self.frozen_outputs: dict[str, list[Any]] | None = None
@@ -1025,6 +1027,7 @@ class ArgusSession:
             node_fn_paths=self.node_fn_paths,
             parent_run_id=self.parent_run_id,
             replay_from_step=self.replay_from_step,
+            state_patch=self.state_patch,
             interrupted=has_interrupt,
             interrupt_node=interrupt_node,
             total_llm_calls=total_llm_calls,

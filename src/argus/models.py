@@ -243,6 +243,8 @@ class RunRecord:
     node_fn_paths: dict[str, str] | None = None  # {node_name: relative_file_path}
     interrupted: bool = False  # True if a GraphInterrupt occurred
     interrupt_node: str | None = None  # node name where interrupt occurred
+    # Patch applied to the replayed node's input state before this run (time-travel)
+    state_patch: dict[str, Any] | None = None
     total_llm_calls: int = 0
     total_tokens: int = 0
     total_cost_usd: float | None = None
