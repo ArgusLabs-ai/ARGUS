@@ -429,3 +429,151 @@ def test_api_single_node_mode_accepts_a_patch(ui_server):
     replayed = load_run(result["run_id"])
     assert len(replayed.steps) == 1
     assert replayed.steps[0].output_dict["summary"] == "docs=2 status=OK"
+
+
+# ── preview endpoint (step 1.5) ───────────────────────────────────────────────
+
+
+@pytest.mark.integration
+def test_preview_returns_changes_and_summary(ui_server):
+    post, _ = ui_server
+    run_id, _ = _record_run()
+
+    status, body = post(
+        "/api/replay/preview",
+        {"run_id": run_id, "from_step": "transform", "patch": {"set": {"status": "OK"}}},
+    )
+
+    assert status == 200
+    assert body["changes"] == [
+        {
+            "op": "set",
+            "path": "status",
+            "before": "PLACEHOLDER",
+            "after": "OK",
+            "existed": True,
+        }
+    ]
+    assert body["summary"] == ['~ status  "PLACEHOLDER" -> "OK"']
+
+
+@pytest.mark.integration
+def test_preview_runs_nothing_and_changes_nothing(ui_server):
+    """A preview that executes a node, or starts a job, is a bug."""
+    from argus.cli import cmd_open_ui
+
+    post, _ = ui_server
+    run_id, _ = _record_run()
+    before = Path(f".argus/runs/{run_id}.json").read_text(encoding="utf-8")
+    jobs_before = len(cmd_open_ui._replay_jobs)
+    sys.modules[_MODULE_NAME].CALLS.clear()
+
+    status, _ = post(
+        "/api/replay/preview",
+        {"run_id": run_id, "from_step": "transform", "patch": {"set": {"status": "OK"}}},
+    )
+
+    assert status == 200
+    assert Path(f".argus/runs/{run_id}.json").read_text(encoding="utf-8") == before
+    assert len(cmd_open_ui._replay_jobs) == jobs_before
+    assert sys.modules[_MODULE_NAME].CALLS == []
+
+
+@pytest.mark.integration
+def test_preview_reports_a_delete_and_an_added_key(ui_server):
+    post, _ = ui_server
+    run_id, _ = _record_run()
+
+    status, body = post(
+        "/api/replay/preview",
+        {
+            "run_id": run_id,
+            "from_step": "transform",
+            "patch": {"delete": ["docs"], "set": {"brand_new": 5}},
+            "create_missing": True,
+        },
+    )
+
+    assert status == 200
+    by_path = {c["path"]: c for c in body["changes"]}
+    assert by_path["docs"]["op"] == "delete"
+    assert by_path["docs"]["before"] == ["d1", "d2"]
+    assert by_path["brand_new"]["existed"] is False
+    assert by_path["brand_new"]["after"] == 5
+
+
+@pytest.mark.integration
+def test_preview_caps_large_values(ui_server):
+    """The editor calls this on every typing pause — it must not ship megabytes."""
+    from argus.cli.cmd_open_ui import _MAX_PREVIEW_VALUE_CHARS
+
+    post, _ = ui_server
+    run_id, _ = _record_run()
+    blob = "x" * (_MAX_PREVIEW_VALUE_CHARS * 4)
+
+    status, body = post(
+        "/api/replay/preview",
+        {"run_id": run_id, "from_step": "transform", "patch": {"set": {"status": blob}}},
+    )
+
+    assert status == 200
+    after = body["changes"][0]["after"]
+    assert after["__argus_truncated__"] is True
+    assert after["full_length"] > _MAX_PREVIEW_VALUE_CHARS
+    assert len(after["preview"]) <= _MAX_PREVIEW_VALUE_CHARS
+
+
+@pytest.mark.integration
+def test_preview_rejects_a_bad_path_with_the_hint(ui_server):
+    post, _ = ui_server
+    run_id, _ = _record_run()
+
+    status, body = post(
+        "/api/replay/preview",
+        {"run_id": run_id, "from_step": "transform", "patch": {"set": {"stauts": "OK"}}},
+    )
+
+    assert status == 400
+    assert body["error"] == "invalid_patch"
+    assert "did you mean 'status'" in body["message"]
+
+
+@pytest.mark.integration
+def test_preview_matches_what_replay_accepts(ui_server):
+    """Preview and replay must agree — a preview that lies is worse than none."""
+    post, get = ui_server
+    run_id, _ = _record_run()
+    payload = {"run_id": run_id, "from_step": "transform", "patch": {"set": {"fresh": 1}}}
+
+    preview_status, _ = post("/api/replay/preview", payload)
+    replay_status, _ = post("/api/replay", payload)
+    assert preview_status == replay_status == 400
+
+    ok_payload = {**payload, "create_missing": True}
+    preview_status, _ = post("/api/replay/preview", ok_payload)
+    replay_status, replay_body = post("/api/replay", ok_payload)
+    assert preview_status == 200
+    assert replay_status == 202
+    assert _await_job(get, replay_body["job_id"])["status"] == "done"
+
+
+@pytest.mark.integration
+def test_preview_error_cases(ui_server):
+    post, _ = ui_server
+    run_id, _ = _record_run()
+
+    status, body = post(
+        "/api/replay/preview",
+        {"run_id": run_id, "from_step": "nope", "patch": {"set": {"status": "OK"}}},
+    )
+    assert status == 404
+    assert body["error"] == "unknown_node"
+
+    status, _ = post(
+        "/api/replay/preview",
+        {"run_id": "does-not-exist", "from_step": "transform", "patch": {}},
+    )
+    assert status == 404
+
+    status, _ = post("/api/replay/preview", {"run_id": run_id, "from_step": "transform"})
+    assert status == 400  # patch is required
