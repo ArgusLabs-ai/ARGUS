@@ -339,3 +339,118 @@ def test_patch_handles_argus_signal_field_path_form():
     signal_path = "result.items.[0].summary"
     out = apply_patch(state, {"set": {signal_path: "real summary"}})
     assert out["result"]["items"][0]["summary"] == "real summary"
+
+
+# ── CLI patch construction (part 3) ───────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_build_patch_returns_none_when_empty():
+    from argus.cli.cmd_replay import build_patch
+
+    assert build_patch(None, None, None) is None
+    assert build_patch(None, [], []) is None
+
+
+@pytest.mark.unit
+def test_build_patch_from_set_pairs():
+    from argus.cli.cmd_replay import build_patch
+
+    patch = build_patch(None, ["meta.retries=0", "query=hello"], None)
+    assert patch == {"set": {"meta.retries": 0, "query": "hello"}}
+
+
+@pytest.mark.unit
+def test_set_values_are_parsed_as_json_with_string_fallback():
+    from argus.cli.cmd_replay import build_patch
+
+    patch = build_patch(
+        None,
+        ["n=42", "f=1.5", "b=true", "nil=null", "obj={\"a\": 1}", "arr=[1,2]", "s=plain"],
+        None,
+    )
+    values = patch["set"]
+    assert values["n"] == 42
+    assert values["f"] == 1.5
+    assert values["b"] is True
+    assert values["nil"] is None
+    assert values["obj"] == {"a": 1}
+    assert values["arr"] == [1, 2]
+    assert values["s"] == "plain"
+
+
+@pytest.mark.unit
+def test_set_value_may_contain_equals_signs():
+    from argus.cli.cmd_replay import build_patch
+
+    patch = build_patch(None, ["query=a=b=c"], None)
+    assert patch["set"]["query"] == "a=b=c"
+
+
+@pytest.mark.unit
+def test_build_patch_from_delete_flags():
+    from argus.cli.cmd_replay import build_patch
+
+    assert build_patch(None, None, ["a", "b.c"]) == {"delete": ["a", "b.c"]}
+
+
+@pytest.mark.unit
+def test_build_patch_rejects_malformed_set():
+    from argus.cli.cmd_replay import build_patch
+
+    with pytest.raises(PatchError, match="expected 'path=value'"):
+        build_patch(None, ["nonsense"], None)
+    with pytest.raises(PatchError, match="the path is empty"):
+        build_patch(None, ["=value"], None)
+
+
+@pytest.mark.unit
+def test_build_patch_reads_a_json_file(tmp_path, monkeypatch):
+    import json
+
+    from argus.cli.cmd_replay import build_patch
+
+    monkeypatch.chdir(tmp_path)
+    doc = {"set": {"a": 1}, "delete": ["b"]}
+    (tmp_path / "p.json").write_text(json.dumps(doc), encoding="utf-8")
+    assert build_patch("p.json", None, None) == doc
+
+
+@pytest.mark.unit
+def test_flags_layer_on_top_of_a_patch_file(tmp_path, monkeypatch):
+    import json
+
+    from argus.cli.cmd_replay import build_patch
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "p.json").write_text(
+        json.dumps({"set": {"a": 1}, "delete": ["x"]}), encoding="utf-8"
+    )
+    patch = build_patch("p.json", ["a=2", "b=3"], ["y"])
+    assert patch["set"] == {"a": 2, "b": 3}  # flag overrides the file
+    assert patch["delete"] == ["x", "y"]
+
+
+@pytest.mark.unit
+def test_build_patch_reports_missing_or_invalid_file(tmp_path, monkeypatch):
+    from argus.cli.cmd_replay import build_patch
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(PatchError, match="patch file not found"):
+        build_patch("nope.json", None, None)
+
+    (tmp_path / "bad.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(PatchError, match="not valid JSON"):
+        build_patch("bad.json", None, None)
+
+    (tmp_path / "arr.json").write_text("[1,2]", encoding="utf-8")
+    with pytest.raises(PatchError, match="must contain a JSON object"):
+        build_patch("arr.json", None, None)
+
+
+@pytest.mark.unit
+def test_build_patch_output_is_valid_for_the_engine():
+    """Whatever the CLI builds must survive the patch module's validation."""
+    from argus.cli.cmd_replay import build_patch
+
+    validate_patch(build_patch(None, ["a.b=1"], ["c"]))
