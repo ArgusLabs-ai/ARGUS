@@ -236,3 +236,196 @@ def test_replay_node_rejects_a_bad_patch():
     run_id, _ = _record_run()
     with pytest.raises(PatchError, match="cannot patch input state"):
         ReplayEngine().replay_node(run_id, "transform", patch={"delete": ["nope"]})
+
+
+# ── HTTP endpoint (step 1.4) ──────────────────────────────────────────────────
+
+
+@pytest.fixture
+def ui_server(tmp_path):
+    """Start the real dashboard handler on an ephemeral port."""
+    import json as _json
+    import threading as _threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    from argus.cli.cmd_open_ui import _make_handler
+
+    runs_dir = tmp_path / ".argus" / "runs"
+    logs_dir = tmp_path / ".argus" / "logs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    handler = _make_handler(runs_dir, logs_dir, None, tmp_path)
+    server = ThreadingHTTPServer(("localhost", 0), handler)
+    thread = _threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+
+    def post(path, payload):
+        req = urllib.request.Request(
+            f"http://localhost:{port}{path}",
+            data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, _json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            return exc.code, _json.loads(exc.read() or b"{}")
+
+    def get(path):
+        with urllib.request.urlopen(f"http://localhost:{port}{path}", timeout=10) as resp:
+            return resp.status, _json.loads(resp.read() or b"{}")
+
+    try:
+        yield post, get
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _await_job(get, job_id, timeout=15.0):
+    """Poll the replay job until it leaves 'running'."""
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        _, body = get(f"/api/replay/status/{job_id}")
+        if body.get("status") != "running":
+            return body
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
+
+
+@pytest.mark.integration
+def test_api_replay_accepts_a_patch(ui_server):
+    post, get = ui_server
+    run_id, _ = _record_run()
+
+    status, body = post(
+        "/api/replay",
+        {"run_id": run_id, "from_step": "transform", "patch": {"set": {"status": "OK"}}},
+    )
+    assert status == 202
+    assert "job_id" in body
+
+    result = _await_job(get, body["job_id"])
+    assert result["status"] == "done", result
+
+    replayed = load_run(result["run_id"])
+    assert replayed.state_patch == {"set": {"status": "OK"}}
+    assert replayed.parent_run_id == run_id
+    assert _step(replayed, "finish").output_dict["final"] == "docs=2 status=OK"
+
+
+@pytest.mark.integration
+def test_api_replay_still_works_without_a_patch(ui_server):
+    post, get = ui_server
+    run_id, _ = _record_run()
+
+    status, body = post("/api/replay", {"run_id": run_id, "from_step": "transform"})
+    assert status == 202
+
+    result = _await_job(get, body["job_id"])
+    assert result["status"] == "done", result
+    assert load_run(result["run_id"]).state_patch is None
+
+
+@pytest.mark.integration
+def test_api_rejects_a_bad_path_with_the_hint_and_starts_no_job(ui_server):
+    from argus.cli import cmd_open_ui
+
+    post, _ = ui_server
+    run_id, _ = _record_run()
+    jobs_before = len(cmd_open_ui._replay_jobs)
+
+    status, body = post(
+        "/api/replay",
+        {"run_id": run_id, "from_step": "transform", "patch": {"set": {"stauts": "OK"}}},
+    )
+
+    assert status == 400
+    assert body["error"] == "invalid_patch"
+    assert "did you mean 'status'" in body["message"]
+    assert len(cmd_open_ui._replay_jobs) == jobs_before
+
+
+@pytest.mark.integration
+def test_api_rejects_a_malformed_patch_document(ui_server):
+    post, _ = ui_server
+    run_id, _ = _record_run()
+
+    status, body = post(
+        "/api/replay",
+        {"run_id": run_id, "from_step": "transform", "patch": {"bogus_op": {"a": 1}}},
+    )
+    assert status == 400
+    assert "unknown patch op" in body["message"]
+
+
+@pytest.mark.integration
+def test_api_rejects_a_non_object_patch(ui_server):
+    post, _ = ui_server
+    run_id, _ = _record_run()
+
+    status, body = post(
+        "/api/replay",
+        {"run_id": run_id, "from_step": "transform", "patch": ["not", "an", "object"]},
+    )
+    assert status == 400
+    assert body["error"] == "invalid_patch"
+
+
+@pytest.mark.integration
+def test_api_reports_unknown_node_when_patching(ui_server):
+    post, _ = ui_server
+    run_id, _ = _record_run()
+
+    status, body = post(
+        "/api/replay",
+        {"run_id": run_id, "from_step": "nope", "patch": {"set": {"status": "OK"}}},
+    )
+    assert status == 404
+    assert body["error"] == "unknown_node"
+    assert "transform" in body["message"]
+
+
+@pytest.mark.integration
+def test_api_create_missing_flag_is_honoured(ui_server):
+    post, get = ui_server
+    run_id, _ = _record_run()
+    payload = {"run_id": run_id, "from_step": "transform", "patch": {"set": {"fresh": 1}}}
+
+    status, _ = post("/api/replay", payload)
+    assert status == 400
+
+    status, body = post("/api/replay", {**payload, "create_missing": True})
+    assert status == 202
+    result = _await_job(get, body["job_id"])
+    assert result["status"] == "done", result
+
+
+@pytest.mark.integration
+def test_api_single_node_mode_accepts_a_patch(ui_server):
+    post, get = ui_server
+    run_id, _ = _record_run()
+
+    status, body = post(
+        "/api/replay",
+        {
+            "run_id": run_id,
+            "from_step": "transform",
+            "mode": "node",
+            "patch": {"set": {"status": "OK"}},
+        },
+    )
+    assert status == 202
+
+    result = _await_job(get, body["job_id"])
+    assert result["status"] == "done", result
+    replayed = load_run(result["run_id"])
+    assert len(replayed.steps) == 1
+    assert replayed.steps[0].output_dict["summary"] == "docs=2 status=OK"
