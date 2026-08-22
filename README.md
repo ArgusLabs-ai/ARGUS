@@ -325,3 +325,5 @@ For AI setup prompts and integration guides, visit **[arguslabs.in](https://argu
 ARGUS is **open-core**. The open-source core (`src/argus/`, the `argus-agents` PyPI
 package) is licensed under **Apache-2.0** — see [LICENSE](LICENSE). The `cloud/`
 directory (hosted/enterprise components) is proprietary — see [cloud/LICENSE](cloud/LICENSE).
+
+---
