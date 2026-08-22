@@ -622,6 +622,48 @@ class TestRule16ContextOverflow:
         assert any(tf.failure_type == "context_size_anomaly" for tf in result.tool_failures)
 
 
+
+# ── Rule 17: Double-encoded JSON ─────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestRule17JsonInString:
+    def test_stringified_dict(self):
+        result = inspect_tool_outputs({"data": '{"key": "val"}'}, _precomputed_signals=[])
+        assert any(tf.failure_type == "json_in_string" for tf in result.tool_failures)
+        assert any(tf.severity == "warning" for tf in result.tool_failures if tf.failure_type == "json_in_string")
+
+    def test_stringified_list(self):
+        result = inspect_tool_outputs({"data": '[1, 2, 3]'}, _precomputed_signals=[])
+        assert any(tf.failure_type == "json_in_string" for tf in result.tool_failures)
+
+    def test_expected_skipped_fields(self):
+        result = inspect_tool_outputs({
+            "raw_response": '{"key": "val"}',
+            "log": '[1, 2, 3]',
+            "logs": '{"a": 1}',
+            "raw": '{"x": 2}',
+            "history": '[]',
+            "raw_output": '{}',
+            "payload": '{"key": "val"}',
+            "PAYLOAD": '{"key": "val"}'
+        }, _precomputed_signals=[])
+        assert not any(tf.failure_type == "json_in_string" for tf in result.tool_failures)
+
+    def test_nested_structure(self):
+        result = inspect_tool_outputs({"outer": {"inner": '{"key": "val"}'}}, _precomputed_signals=[])
+        assert any(tf.failure_type == "json_in_string" and tf.field_name == "outer.inner" for tf in result.tool_failures)
+
+        result2 = inspect_tool_outputs({"outer_list": [{'nested': '{"key": "val"}'}]}, _precomputed_signals=[])
+        assert any(tf.failure_type == "json_in_string" and tf.field_name == "outer_list[0].nested" for tf in result2.tool_failures)
+
+    def test_non_json_string_ignored(self):
+        result = inspect_tool_outputs({"data": "just a normal string"}, _precomputed_signals=[])
+        assert not any(tf.failure_type == "json_in_string" for tf in result.tool_failures)
+
+    def test_malformed_json_ignored(self):
+        result = inspect_tool_outputs({"data": '{"key": "value"'}, _precomputed_signals=[])
+        assert not any(tf.failure_type == "json_in_string" for tf in result.tool_failures)
 # ── Strict mode ──────────────────────────────────────────────────────────────
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from difflib import SequenceMatcher
 from statistics import median
@@ -412,6 +413,49 @@ def _scan_payload_for_tool_failures(
                 _scan_payload_for_tool_failures(item, item_path, depth + 1, add)
 
 
+_JSON_EXPECTED_KEYS = frozenset({"raw_response", "log", "logs", "raw", "history", "raw_output", "payload"})
+
+def _scan_double_encoded(
+    obj: Any,
+    prefix: str,
+    depth: int,
+    add: Any,
+) -> None:
+    """Recursively scan dict/list payloads for double-encoded JSON strings (Rule 17)."""
+    if depth > 5:
+        return
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if str(key).lower() in _JSON_EXPECTED_KEYS:
+                continue
+            field_path = f"{prefix}.{key}" if prefix else str(key)
+            if isinstance(value, str):
+                stripped = value.lstrip()
+                if stripped.startswith("{") or stripped.startswith("["):
+                    try:
+                        parsed = json.loads(stripped)
+                        if isinstance(parsed, (dict, list)):
+                            add(
+                                ToolFailure(
+                                    failure_type="json_in_string",
+                                    field_name=field_path,
+                                    severity="warning",
+                                    evidence=f"double-encoded JSON detected: {stripped[:80]!r}",
+                                )
+                            )
+                    except json.JSONDecodeError:
+                        pass
+            elif isinstance(value, dict):
+                _scan_double_encoded(value, field_path, depth + 1, add)
+            elif isinstance(value, list):
+                _scan_double_encoded(value, field_path, depth + 1, add)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, (dict, list)):
+                item_path = f"{prefix}[{i}]"
+                _scan_double_encoded(item, item_path, depth + 1, add)
+
+
 def is_legitimate_field_handoff(
     input_state: dict[str, Any] | None,
     output_dict: dict[str, Any] | None,
@@ -473,6 +517,9 @@ def inspect_tool_outputs(
     # Rules 1–6 — recursive tool-failure shapes (error keys, HTTP status,
     # success/failure booleans, empty retrieval, nested dict/list payloads)
     _scan_payload_for_tool_failures(output_dict, "", 0, _add)
+
+    # Rule 17 — Double-Encoded JSON Detection
+    _scan_double_encoded(output_dict, "", 0, _add)
 
     # Rule 7 — deep recursive semantic heuristic scan
     # Use pre-computed signals if available (avoids double-scan)
