@@ -413,7 +413,15 @@ def _scan_payload_for_tool_failures(
                 _scan_payload_for_tool_failures(item, item_path, depth + 1, add)
 
 
-_JSON_EXPECTED_KEYS = frozenset({"raw_response", "log", "logs", "raw", "history", "raw_output", "payload"})
+_JSON_EXPECTED_KEYS = frozenset({
+    "raw_response",
+    "log",
+    "logs",
+    "raw",
+    "history",
+    "raw_output",
+    "payload",
+})
 
 def _scan_double_encoded(
     obj: Any,

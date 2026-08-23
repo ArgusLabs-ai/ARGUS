@@ -63,7 +63,10 @@ _TOOL_FAILURE_PLAIN = {
     "empty_result": "the external call returned an empty result",
     "error_in_data": "the data that came back contained an error payload",
     "partial_failure": "the external call only partly succeeded",
-    "json_in_string": "the output contained a double-encoded stringified JSON object/array instead of a parsed structure",
+    "json_in_string": (
+        "the output contained a double-encoded stringified JSON object/array "
+        "instead of a parsed structure"
+    ),
 }
 
 # Present tense, for the "Done when" conditions — the past-tense phrasings above
@@ -74,7 +77,10 @@ _TOOL_FAILURE_CONDITION = {
     "empty_result": "the external call returns an empty result",
     "error_in_data": "the data that comes back contains an error payload",
     "partial_failure": "the external call only partly succeeds",
-    "json_in_string": "the output contains a double-encoded stringified JSON object/array instead of a parsed structure",
+    "json_in_string": (
+        "the output contains a double-encoded stringified JSON object/array "
+        "instead of a parsed structure"
+    ),
 }
 
 
