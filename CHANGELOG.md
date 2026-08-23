@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.1 — 2026-08-22
+
+Version alignment. PyPI treated `0.10.0` (14 Aug, same era as `0.9.1`) as latest because `0.10.0 > 0.9.3`, so `pip install argus-agents` skipped the `0.9.2` / `0.9.3` work. This release republishes that work as `0.10.1`.
+
+- `argus check last` / `argus check <id>` — CI gate; exit 1 on crash, silent failure, semantic fail, missing fields, or tool failures
+- `pytest --argus` — auto-wrap LangGraph `compile()` / `invoke()` in tests; unclean runs fail the test
+- `argus init` writes Cursor/Claude skills that attach `ArgusWatcher` and debug from `.argus/runs`
+- Failed runs print a short `[argus]` finding; clean runs stay silent
+- Empty dashboard shows which `.argus` path is served
+
 ## 0.9.3 — 2026-08-18
 
 - `argus check last` / `argus check <id>` — CI gate; exit 1 on crash, silent failure, semantic fail, missing fields, or tool failures
