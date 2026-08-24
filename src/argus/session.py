@@ -1497,6 +1497,31 @@ class ArgusSession:
         """Alias for finalize() — used by legacy code and replay engine."""
         self._finalize()
 
+    def begin_new_run(self) -> None:
+        """Reset session state so the next invoke() is recorded as a fresh run.
+
+        ArgusWatcher reuses one session across repeated invoke() calls (its node
+        wrappers close over it). Without this reset the first run sets
+        ``_completed`` and every later finalize() is a no-op — only the first
+        run would ever be persisted. Called by the watcher when the outermost
+        invoke()/stream()/batch() begins on an already-completed session.
+        """
+        with self._lock:
+            self.run_id = generate_run_id()
+            self.parent_run_id = None
+            self.replay_from_step = None
+            self._events = []
+            self._step_index = 0
+            self._initial_state = {}
+            self._started_at = datetime.now(timezone.utc).isoformat()
+            self._completed = False
+            self._defer_auto_finalize = False
+            self._node_attempt_counts = {}
+            self._completed_terminals = set()
+        with self._pending_judges_lock:
+            self._pending_judges.clear()
+        atexit.register(self._atexit_finalize)
+
     def reset_for_resume(self, parent_run_id: str) -> None:
         """Reset session state so post-interrupt steps are captured in a new run record.
 

@@ -339,9 +339,27 @@ class ArgusWatcher:
         with self._persist_lock:
             self._persist_depth += 1
             if self._session is not None:
+                # Outermost call on an already-persisted session: start a fresh
+                # run so each invoke()/stream()/batch() writes its own record
+                # (not just the first one).
+                if self._persist_depth == 1 and self._session._completed:
+                    self._session.begin_new_run()
+                    self._rearm_http_recorder()
                 # Nested invoke (batch item, stream internals): don't mark the
                 # session complete until the outermost call returns.
                 self._session._defer_auto_finalize = self._persist_depth > 1
+
+    def _rearm_http_recorder(self) -> None:
+        """Restart HTTP recording for a new run (finalize() tore down the last)."""
+        if not self._config.record_http or self._http_recorder is not None:
+            return
+        try:
+            from argus.http_recorder import record_http
+
+            self._http_recorder_ctx = record_http()
+            self._http_recorder = self._http_recorder_ctx.__enter__()
+        except Exception:
+            pass  # HTTP recording is best-effort
 
     def _exit_persist_scope(self) -> None:
         should_persist = False

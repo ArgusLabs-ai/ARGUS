@@ -841,6 +841,27 @@ def inspect_transition(
         else None
     )
     tool_failures = _tool_result.tool_failures if _tool_result is not None else []
+
+    # Silent no-op: the node ran but returned an empty state update ({}) — no
+    # keys at all. With successors waiting downstream it has produced nothing
+    # for them to consume — the canonical silent failure the ORIGIN node commits
+    # (README: "node returns {} or drops a required field"). Without this the
+    # drop is invisible and blame falls on the downstream crash site instead.
+    # Only literal {} is flagged here: a dict WITH keys (even empty-valued ones,
+    # e.g. {"vulnerabilities": []}) is a real state contribution and is judged
+    # by the per-field rules above. Conditional/router nodes reach here with
+    # successor_fns=[] (see ArgusSession._get_successor_fns) and are exempt.
+    if successor_fns and output_dict is not None and not output_dict:
+        tool_failures = [
+            *tool_failures,
+            ToolFailure(
+                failure_type="empty_output",
+                field_name="_output",
+                severity="critical",
+                evidence="node returned an empty state update — no fields produced",
+            ),
+        ]
+
     has_tool_failure = any(tf.severity == "critical" for tf in tool_failures)
 
     if output_dict is None:
