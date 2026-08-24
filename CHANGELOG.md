@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.4 — 2026-08-25
+
+- `empty_output` failure: a node returning a literal `{}` with successors downstream is flagged critical and blamed on the origin, not the downstream crash site — fixes silent no-op nodes (#31). Only literal `{}` is flagged; dicts with keys (even empty-valued) and router/conditional nodes are exempt
+- Per-invoke persistence: an attached `ArgusWatcher` now writes a separate run record for every `invoke()` / `stream()` / `batch()`, not just the first (via `ArgusSession.begin_new_run()`)
+
 ## 0.9.3 — 2026-08-18
 
 - `argus check last` / `argus check <id>` — CI gate; exit 1 on crash, silent failure, semantic fail, missing fields, or tool failures

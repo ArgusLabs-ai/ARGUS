@@ -47,7 +47,7 @@ ARGUS is a production readiness platform for AI agent pipelines — detects sile
 
 Every wrapped node executes through this pipeline:
 1. Output captured and serialized
-2. **Tool failure scan** (`inspector.py`): error keys, HTTP status codes, empty results, semantic registry
+2. **Tool failure scan** (`inspector.py`): error keys, HTTP status codes, empty results, semantic registry. Also `empty_output` (critical): a node returning a literal empty state update (`{}`) while successors wait downstream — the canonical silent no-op, blamed on the origin instead of the downstream crash site. Narrow by design: only literal `{}` is flagged; a dict with keys (even empty-valued, e.g. `{"vulnerabilities": []}`) is a real state contribution left to the per-field rules, and router/conditional nodes (`successor_fns=[]`) are exempt.
 3. **Structural inspection** (`inspector.py`): missing required fields vs successor type hints, type mismatches
 4. **Semantic validators**: custom per-node or wildcard validators
 5. **Anomaly detection**: behavioral anomaly signals (output size, timing, structure)
@@ -103,6 +103,8 @@ All LLM chat completion calls route through `llm_proxy.create_chat_completion`. 
 ### Storage
 
 Runs are stored in `.argus/runs/<run-id>.json` relative to the working directory. Cloud sync to Supabase (non-blocking background thread) if the user is logged in via `argus login`.
+
+An attached `ArgusWatcher` reuses one `ArgusSession` across calls (its node wrappers close over it). Each outermost `invoke()` / `stream()` / `batch()` on an already-completed session calls `ArgusSession.begin_new_run()` to persist its own `RunRecord` (and re-arm the HTTP recorder) — so every invoke gets a run, not just the first. Nested calls (batch items, stream internals) defer finalize and stay part of the outer run.
 
 ### Root Cause Analysis
 
