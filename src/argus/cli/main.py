@@ -58,7 +58,8 @@ def cmd_key_set(
     ),
 ) -> None:
     """Save an LLM API key locally and activate that provider."""
-    key_set(value, provider)
+    if not key_set(value, provider):
+        raise typer.Exit(1)
 
 
 @key_app.command("use")
@@ -66,7 +67,8 @@ def cmd_key_use(
     provider: str = typer.Argument(help="Provider to activate: openai | anthropic | google."),
 ) -> None:
     """Switch the active LLM provider (must already have a key)."""
-    key_use(provider)
+    if not key_use(provider):
+        raise typer.Exit(1)
 
 
 @key_app.command("show")
