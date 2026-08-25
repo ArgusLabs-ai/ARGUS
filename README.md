@@ -12,6 +12,8 @@
 
 Your LangGraph pipeline runs fine — no exception. But three nodes later, something crashes with a `KeyError`. The real cause? A node upstream silently dropped a field. ARGUS catches this.
 
+Beta, and under active development. ARGUS is early. Expect rough edges and bugs, and expect things to move. Issues and pull requests are welcome.
+
 ---
 
 ## How to use ARGUS

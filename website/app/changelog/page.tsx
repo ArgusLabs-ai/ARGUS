@@ -13,6 +13,18 @@ interface Release {
 
 const RELEASES: Release[] = [
   {
+    version: '0.10.1',
+    title: 'GitHub & PyPI version alignment',
+    date: '2026-08-22',
+    tag: 'patch',
+    highlights: [
+      'Republish 0.9.2 + 0.9.3 as 0.10.1 so pip install argus-agents is no longer stuck on 0.10.0',
+      'argus check last / argus check <id> — exit 1 when a run was not clean',
+      'pytest --argus — auto-instrument LangGraph invokes in tests',
+      'argus init skills, terminal findings, and empty-dashboard path hint',
+    ],
+  },
+  {
     version: '0.9.3',
     title: 'CI Gate & pytest Plugin',
     date: '2026-08-18',
