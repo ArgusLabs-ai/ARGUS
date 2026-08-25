@@ -423,6 +423,7 @@ _JSON_EXPECTED_KEYS = frozenset({
     "payload",
 })
 
+
 def _scan_double_encoded(
     obj: Any,
     prefix: str,
@@ -443,12 +444,13 @@ def _scan_double_encoded(
                     try:
                         parsed = json.loads(stripped)
                         if isinstance(parsed, (dict, list)):
+                            evidence_val = stripped[:80] + ("..." if len(stripped) > 80 else "")
                             add(
                                 ToolFailure(
                                     failure_type="json_in_string",
                                     field_name=field_path,
                                     severity="warning",
-                                    evidence=f"double-encoded JSON detected: {stripped[:80]!r}",
+                                    evidence=f"double-encoded JSON detected: {evidence_val!r}",
                                 )
                             )
                     except json.JSONDecodeError:
