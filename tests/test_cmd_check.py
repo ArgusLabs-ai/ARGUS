@@ -32,6 +32,30 @@ def test_evaluate_run_clean_passes():
 
 
 @pytest.mark.unit
+def test_evaluate_run_ignores_retried_inspection_failures():
+    record = make_run_record(
+        events=[
+            make_event(
+                node_name="retrieve",
+                status="retried",
+                inspection=make_inspection(
+                    missing=["documents"],
+                    is_silent=True,
+                    severity="critical",
+                    message="missing documents",
+                ),
+            ),
+            make_event(node_name="retrieve", status="pass"),
+        ],
+        status="clean",
+        run_id="retry-resolved",
+    )
+    result = evaluate_run(record)
+    assert result.passed is True
+    assert result.failing_nodes == ()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "status",
     ["crashed", "silent_failure", "semantic_fail"],

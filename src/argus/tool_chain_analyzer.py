@@ -120,7 +120,9 @@ def _detect_ordering_anomalies(
             first_exec[e.node_name] = e.step_index
 
     # Check: if A is reachable from B (B should run before A),
-    # but A ran before B, that's an ordering anomaly
+    # but A ran before B, that's an ordering anomaly.
+    # Skip pairs that sit in a cycle (A reachable from B and B from A) —
+    # generate → validate → retry is intentional, not a topology violation.
     checked: set[tuple[str, str]] = set()
     for node_b, successors in reachable.items():
         if node_b in _SENTINEL_NODES or node_b not in first_exec:
@@ -132,6 +134,8 @@ def _detect_ordering_anomalies(
             if pair in checked:
                 continue
             checked.add(pair)
+            if node_b in reachable.get(node_a, set()):
+                continue
 
             # node_a is a successor of node_b, so node_b should run first
             if first_exec[node_a] < first_exec[node_b]:

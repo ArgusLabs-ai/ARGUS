@@ -178,6 +178,22 @@ def replay_run(
 
     console.print(result)
 
+    from argus.correlator import compare_replay
+
+    impact = compare_replay(new_record, record)
+    if impact.original_failure_node:
+        console.print()
+        if impact.original_failure_resolved:
+            console.print(
+                f"  original failure  [bold]{impact.original_failure_node}[/bold]"
+                f"  [bold green]RESOLVED[/bold green]"
+            )
+        else:
+            console.print(
+                f"  original failure  [bold]{impact.original_failure_node}[/bold]"
+                f"  [bold red]NOT RESOLVED[/bold red]"
+            )
+
     # ── Auto-diff against original ────────────────────────────────────────
     console.print()
     console.print(Rule(style="dim"))

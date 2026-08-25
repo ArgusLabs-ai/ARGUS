@@ -255,7 +255,11 @@ def check_semantic_coherence(
 
     evidence_lines: list[str] = []
 
-    failed_validators = [v for v in (validator_results or []) if not v.is_valid]
+    failed_validators = [
+        v
+        for v in (validator_results or [])
+        if not v.is_valid and getattr(v, "severity", "critical") != "warning"
+    ]
     if failed_validators:
         evidence_lines.append("Validator failures:")
         for v in failed_validators:

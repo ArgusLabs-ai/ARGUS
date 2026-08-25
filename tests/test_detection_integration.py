@@ -115,6 +115,43 @@ class TestValidators:
         event = loaded.steps[0]
         assert event.status == "semantic_fail"
 
+    def test_warning_validator_does_not_fail_the_node(self):
+        validators = {
+            "analyze": lambda out: (False, "summary is terse", "warning"),
+        }
+        session = _session(validators=validators)
+        session.set_node_names(["analyze"])
+        analyze = session.wrap(
+            "analyze",
+            lambda s: {**s, "analysis": "a perfectly long analysis text"},
+        )
+        analyze({})
+        session.finalize()
+
+        loaded = load_run(session.run_id)
+        event = loaded.steps[0]
+        assert event.status == "pass"
+        assert loaded.overall_status == "clean"
+        assert event.validator_results[0].severity == "warning"
+        assert event.validator_results[0].is_valid is False
+        assert event.validator_results[0].is_blocking is False
+
+    def test_two_tuple_validator_still_blocks(self):
+        validators = {
+            "analyze": lambda out: (False, "hard fail"),
+        }
+        session = _session(validators=validators)
+        session.set_node_names(["analyze"])
+        analyze = session.wrap("analyze", lambda s: {**s, "analysis": "long enough text here"})
+        analyze({})
+        session.finalize()
+
+        loaded = load_run(session.run_id)
+        event = loaded.steps[0]
+        assert event.status == "semantic_fail"
+        assert event.validator_results[0].severity == "critical"
+        assert event.validator_results[0].is_blocking is True
+
     def test_wildcard_validator(self):
         validators = {
             "*": lambda out: ("error" not in out, f"Error found: {out.get('error')}"),

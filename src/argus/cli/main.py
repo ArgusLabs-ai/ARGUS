@@ -58,7 +58,8 @@ def cmd_key_set(
     ),
 ) -> None:
     """Save an LLM API key locally and activate that provider."""
-    key_set(value, provider)
+    if not key_set(value, provider):
+        raise typer.Exit(1)
 
 
 @key_app.command("use")
@@ -66,7 +67,8 @@ def cmd_key_use(
     provider: str = typer.Argument(help="Provider to activate: openai | anthropic | google."),
 ) -> None:
     """Switch the active LLM provider (must already have a key)."""
-    key_use(provider)
+    if not key_use(provider):
+        raise typer.Exit(1)
 
 
 @key_app.command("show")
@@ -274,32 +276,55 @@ def cmd_show(
     ] = False,
 ) -> None:
     """Show run details. Use 'argus show last' or 'argus show <run-id>'."""
+    # allow_interspersed_args means Click may leave the positional id in
+    # ctx.args instead of binding run_id — normalize both into one token list
+    # so 'show <id>' actually resolves the id (not just the newest run).
+    tokens = ([run_id] if run_id else []) + list(ctx.args)
+    if tokens and tokens[0] == "run":  # back-compat: 'argus show run <id>'
+        tokens = tokens[1:]
+    selector = tokens[0] if tokens else None  # None or 'last' -> newest run
+
     if json:
         from argus.storage import last_run_id
 
-        target_id = run_id if (run_id and run_id not in ("last", "run")) else last_run_id()
-        if run_id == "run" and ctx.args:
-            target_id = ctx.args[0]
+        target_id = selector if (selector and selector != "last") else last_run_id()
         if target_id is None:
-            _console.print("[red]Error:[/red] No runs found.", err=True)
+            _console.print("[red]Error:[/red] No runs found.")
             raise typer.Exit(1)
         try:
             print(load_run_text(target_id))
         except FileNotFoundError as e:
-            _console.print(f"[red]Error:[/red] {e}", err=True)
+            _console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
+        except ValueError as e:
+            _console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(1)
         return
-    if run_id is None or run_id == "last":
+    if selector is None or selector == "last":
         show_last()
-    elif run_id == "run":
-        # Backward compat: 'argus show run <id>' still works
-        actual_id = ctx.args[0] if ctx.args else None
-        if actual_id:
-            show_run(actual_id)
-        else:
-            show_last()
     else:
-        show_run(run_id)
+        _show_run_strict(selector)
+
+
+def _show_run_strict(run_id: str) -> None:
+    """Render a specific run, exiting nonzero when the id can't be resolved.
+
+    ``show_run()`` prints errors and returns so the TUI stays friendly, but a
+    caller scripting ``argus show <id>`` then can't tell success from failure —
+    and an ambiguous prefix escaped as a raw traceback. Resolve first; on any
+    resolution failure print the reason and exit 1.
+    """
+    from argus.storage import load_run
+
+    try:
+        load_run(run_id)
+    except FileNotFoundError as e:
+        _console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except ValueError as e:
+        _console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    show_run(run_id)
 
 
 @app.command("check")

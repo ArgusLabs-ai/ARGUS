@@ -375,6 +375,10 @@ def _deserialize_correlation(data: dict[str, Any]) -> CorrelationReport:
             signal_types=tuple(o.get("signal_types", [])),
             confidence=o["confidence"],
             reason=o["reason"],
+            confidence_breakdown=tuple(
+                (str(item[0]), float(item[1]))
+                for item in o.get("confidence_breakdown", [])
+            ),
         )
         for o in data.get("degradation_origins", [])
     ]
@@ -415,6 +419,8 @@ def _deserialize_correlation(data: dict[str, Any]) -> CorrelationReport:
             key_fix_node=ri_data.get("key_fix_node"),
             downstream_improvement_count=ri_data.get("downstream_improvement_count", 0),
             summary=ri_data.get("summary", ""),
+            original_failure_node=ri_data.get("original_failure_node"),
+            original_failure_resolved=ri_data.get("original_failure_resolved"),
         )
     return CorrelationReport(
         run_id=data["run_id"],

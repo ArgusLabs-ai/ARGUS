@@ -9,6 +9,12 @@ class ValidatorResult:
     validator_name: str  # e.g. "*:check_length" or "summarize:my_fn"
     is_valid: bool
     message: str
+    # "ok" | "warning" | "critical" — warnings do not fail the node or CI gate
+    severity: str = "critical"
+
+    @property
+    def is_blocking(self) -> bool:
+        return (not self.is_valid) and self.severity != "warning"
 
 
 @dataclass(frozen=True)
@@ -303,6 +309,8 @@ class DegradationOrigin:
     signal_types: tuple[str, ...]  # e.g. ("tool_failure", "missing_field")
     confidence: float  # 0.0–1.0
     reason: str  # human-readable explanation
+    # Raw signal contributions that produced the score, e.g. ("tool_failure", 3.0)
+    confidence_breakdown: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -336,6 +344,8 @@ class ReplayImpact:
     key_fix_node: str | None  # node whose fix most impacted downstream
     downstream_improvement_count: int
     summary: str
+    original_failure_node: str | None = None
+    original_failure_resolved: bool | None = None  # None if original had no failure
 
 
 @dataclass(frozen=True)

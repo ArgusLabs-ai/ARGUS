@@ -237,6 +237,23 @@ def _compute_coverage_summary(
     return summary
 
 
+
+def _parse_validator_return(raw: Any) -> tuple[bool, str, str]:
+    """Normalize validator returns: (ok, message) or (ok, message, severity)."""
+    if not isinstance(raw, (tuple, list)) or len(raw) < 2:
+        return False, f"Validator returned invalid result: {raw!r}", "critical"
+    is_valid = bool(raw[0])
+    message = str(raw[1])
+    severity = "ok" if is_valid else "critical"
+    if not is_valid and len(raw) >= 3 and raw[2] is not None:
+        token = str(raw[2]).strip().lower()
+        if token in ("warning", "warn"):
+            severity = "warning"
+        elif token in ("critical", "blocking", "error", "fail"):
+            severity = "critical"
+    return is_valid, message, severity
+
+
 class ArgusSession:
     """Framework-agnostic monitoring session.
 
@@ -804,7 +821,7 @@ class ArgusSession:
                     node_name,
                     output_snap,
                 )
-                if any(not r.is_valid for r in validator_results) and status == "pass":
+                if any(r.is_blocking for r in validator_results) and status == "pass":
                     status = "semantic_fail"
 
             # behavioral anomaly detection (runs after heuristic/inspection)
@@ -946,11 +963,16 @@ class ArgusSession:
             fn_name = getattr(fn, "__name__", "lambda")
             vname = f"{key}:{fn_name}"
             try:
-                is_valid, message = fn(output_snap)
+                is_valid, message, severity = _parse_validator_return(fn(output_snap))
             except Exception as ve:
-                is_valid, message = False, f"Validator raised: {ve}"
+                is_valid, message, severity = False, f"Validator raised: {ve}", "critical"
             results.append(
-                ValidatorResult(validator_name=vname, is_valid=is_valid, message=message)
+                ValidatorResult(
+                    validator_name=vname,
+                    is_valid=is_valid,
+                    message=message,
+                    severity=severity,
+                )
             )
         return results
 
@@ -1068,7 +1090,7 @@ class ArgusSession:
                     for tf in (inspection.tool_failures or [])
                 )
                 _has_validator_failures = any(
-                    not r.is_valid for r in validator_results
+                    r.is_blocking for r in validator_results
                 )
                 _has_critical_anomalies = any(
                     a.severity == "critical" for a in anomaly_signals
@@ -1496,6 +1518,31 @@ class ArgusSession:
     def force_finalize(self) -> None:
         """Alias for finalize() — used by legacy code and replay engine."""
         self._finalize()
+
+    def begin_new_run(self) -> None:
+        """Reset session state so the next invoke() is recorded as a fresh run.
+
+        ArgusWatcher reuses one session across repeated invoke() calls (its node
+        wrappers close over it). Without this reset the first run sets
+        ``_completed`` and every later finalize() is a no-op — only the first
+        run would ever be persisted. Called by the watcher when the outermost
+        invoke()/stream()/batch() begins on an already-completed session.
+        """
+        with self._lock:
+            self.run_id = generate_run_id()
+            self.parent_run_id = None
+            self.replay_from_step = None
+            self._events = []
+            self._step_index = 0
+            self._initial_state = {}
+            self._started_at = datetime.now(timezone.utc).isoformat()
+            self._completed = False
+            self._defer_auto_finalize = False
+            self._node_attempt_counts = {}
+            self._completed_terminals = set()
+        with self._pending_judges_lock:
+            self._pending_judges.clear()
+        atexit.register(self._atexit_finalize)
 
     def reset_for_resume(self, parent_run_id: str) -> None:
         """Reset session state so post-interrupt steps are captured in a new run record.

@@ -78,6 +78,8 @@ def evaluate_run(record: RunRecord) -> CheckResult:
         reasons.append(f"overall_status={record.overall_status}")
 
     for event in record.steps:
+        if event.status in ("retried", "skipped"):
+            continue
         node_reasons = _node_reasons(event)
         if not node_reasons:
             continue

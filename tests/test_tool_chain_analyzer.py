@@ -129,6 +129,22 @@ def test_ordering_anomaly_detected():
 
 
 @pytest.mark.unit
+def test_no_ordering_anomaly_on_retry_cycle():
+    """TC-002: generate → validate → generate is intentional, not a violation."""
+    steps = [
+        _make_event("generate", 0, output_dict={"draft": "v1"}, attempt_index=0),
+        _make_event("validate", 1, output_dict={"ok": False}, attempt_index=0),
+        _make_event("generate", 2, output_dict={"draft": "v2"}, attempt_index=1, status="pass"),
+        _make_event("validate", 3, output_dict={"ok": True}, attempt_index=1),
+    ]
+    edge_map = {"generate": ["validate"], "validate": ["generate"]}
+    record = _make_record(steps, edge_map)
+    findings = analyze_tool_chains(record)
+    tc002 = [f for f in findings if f.finding_id == "TC-002"]
+    assert tc002 == []
+
+
+@pytest.mark.unit
 def test_no_ordering_anomaly_correct_order():
     """TC-002: Correct execution order should not trigger."""
     steps = [

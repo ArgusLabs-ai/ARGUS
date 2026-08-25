@@ -295,3 +295,78 @@ def test_attach_astream_is_async_generator_and_persists():
     assert watcher._session._completed
     record = load_run(watcher.run_id)
     assert {e.node_name for e in record.steps} >= {"a", "b"}
+
+
+# ── Issue #31: repeated invoke() persists a run each time; empty {} origin ──────
+
+
+def _drop_field_graph() -> StateGraph:
+    """search returns {} (drops documents); summarize crashes reading it."""
+
+    class _DS(TypedDict, total=False):
+        query: str
+        documents: list
+        answer: str
+
+    def search(state: _DS) -> _DS:
+        return {}  # BUG origin — produces no state update
+
+    def summarize(state: _DS) -> _DS:
+        return {"answer": state["documents"][0]}  # KeyError
+
+    g = StateGraph(_DS)
+    g.add_node("search", search)
+    g.add_node("summarize", summarize)
+    g.set_entry_point("search")
+    g.add_edge("search", "summarize")
+    g.add_edge("summarize", END)
+    return g
+
+
+@pytest.mark.unit
+def test_each_invoke_persists_its_own_run(monkeypatch):
+    """3x invoke() on one attached watcher writes 3 separate run records (issue #31)."""
+    calls = _count_saves(monkeypatch)
+    watcher = ArgusWatcher(**_WATCH_KW)
+    app = watcher.attach(_linear_state_graph())
+
+    run_ids = []
+    for _ in range(3):
+        app.invoke({"n": 0})
+        run_ids.append(watcher.run_id)
+
+    assert len(calls) == 3, "each outermost invoke() must persist its own run"
+    assert len(set(run_ids)) == 3, "each invoke() must get a fresh run_id"
+    for rid in run_ids:
+        assert load_run(rid).run_id == rid
+
+
+@pytest.mark.unit
+def test_clean_then_failing_invoke_both_persist(monkeypatch):
+    """A clean run then a failing run: the failure is not hidden by the first (issue #31)."""
+    calls = _count_saves(monkeypatch)
+    watcher = ArgusWatcher(**_WATCH_KW)
+    app = watcher.attach(_linear_state_graph())
+
+    app.invoke({"n": 0})  # clean
+    app.invoke({"n": 0})  # clean again
+    assert len(calls) == 2
+    assert len({rid for rid in calls}) == 2
+
+
+@pytest.mark.unit
+def test_empty_dict_origin_is_flagged_and_blamed():
+    """A node returning {} is a failure, and root cause points at it, not the crash."""
+    watcher = ArgusWatcher(**_WATCH_KW)
+    app = watcher.attach(_drop_field_graph())
+    with pytest.raises(KeyError):
+        app.invoke({"query": "x"})
+
+    record = load_run(watcher.run_id)
+    search_ev = next(e for e in record.steps if e.node_name == "search")
+    assert search_ev.status != "pass", "empty {} origin must not stay a clean pass"
+
+    # Root cause targets the origin (search), not the crash site (summarize).
+    assert record.root_cause_chain
+    assert record.root_cause_chain[0] == "search"
+    assert record.first_failure_step == "search"

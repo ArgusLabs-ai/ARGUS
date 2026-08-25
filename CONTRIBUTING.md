@@ -132,6 +132,25 @@ For bug reports, include:
 - A minimal run output dict that reproduces the issue
 - What ARGUS reported vs what you expected
 
+## How We Work
+
+**Break work into small, trackable steps and do them one at a time.**
+
+Plan the whole thing first as numbered steps. Then execute one step at a time, stopping after each
+so the direction can be corrected before more work is built on top of it.
+
+- Don't chain steps together
+- Don't build a whole feature because the plan for it was agreed — **agreeing a plan is not
+  agreement to execute all of it at once**
+- Each step should be small enough to review in one sitting and land as its own commit
+- If a step turns out bigger than it looked, stop and re-split it rather than pushing through
+
+The point is that work stays steerable. A finished feature that went the wrong way three steps
+back costs more than the few check-ins it would have taken to catch it.
+
+**This applies to AI coding assistants too** — arguably more, since they will happily complete an
+entire roadmap in one pass. If you're using one on this repo, hold it to the same rule.
+
 ## Pull Requests
 
 - Keep PRs focused — one fix or feature per PR

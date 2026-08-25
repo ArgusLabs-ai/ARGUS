@@ -32,17 +32,20 @@ def _validate_provider(provider: str) -> bool:
     return True
 
 
-def key_set(value: str | None = None, provider: str = "openai") -> None:
-    """Save a provider key locally and make it the active provider."""
+def key_set(value: str | None = None, provider: str = "openai") -> bool:
+    """Save a provider key locally and make it the active provider.
+
+    Returns False when the operation failed (unknown provider, empty key).
+    """
     if not _validate_provider(provider):
-        return
+        return False
     if not value:
         import getpass
 
         value = getpass.getpass(f"{provider} API key (input hidden): ").strip()
     if not value:
         _console.print("  [red]No key entered.[/red]")
-        return
+        return False
     user_config.set_key(provider, value)
     user_config.set_provider(provider)
     _console.print(
@@ -57,21 +60,26 @@ def key_set(value: str | None = None, provider: str = "openai") -> None:
         "  Switch providers anytime with [bold]argus key use <provider>[/bold].\n"
         "  Check status with [bold]argus doctor[/bold].[/dim]"
     )
+    return True
 
 
-def key_use(provider: str) -> None:
-    """Switch the active provider (must already have a key)."""
+def key_use(provider: str) -> bool:
+    """Switch the active provider (must already have a key).
+
+    Returns False when the switch failed (unknown provider, no key saved).
+    """
     if not _validate_provider(provider):
-        return
+        return False
     if not user_config.resolve_key(provider):
         _console.print(
             f"  [yellow]No {provider} key set.[/yellow] Run "
             f"[bold]argus key set --provider {provider}[/bold] or export "
             f"{_ENV_HINT[provider]}."
         )
-        return
+        return False
     user_config.set_provider(provider)
     _console.print(f"  [green]Active provider set to[/green] {provider}")
+    return True
 
 
 def key_show() -> None:

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.10.4 — 2026-08-25
+
+- `argus show <id>` now resolves the requested run instead of always rendering the newest one; unknown ids and ambiguous prefixes exit 1 with a clean message instead of a traceback (#33, #39)
+
+## 0.10.3 — 2026-08-25
+
+- `argus key set` / `argus key use` now exit 1 when the operation fails (unknown provider, no saved key), so scripts gating BYOK setup on exit codes see failures (#40)
+
+## 0.10.2 — 2026-08-25
+
+- Wave E: retry/cycle false positives, validator severity, replay verdict, confidence explanation (#32)
+- `empty_output` failure: a node returning a literal `{}` with successors downstream is flagged critical and blamed on the origin, not the downstream crash site (#31)
+- Per-invoke persistence: an attached `ArgusWatcher` now writes a separate run record for every `invoke()` / `stream()` / `batch()`, not just the first
+- Restore the `test_no_ordering_anomaly_correct_order` case that had been shadowed as dead code; single-source the correlator confidence weights and `_INACTIVE_STATUSES` constant
+
+## 0.9.4 — 2026-08-25
+
+- `empty_output` failure: a node returning a literal `{}` with successors downstream is flagged critical and blamed on the origin, not the downstream crash site — fixes silent no-op nodes (#31). Only literal `{}` is flagged; dicts with keys (even empty-valued) and router/conditional nodes are exempt
+- Per-invoke persistence: an attached `ArgusWatcher` now writes a separate run record for every `invoke()` / `stream()` / `batch()`, not just the first (via `ArgusSession.begin_new_run()`)
 ## 0.10.1 — 2026-08-22
 
 Version alignment. PyPI treated `0.10.0` (14 Aug, same era as `0.9.1`) as latest because `0.10.0 > 0.9.3`, so `pip install argus-agents` skipped the `0.9.2` / `0.9.3` work. This release republishes that work as `0.10.1`.

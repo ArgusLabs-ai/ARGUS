@@ -13,6 +13,36 @@ interface Release {
 
 const RELEASES: Release[] = [
   {
+    version: '0.10.4',
+    title: 'argus show resolves the requested run',
+    date: '2026-08-25',
+    tag: 'patch',
+    highlights: [
+      'argus show <id> now renders the requested run instead of always showing the newest one',
+      'Unknown ids and ambiguous prefixes exit 1 with a clean message instead of a traceback',
+    ],
+  },
+  {
+    version: '0.10.3',
+    title: 'Nonzero exit on failed key commands',
+    date: '2026-08-25',
+    tag: 'patch',
+    highlights: [
+      'argus key set / argus key use exit 1 on failure (unknown provider, no saved key) so scripts gating BYOK setup can detect it',
+    ],
+  },
+  {
+    version: '0.10.2',
+    title: 'Silent no-op detection & per-invoke persistence',
+    date: '2026-08-25',
+    tag: 'patch',
+    highlights: [
+      'empty_output failure: a node returning a literal {} with successors downstream is flagged critical and blamed on the origin, not the crash site',
+      'An attached ArgusWatcher now persists a run record for every invoke() / stream() / batch(), not just the first',
+      'Wave E stability: retry/cycle false positives, validator severity, replay verdict, confidence explanation',
+    ],
+  },
+  {
     version: '0.10.1',
     title: 'GitHub & PyPI version alignment',
     date: '2026-08-22',
