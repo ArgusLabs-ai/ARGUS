@@ -281,12 +281,15 @@ def cmd_show(
         if run_id == "run" and ctx.args:
             target_id = ctx.args[0]
         if target_id is None:
-            _console.print("[red]Error:[/red] No runs found.", err=True)
+            _console.print("[red]Error:[/red] No runs found.")
             raise typer.Exit(1)
         try:
             print(load_run_text(target_id))
         except FileNotFoundError as e:
-            _console.print(f"[red]Error:[/red] {e}", err=True)
+            _console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
+        except ValueError as e:
+            _console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(1)
         return
     if run_id is None or run_id == "last":
@@ -295,11 +298,32 @@ def cmd_show(
         # Backward compat: 'argus show run <id>' still works
         actual_id = ctx.args[0] if ctx.args else None
         if actual_id:
-            show_run(actual_id)
+            _show_run_strict(actual_id)
         else:
             show_last()
     else:
-        show_run(run_id)
+        _show_run_strict(run_id)
+
+
+def _show_run_strict(run_id: str) -> None:
+    """Render a specific run, exiting nonzero when the id can't be resolved.
+
+    ``show_run()`` prints errors and returns so the TUI stays friendly, but a
+    caller scripting ``argus show <id>`` then can't tell success from failure —
+    and an ambiguous prefix escaped as a raw traceback. Resolve first; on any
+    resolution failure print the reason and exit 1.
+    """
+    from argus.storage import load_run
+
+    try:
+        load_run(run_id)
+    except FileNotFoundError as e:
+        _console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except ValueError as e:
+        _console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    show_run(run_id)
 
 
 @app.command("check")
