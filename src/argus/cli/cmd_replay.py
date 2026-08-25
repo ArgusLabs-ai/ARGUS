@@ -12,9 +12,117 @@ from rich.text import Text
 from argus.cli import print_footer
 from argus.models import RunRecord
 from argus.replay import ReplayEngine
+from argus.state_patch import PatchError, format_changes, preview_patch
 from argus.storage import load_run
 
 console = Console()
+
+
+def _parse_set_value(raw: str) -> Any:
+    """Parse a --set value as JSON, falling back to a plain string.
+
+    ``retries=0`` yields the integer 0 and ``ok=true`` yields True, while
+    ``query=hello`` stays a string.  Wrap in quotes to force a string:
+    ``--set flag='"true"'``.
+    """
+    import json
+
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def build_patch(
+    patch_file: str | None,
+    set_pairs: list[str] | None,
+    delete_paths: list[str] | None,
+) -> dict[str, Any] | None:
+    """Assemble a patch document from CLI options. Returns None if empty.
+
+    A ``--patch`` file provides the base; ``--set`` and ``--delete`` are
+    layered on top, so a flag overrides the same path in the file.
+    """
+    import json
+
+    patch: dict[str, Any] = {}
+
+    if patch_file:
+        path = Path(patch_file)
+        if not path.exists():
+            raise PatchError(f"patch file not found: {patch_file}")
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise PatchError(f"patch file {patch_file} is not valid JSON: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise PatchError(
+                f"patch file {patch_file} must contain a JSON object, "
+                f"got {type(loaded).__name__}"
+            )
+        patch = loaded
+
+    for pair in set_pairs or []:
+        if "=" not in pair:
+            raise PatchError(
+                f"invalid --set {pair!r} — expected 'path=value' "
+                "(e.g. --set meta.retries=0)"
+            )
+        raw_path, _, raw_value = pair.partition("=")
+        raw_path = raw_path.strip()
+        if not raw_path:
+            raise PatchError(f"invalid --set {pair!r} — the path is empty")
+        patch.setdefault("set", {})
+        if not isinstance(patch["set"], dict):
+            raise PatchError("patch file's 'set' op must be an object to combine with --set")
+        patch["set"][raw_path] = _parse_set_value(raw_value)
+
+    for raw_path in delete_paths or []:
+        existing = patch.get("delete")
+        if existing is None:
+            patch["delete"] = [raw_path]
+        elif isinstance(existing, str):
+            patch["delete"] = [existing, raw_path]
+        elif isinstance(existing, list):
+            existing.append(raw_path)
+        else:
+            raise PatchError(
+                "patch file's 'delete' op must be a list to combine with --delete"
+            )
+
+    return patch or None
+
+
+def _print_patch_preview(
+    record: RunRecord,
+    from_step: str,
+    patch: dict[str, Any],
+    create_missing: bool,
+) -> bool:
+    """Show what the patch changes. Returns False if it cannot be applied."""
+    step = next((e for e in record.steps if e.node_name == from_step), None)
+    if step is None:  # pragma: no cover - caller validates first
+        return False
+
+    try:
+        changes = preview_patch(step.input_state, patch, create_missing=create_missing)
+    except PatchError as exc:
+        console.print()
+        console.print(f"  [red]patch error:[/red] {exc}")
+        console.print()
+        return False
+
+    console.print()
+    console.print(Text("  state patch", style="bold italic"))
+    console.print()
+    if not changes:
+        console.print("  [dim]patch is empty — nothing to change[/dim]")
+    for line in format_changes(changes):
+        marker, _, rest = line.partition(" ")
+        style = {"+": "green", "-": "red", "~": "yellow"}.get(marker, "dim")
+        console.print(f"  [bold {style}]{marker}[/bold {style}] {rest}")
+    console.print()
+    return True
 
 
 def replay_run(
@@ -22,6 +130,9 @@ def replay_run(
     from_step: str,
     app_module_str: str | None,
     only: bool = False,
+    patch: dict[str, Any] | None = None,
+    create_missing: bool = False,
+    dry_run: bool = False,
 ) -> None:
     try:
         record = load_run(run_id)
@@ -73,6 +184,8 @@ def replay_run(
     header.append(from_step, style="bold")
     if only:
         header.append("  (isolated)", style="italic dim")
+    if patch is not None:
+        header.append("  + patch", style="italic yellow")
     console.print(f"  {header}")
     console.print()
     console.print(Rule(style="dim"))
@@ -86,6 +199,21 @@ def replay_run(
             f"  [dim]Re-running from [bold]{from_step}[/bold] "
             f"— upstream outputs frozen from [bold]{run_id}[/bold][/dim]"
         )
+    # ── State patch preview ───────────────────────────────────────────────
+    if patch is not None:
+        if not _print_patch_preview(record, from_step, patch, create_missing):
+            return
+        if dry_run:
+            console.print("  [dim]dry run — nothing was executed[/dim]")
+            console.print()
+            print_footer()
+            return
+    elif dry_run:
+        console.print("  [dim]dry run — no patch given, nothing to preview[/dim]")
+        console.print()
+        print_footer()
+        return
+
     # Warn about non-deterministic external calls
     console.print()
     console.print(
@@ -102,12 +230,16 @@ def replay_run(
             new_run_id = engine.replay_node(
                 run_id=run_id,
                 node_name=from_step,
+                patch=patch,
+                create_missing=create_missing,
             )
         else:
             new_run_id = engine.replay(
                 run_id=run_id,
                 from_node=from_step,
                 app_factory=factory,
+                patch=patch,
+                create_missing=create_missing,
             )
     except Exception as e:
         console.print(f"[red]Replay failed:[/red] {e}")

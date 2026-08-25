@@ -170,6 +170,33 @@ argus diff <rerun-id>                 # compare vs original
 
 External API calls (OpenAI, etc.) are recorded by default — replays are free and deterministic.
 
+### Time-Travel: edit the state, then resume
+
+Spotted the bad value? Fix it in the saved state and resume from there — no code change, no re-running the steps that already worked:
+
+```bash
+argus replay <run-id> node_7 --set status=OK          # correct a value
+argus replay <run-id> node_7 --delete stale_field     # reproduce a dropped field
+argus replay <run-id> node_7 --patch fix.json         # a full patch document
+argus replay <run-id> node_7 --set status=OK --dry-run  # preview, run nothing
+```
+
+Upstream nodes stay frozen, so only the resumed trajectory changes. Paths are dotted with list
+indices — `items[0].name` — and match the `field_path` ARGUS reports on a failing signal, so you
+can paste one straight in. A patch file takes the same three ops:
+
+```json
+{
+  "delete": ["broken_field"],
+  "set":    {"query": "fixed query", "meta.retries": 0},
+  "merge":  {"config": {"temperature": 0}}
+}
+```
+
+Patches are strict by default: a mistyped path errors with a "did you mean" hint instead of
+silently adding a field (use `--create-missing` to add new keys). Every patched replay records
+the patch it ran with, so the run explains its own divergence from the original.
+
 ---
 
 ## Semantic Judge
