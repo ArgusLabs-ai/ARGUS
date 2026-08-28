@@ -722,6 +722,21 @@
       }
     },
     {
+      "id": "SP-027",
+      "category": "suspicious_phrases",
+      "pattern": "(?<![/\\\\])\\b(etc|et cetera)[.\u2026]*\\s*$",
+      "match_strategy": "regex",
+      "severity": "warning",
+      "description": "Output ends with 'etc.' — enumeration abandoned mid-list",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
       "id": "MP-001",
       "category": "malformed_payload",
       "pattern": "^\\{\\s*\\}$",

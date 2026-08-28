@@ -270,3 +270,41 @@ class TestNaturalUncertaintySignatures:
         matches = scan_value("N/A", registry)
         new_ids = {m.sig_id for m in matches if m.sig_id in {"SP-014", "SP-015", "SP-016"}}
         assert not new_ids
+
+
+@pytest.mark.unit
+class TestEtcLazyTruncation:
+    """SP-027 — enumeration abandoned with a trailing 'etc.'."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Pipeline stages: init, build, deploy, etc.",
+            "Fields: id, name, email, etc",
+            "Supported formats: json, yaml, toml, etc...",
+            "Items: a, b, c, et cetera.",
+            "Stages: init, build, ETC.",
+        ],
+    )
+    def test_trailing_etc_hits(self, registry, text):
+        ids = {m.sig_id for m in scan_value(text, registry)}
+        assert "SP-027" in ids
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "We use etc. for brevity in the list above.",
+            "The /etc/passwd file was modified during the run.",
+            "Config lives under /etc",
+            "The fetcher retried twice before giving up.",
+            "Sketch etcher tools are unrelated to this pipeline.",
+        ],
+    )
+    def test_no_false_positive(self, registry, text):
+        ids = {m.sig_id for m in scan_value(text, registry)}
+        assert "SP-027" not in ids
+
+    def test_severity_and_category(self, registry):
+        sig = next(s for s in registry if s["id"] == "SP-027")
+        assert sig["severity"] == "warning"
+        assert sig["category"] == "suspicious_phrases"
