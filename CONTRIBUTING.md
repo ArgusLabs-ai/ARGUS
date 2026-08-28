@@ -22,7 +22,7 @@ Building adapters now would mean rewriting them every few versions. Once the cor
 
 ### Detection Signatures
 
-The semantic signature registry (`src/argus/data/signatures.json`) ships with 61 patterns across 6 categories. More real-world patterns are needed:
+The semantic signature registry (`src/argus/data/signatures.json`) ships with 72 patterns across 8 categories. More real-world patterns are needed:
 
 - **LLM refusal variants** — new refusal phrasings from Claude, Gemini, Llama, Mistral
 - **Hallucination markers** — confident-sounding but fabricated outputs

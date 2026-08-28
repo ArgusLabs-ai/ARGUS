@@ -93,8 +93,9 @@ Detects placeholder/degraded LLM outputs using match strategies:
 - `exact_ci`, `contains_ci`, `prefix_ci`: string matching
 - `regex`: compiled pattern
 - `repetition`: n-gram repetition detection
+- `semantic_similarity`: embedding cosine match (6 bundled signatures use it)
 
-Categories: `placeholder_outputs`, `null_like_semantic`, `suspicious_phrases`, `corrupted_markers`, `repeated_filler_text`, `malformed_embedded_json` → mapped to `placeholder_detected` or `semantic_degradation` failure types.
+Categories: `placeholder_outputs`, `null_like_semantic`, `suspicious_phrases`, `corrupted_markers`, `repeated_filler`, `malformed_payload`, `empty_semantic_state`, `semantic_refusal` → mapped to `placeholder_detected`, `semantic_degradation`, or `structural_anomaly` failure types by `_CATEGORY_TO_FAILURE` in `inspector.py`.
 
 ### LLM Transport
 
