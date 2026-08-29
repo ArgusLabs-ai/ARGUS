@@ -1,6 +1,6 @@
 # Live loop guard (loop detonator)
 
-**Status:** half built · **Verdict:** real delta, but handle with care · **Size:** small–medium
+**Status:** not built · **Verdict:** real delta, but handle with care · **Size:** medium
 
 ## The idea
 
@@ -11,12 +11,8 @@ visualization.
 
 ## What already exists
 
-More than the pitch assumes.
+The execution data needed by a future implementation already exists.
 
-- **Loop analysis is already shipped** — `loop_analyzer.py` runs mandatory LLM analysis on every
-  looped node, producing `LoopAnalysisResult` with `is_stalled`, `stall_details`,
-  `unnecessary_retries`, and per-iteration diffs. The README documents "Loop stalls" and
-  "Unnecessary retries" as things ARGUS already catches.
 - **Iteration tracking is live during the run.** `session.py` maintains `attempt_index` per node
   event and sets `total_iterations` on finalize. The counter the guard needs is already there.
 - **Cyclic graphs are detected up front** — `utils/cycle_detection.py`, `RunRecord.is_cyclic`.
@@ -26,10 +22,7 @@ More than the pitch assumes.
 
 ## What's genuinely missing
 
-**Timing.** `loop_analyzer.py` runs *post-hoc*, at finalize, after the tokens are already spent.
-It tells you that you burned $40 in a loop. It does not stop you burning it.
-
-The delta is a guard inside the wrapper — `session.py`, `_make_sync_wrapper` /
+Both loop analysis and intervention are missing. The implementation belongs inside the wrapper — `session.py`, `_make_sync_wrapper` /
 `_make_async_wrapper`, where `attempt_index` is already tracked. On each iteration past a
 threshold, embed the state delta and compare against the previous N iterations. On stagnation,
 act.

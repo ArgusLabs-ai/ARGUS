@@ -23,7 +23,6 @@ This is `correlator.py` — 805 lines, already in the product and already wired 
 | Confidence score | `confidence: float` on both origins and links |
 | Clean summary instead of a log dump | `CorrelationReport.causal_summary`, a 1–3 sentence narrative |
 | Timeline of degradation | `TimelineEvent` with `degradation_onset` / `propagation` / `crash` markers |
-| LLM-augmented explanation | `llm_correlator.py` → `LLMCorrelationInsight` |
 
 The README has advertised this since before the proposal was written: *"Correlator — traces failure
 propagation across nodes. Points at the origin, not the crash site."*

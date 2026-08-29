@@ -25,7 +25,7 @@ difference between "build a blame attribution engine" and "add embedding-based d
 |---|---|---|
 | [Regression contracts](regression-contracts.md) | Not built | **Build next.** Needs a golden-trace tag first |
 | [Graph hazard linter](graph-hazard-linter.md) | Not built | **Cheapest standalone win.** No LLM, no deps |
-| [Live loop guard](live-loop-guard.md) | Half built | Post-hoc analysis exists; live guard is the delta |
+| [Live loop guard](live-loop-guard.md) | Not built | Iteration data exists; analysis and intervention are the delta |
 | [Smoke test runner](smoke-test-runner.md) | Not built | Gateway to graph-aware pass/fail and drift metrics |
 | [Indirect injection testing](indirect-injection-testing.md) | Not built | Strongest differentiator; primitive already exists |
 | [Flaky tool heatmap](flaky-tool-heatmap.md) | Not built | Data is already captured, just not aggregated |
@@ -40,7 +40,6 @@ These came up as "ARGUS should build this" and already exist:
 | Resume execution from step N | `replay.py` — `ReplayEngine.replay()`, upstream outputs frozen |
 | Time-travel state patching | `state_patch.py` + `argus replay --set/--delete/--patch` |
 | Root-cause / blame attribution | `correlator.py` — `DegradationOrigin` with confidence scores |
-| Loop stall + wasted-retry detection | `loop_analyzer.py` (post-hoc) |
 | Behavioral diff between runs | `cmd_diff.py` + `ReplayComparisonResult` |
 | Deterministic replay of external calls | `http_recorder.py` — record/playback |
 | Custom per-node assertions | `validators={...}` on `ArgusWatcher` / `ArgusSession` |
