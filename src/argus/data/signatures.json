@@ -722,6 +722,126 @@
       }
     },
     {
+      "id": "SP-019",
+      "category": "suspicious_phrases",
+      "pattern": "reached my token limit",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "Model reports hitting its token limit — output is truncated",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-020",
+      "category": "suspicious_phrases",
+      "pattern": "due to length constraints",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "Model truncated its output citing length constraints",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-021",
+      "category": "suspicious_phrases",
+      "pattern": "response was truncated",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "Model states its own response was truncated — incomplete output",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-022",
+      "category": "suspicious_phrases",
+      "pattern": "as mentioned above",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "Back-reference to earlier content — the referenced context may not exist in what this node was given",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-023",
+      "category": "suspicious_phrases",
+      "pattern": "as i said earlier",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "Self-referential back-reference to a previous turn — may assume conversation history the node never received",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-024",
+      "category": "suspicious_phrases",
+      "pattern": "as previously mentioned",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "Back-reference to previously supplied information — may assume context the node was never given",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-025",
+      "category": "suspicious_phrases",
+      "pattern": "\\band many more[.…]*\\s*$",
+      "match_strategy": "regex",
+      "severity": "warning",
+      "description": "Output ends with 'and many more' — enumeration abandoned mid-list",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-026",
+      "category": "suspicious_phrases",
+      "pattern": "\\band so on[.…]*\\s*$",
+      "match_strategy": "regex",
+      "severity": "warning",
+      "description": "Output ends with 'and so on' — enumeration abandoned mid-list",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
       "id": "SP-027",
       "category": "suspicious_phrases",
       "pattern": "(?<![/\\\\])\\b(etc|et cetera)[.\u2026]*\\s*$",
