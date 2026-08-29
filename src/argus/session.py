@@ -784,7 +784,14 @@ class ArgusSession:
                 self._check_latency_signals(duration_ms, inspection)
                 # Determine raw status from inspection
                 _has_failure = inspection.is_silent_failure or inspection.has_tool_failure
-                _has_signals = bool(inspection.semantic_signals)
+                # Only critical-severity semantic signals affect status — a
+                # "warning" signal (e.g. an ambiguous suspicious-phrase match)
+                # is recorded on the event for visibility but must not alone
+                # fail the node. Mirrors how ToolFailure already gates on
+                # severity == "critical" for has_tool_failure above.
+                _has_signals = any(
+                    s.severity == "critical" for s in inspection.semantic_signals
+                )
 
                 if _has_failure or _has_signals:
                     # Before blaming this node, check if it's operating on
@@ -1067,7 +1074,12 @@ class ArgusSession:
                 _has_failure = (
                     inspection.is_silent_failure or inspection.has_tool_failure
                 )
-                _has_signals = bool(inspection.semantic_signals)
+                # Same severity gate as the initial status determination —
+                # a leftover warning-severity signal shouldn't re-fail a
+                # node the disambiguation pass otherwise cleared.
+                _has_signals = any(
+                    s.severity == "critical" for s in inspection.semantic_signals
+                )
                 if not _has_failure and not _has_signals:
                     status = "pass"
                 elif _has_failure:

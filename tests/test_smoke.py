@@ -905,6 +905,58 @@ def test_latency_no_thresholds_no_flags():
     assert len(inspection.tool_failures) == 0
 
 
+# ── Semantic signal severity gates node status (issue #46) ────────────────────
+# A "warning" severity signature match (e.g. an ambiguous suspicious-phrase
+# hit) must not, on its own, fail a node — only "critical" severity does.
+# Before this fix any registry match at all flipped pass -> semantic_fail
+# regardless of severity.
+
+
+@pytest.mark.unit
+def test_warning_severity_signal_does_not_fail_node():
+    from argus.models import LLMInvestigationConfig
+
+    session = ArgusSession(llm_investigation=LLMInvestigationConfig(enabled=False))
+    session.set_node_names(["summarize"])
+
+    def node(state):
+        # PH-001 (placeholder_outputs, warning severity, exact_ci — fixed
+        # 1.0 match confidence): literal TODO placeholder left in output.
+        return {"result": "TODO"}
+
+    wrapped = session.wrap("summarize", node)
+    wrapped({"input": "doc"})
+    session.finalize()
+
+    loaded = load_run(session.run_id)
+    step = loaded.steps[0]
+    assert step.status == "pass"
+    assert any(s.sig_id == "PH-001" for s in step.inspection.semantic_signals)
+
+
+@pytest.mark.unit
+def test_critical_severity_signal_fails_node():
+    from argus.models import LLMInvestigationConfig
+
+    session = ArgusSession(llm_investigation=LLMInvestigationConfig(enabled=False))
+    session.set_node_names(["summarize"])
+
+    def node(state):
+        # PH-002 (placeholder_outputs, critical severity, exact_ci — fixed
+        # 1.0 match confidence, so it's unaffected by the length-based
+        # confidence heuristic that other match strategies apply).
+        return {"result": "PLACEHOLDER"}
+
+    wrapped = session.wrap("summarize", node)
+    wrapped({"input": "doc"})
+    session.finalize()
+
+    loaded = load_run(session.run_id)
+    step = loaded.steps[0]
+    assert step.status in ("fail", "semantic_fail")
+    assert any(s.sig_id == "PH-002" for s in step.inspection.semantic_signals)
+
+
 # ── Conditional branch skipping (VAR-61) ──────────────────────────────────────
 
 
