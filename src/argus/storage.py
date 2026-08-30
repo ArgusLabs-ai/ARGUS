@@ -614,6 +614,19 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
         )
     validator_results = [ValidatorResult(**v) for v in data.get("validator_results", [])]
     anomaly_signals = [AnomalySignal(**a) for a in data.get("anomaly_signals", [])]
+    suppressed_signals = [
+        SemanticSignal(
+            sig_id=x["sig_id"],
+            category=x["category"],
+            severity=x["severity"],
+            description=x["description"],
+            field_path=tuple(x["field_path"]),
+            evidence=x["evidence"],
+            confidence=x.get("confidence", 1.0),
+        )
+        for x in data.get("suppressed_signals", [])
+    ]
+    suppressed_anomalies = [AnomalySignal(**a) for a in data.get("suppressed_anomalies", [])]
     sc = data.get("semantic_check")
     if sc:
         # Convert list→tuple for frozen tuple fields (JSON round-trip produces lists)
@@ -640,6 +653,8 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
         subgraph_run_id=data.get("subgraph_run_id"),
         behavior_type=data.get("behavior_type"),
         anomaly_signals=anomaly_signals,
+        suppressed_signals=suppressed_signals,
+        suppressed_anomalies=suppressed_anomalies,
         semantic_check=semantic_check,
         total_iterations=data.get("total_iterations"),
     )

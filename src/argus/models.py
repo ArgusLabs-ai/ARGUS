@@ -219,6 +219,10 @@ class NodeEvent:
     semantic_check: SemanticCheckResult | None = None
     disambiguation_results: list[DisambiguationResult] = field(default_factory=list)
     total_iterations: int | None = None  # set on finalize for looped nodes
+    # Hits silenced by `argus ignore` (project .argus/config.json). Kept for stats
+    # and findings; they do not affect status. See suppressions.py.
+    suppressed_signals: list[SemanticSignal] = field(default_factory=list)
+    suppressed_anomalies: list[AnomalySignal] = field(default_factory=list)
 
 
 # ── Replay comparison dataclasses ─────────────────────────────────────────────
