@@ -340,6 +340,19 @@ def cmd_check(
         None,
         help="Run ID, 8-char prefix, or 'last' for the most recent run.",
     ),
+    output_format: str = typer.Option(
+        "text",
+        "--format",
+        help="Output format: text (default) or json (one object on stdout, nothing else).",
+    ),
+    fail_on: Optional[str] = typer.Option(
+        None,
+        "--fail-on",
+        help=(
+            "Comma-separated run statuses that fail the gate "
+            "(crashed, interrupted, silent_failure). Default: any non-clean run."
+        ),
+    ),
 ) -> None:
     """Fail (exit 1) if the last or given run was not clean.
 
@@ -347,8 +360,10 @@ def cmd_check(
 
         argus check last
         argus check <run-id>
+        argus check last --format json
+        argus check last --fail-on crashed,silent_failure
     """
-    check_run(run_id)
+    check_run(run_id, output_format=output_format, fail_on=fail_on)
 
 
 @app.command("list")
