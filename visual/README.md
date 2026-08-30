@@ -9,6 +9,7 @@ context, dependencies, or the evidence behind a decision.
 | [PRD.md](PRD.md) | Master product requirements document. Goals, personas, user stories, functional requirements, non-goals, success metrics, open questions. | Before starting any feature, fix, or doc change. |
 | [DEPENDENCY-MAP.md](DEPENDENCY-MAP.md) | How every workstream connects: what blocks what, which modules each touches, which docs must change together. | Before picking an issue, so you don't build on something that isn't there yet. |
 | [EVIDENCE.md](EVIDENCE.md) | Research notes behind the product decisions — operator interviews (Lenny's Newsletter/Podcast), the 50-agent stability review, and what we could *not* find evidence for. | When a PRD requirement looks arbitrary and you want to know why. |
+| [MARKET.md](MARKET.md) | Gaps, positioning (Dunford five-component draft), wedge, channels, PMF measurement, open-core boundary, month-one actions. | Before writing README copy, planning a launch, or deciding what's open vs paid. |
 | [STATUS-abhishek.md](STATUS-abhishek.md) | Co-maintainer's current standing in the repo: merged PRs, owned areas, review rights, what's parked. | Onboarding a new contributor; deciding who reviews what. |
 
 ## How this folder relates to the rest of the repo
