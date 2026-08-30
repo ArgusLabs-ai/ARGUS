@@ -75,6 +75,16 @@ Consequences worth knowing:
 
 Exit code is `1` on failure, `0` when clean.
 
+## The findings list — `RunRecord.findings`
+
+Statuses say *whether* a node failed; `findings[]` says *why*, once per signal, in one flat
+shape (`argus.models.Finding`): `id` (stable content hash), `node`, `type`, `severity`,
+`reason` (a full sentence), `source` (`heuristic | validator | anomaly | llm | crash`),
+optional `field_path`, `origin_node`, `confidence`, `suppressed`. Built at finalize by
+`findings.collect_findings`; retried/skipped steps contribute nothing. Records written before
+`schema_version` "2" get the list back-filled on load. Consumers should read this instead of
+walking `steps[].inspection / validator_results / anomaly_signals / semantic_check`.
+
 ## Related vocabularies (do not confuse with statuses)
 
 | Field | Values | Where |
