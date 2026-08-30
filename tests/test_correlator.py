@@ -1,5 +1,7 @@
 """Unit tests for argus.correlator — deterministic root-cause correlation layer."""
 
+from __future__ import annotations
+
 import pytest
 
 from argus.correlator import compare_replay, correlate
