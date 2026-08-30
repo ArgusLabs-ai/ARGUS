@@ -241,7 +241,7 @@ with one command.
 - [ ] `good-to-have-dev/README.md` "Already shipped" table no longer lists `loop_analyzer.py`; live-loop-guard row says "not built"
 - [ ] A CI step (US-6.2) greps for `VaradDurge/ARGUS` in `README.md` and fails
 
-### 4.4 Dashboard (W4) — `[needs Mobbin pass]` before implementation `[E-9]`
+### 4.4 Dashboard (W4) `[E-9][E-10]`
 
 #### US-4.1: Remove or gate `soon` navigation
 **Acceptance:**
@@ -253,7 +253,9 @@ with one command.
 
 #### US-4.2: Findings panel on run detail `[E-1]`
 **Acceptance:**
-- [ ] New `components/run-detail/FindingsPanel.tsx` renders `RunRecord.findings` sorted: critical → warning, then by node order
+- [ ] New `components/run-detail/FindingsPanel.tsx` renders `RunRecord.findings` **grouped by severity** with a coloured left rule and header count ("Critical (2) / Warning (4)"), node order within a group `[E-10a]`
+- [ ] Suppressed findings in a greyed "Suppressed (n)" group at the bottom
+- [ ] Right-aligned per-row action "Fix prompt" → `argus fix` output for that node
 - [ ] Each row: severity chip (existing `StatusBadge` colours), node, `reason` full sentence, `origin_node` link, `source` tag, suppressed rows greyed
 - [ ] Click → scrolls to that step in `StepInspector`
 - [ ] `RootCauseBanner` reads from `findings[0]` when present
@@ -261,7 +263,7 @@ with one command.
 
 #### US-4.3: Tag filter on run list `[E-3]`
 **Acceptance:**
-- [ ] `RunTable.tsx` gains a tag chip filter; state in URL params
+- [ ] `RunTable.tsx` gains a filter-chip row above the table: `tag: value ×` per active filter + "+ Add filter" opening a per-key multi-select `[E-10c]`; state in URL params
 - [ ] Empty state text when no runs match filter
 - [ ] Verify in browser using dev-browser skill
 
@@ -270,14 +272,14 @@ with one command.
 pairs fail most often.
 **Acceptance:**
 - [ ] API `GET /api/hotspots?tag=…` in `cmd_open_ui.py` aggregates `findings[].origin_node × node` counts across runs
-- [ ] `components/HotspotMatrix.tsx`: rows = origin, cols = failing node, cell = count with intensity; click → run list filtered to those runs
+- [ ] `components/HotspotMatrix.tsx`: rows = origin, cols = failing node, cell = raw count on a **single-hue amber ramp**, zero cells blank, "Low → High" legend, one-line explainer under title `[E-10b]`; click → run list filtered to those runs
 - [ ] Lives on the Runs page above the table, collapsed by default when < 5 runs
 - [ ] No LLM call involved
 - [ ] Verify in browser using dev-browser skill
 
 #### US-4.5: Empty state points to `argus demo` `[E-6]`
 **Acceptance:**
-- [ ] `EmptyRunsState.tsx` first CTA: "Try `argus demo`"; keeps existing wrong-directory diagnosis
+- [ ] `EmptyRunsState.tsx`: primary = copyable `argus demo --open` command block; secondary = "Attach to my graph" → Guide; existing "reading from `<path>`" line kept under both; no illustration `[E-10d]`
 - [ ] Verify in browser using dev-browser skill
 
 #### US-4.6: Design tokens audit
@@ -373,7 +375,7 @@ pairs fail most often.
 - **Terminal finding format is the design system's root.** `findings.py` output — `[argus] run 8f3a1c02  silent_failure on retrieve / missing: documents (dropped by search)` — is the pattern every other surface (JSON, dashboard row, webhook body) mirrors: *status on node / what / caused by whom / next command*.
 - **Colours** are already specified in README (crashed red, silent amber, semantic purple, degraded orange, skipped grey). Tokenize them (US-4.6); don't invent new ones.
 - **Empty and error states** must always say where ARGUS is reading from (`$ARGUS_DIR` / project root) — existing behaviour, keep it.
-- **`[needs Mobbin pass]`** — before building US-4.2 / US-4.4, run `/visual-and-research` with Mobbin connected for: (a) a findings list with severity chips and a "caused by" link, (b) a cross-tab heat matrix with click-through, (c) a run table with tag-chip filters. Record links in `EVIDENCE.md` E-9.
+- **Visual references** for US-4.2 / 4.3 / 4.4 / 4.5 are in `EVIDENCE.md` E-10 (Mobbin, 2026-08-30). Summary: findings grouped by severity with header counts (Semrush); single-hue amber hotspot grid with blank zero cells (Klaviyo/Maze); removable `tag: value ×` filter chips above the run table (Aboard/Twenty); empty state = copyable `argus demo` block + "attach to my graph" (Steep/Grok). Any *new* dashboard surface needs its own pass first.
 
 ## 8. Technical considerations
 
@@ -417,4 +419,4 @@ pairs fail most often.
 - **Q3** Owner's appetite for path-level CODEOWNERS (US-3.4) vs. keeping `*` shared — governance call.
 - **Q4** OTel semantic conventions for GenAI are still evolving; pin to `gen_ai.*` attributes or ARGUS-namespaced? Decide before US-5.2.
 - **Q5** Should suppression config (US-1.3) live in `.argus/config.json` (per project, committable) or `~/.argus/` (per user)? Proposal: project, so a team shares it.
-- **Q6** Mobbin pass outstanding for all W4 stories.
+- **Q6** ~~Mobbin pass outstanding for all W4 stories.~~ Done — E-10. Compare view (`app/compare/`) not covered; do a pass if it enters scope.

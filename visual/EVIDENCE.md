@@ -8,11 +8,8 @@ Two source classes were used:
 2. **Field data from this repo** — `ARGUS_STABILITY_REVIEW.md` (50 LangGraph agents, 150 nodes),
    fault-injection recall matrix, open issues, and the codebase itself.
 
-> **Visual references gap.** The Mobbin MCP (real app screens) was not connected in the session
-> that produced this pack, so there are **no screenshot references** for dashboard layouts. Every
-> UI requirement below is stated in words and marked `[needs Mobbin pass]`. Run
-> `/visual-and-research` again with Mobbin connected before building any dashboard page and
-> paste the screen links into the matching section here.
+> Visual references for the four dashboard surfaces in scope are in **E-10** (Mobbin pass done
+> 2026-08-30). Any *new* dashboard surface still needs its own pass before build.
 
 ---
 
@@ -202,10 +199,91 @@ that do nothing.
 
 ---
 
+## E-10 — Dashboard visual references (Mobbin, web, 2026-08-30)
+
+### (a) Findings panel — US-4.2
+
+**Pattern to use:** Group rows by severity with a coloured left rule and a count in the group
+header ("Errors (3) / Warnings (4) / Notices (1)"); each row = plain-sentence description with
+the affected item as a link, plus a "how to fix" link and an affected-count on the right.
+← [Semrush Site Audit issues](https://mobbin.com/screens/f4c9575a-50af-462d-b267-bbe758587c33),
+[HubSpot SEO recommendations](https://mobbin.com/screens/e9b536b6-aed8-4e62-b615-bde7c0428fe0)
+(same idea, one card per issue with impact/difficulty chips and a "View pages" action).
+Supabase's Security Advisor shows the three-column form (Issue type / Entity / Description) with
+severity as top tabs — good when the list is long.
+← [Supabase Security Advisor](https://mobbin.com/screens/e3ac7f2c-bdd0-42a4-ac13-76fb893fd06d)
+
+**Patterns to avoid:** Repeating an identical red pill on every row with no explanation
+(Rox "Enrichment failed" ×5) — the chip carries no diagnostic value.
+← [Rox contacts](https://mobbin.com/screens/3618e8a0-cb1e-4006-a050-c73c9243ddd4).
+Collapsed accordion per finding (Surfshark) hides the reason behind a click — ARGUS findings
+must show the sentence inline.
+← [Surfshark scan results](https://mobbin.com/screens/5ec81876-a4f9-4e1b-aa96-12cd466fb1e9)
+
+**Changes to the plan (US-4.2):** group by severity with header counts (Semrush), not a flat
+sorted list; keep `reason` inline; add a right-aligned "Fix prompt" action that opens `argus fix`
+output (HubSpot's per-row action). Suppressed findings go to a greyed "Suppressed" group at the
+bottom, like HubSpot's "Resolved issues".
+
+### (b) Hotspot matrix — US-4.4
+
+**Pattern to use:** Small labelled grid, one colour ramp, cell shows the raw count, empty cells
+left blank (not zero-filled), legend "Low → High" above. Klaviyo's cohort grid is the closest:
+row labels on the left, column labels along the bottom, single-hue intensity.
+← [Klaviyo cohort heatmap](https://mobbin.com/screens/098b8697-cda8-498a-ae3a-922940c65874),
+[Maze similarity matrix](https://mobbin.com/screens/74cb0049-6d2a-4024-a2f5-d80467d9f64a)
+(sparse matrix with blank cells and a one-line explainer under the title — copy that explainer).
+
+**Patterns to avoid:** Diverging red/green ramps (Steep, Zoho) — ARGUS counts are one-directional;
+red/green implies good/bad on both ends. Treemap-style tiles (Kraken) — lose the row×column
+reading.
+← [Steep](https://mobbin.com/screens/4b8bbec1-fe24-48c7-83f2-cfd5d75cd2d2),
+[Zoho CRM cohorts](https://mobbin.com/screens/e3827f36-4c70-434a-b2f3-c50801d324d5),
+[Kraken heatmap](https://mobbin.com/screens/74246a23-9cbc-463f-8ad7-2b9ddd4e2fb4)
+
+**Changes to the plan (US-4.4):** single-hue amber ramp (matches `silent_failure` colour); blank
+cells for zero; one-line explainer under the title: "Rows = node that caused the failure, columns
+= node where it surfaced"; row/column labels truncate with tooltip beyond 14 chars.
+
+### (c) Run table with tag filters — US-4.3
+
+**Pattern to use:** Active filters as removable chips in a row directly above the table, each
+chip reading `key: value ×`, with a trailing "+ Add filter" affordance. Status as a coloured pill
+in its own column.
+← [Aboard approvals](https://mobbin.com/screens/43b940cb-28a4-42b5-9974-2073b895ad66),
+[Twenty companies](https://mobbin.com/screens/c4089aab-6ec1-4507-b53f-19abd7dbf459)
+(filter chips + multi-select dropdown for a field's values — use for `agent`, `suite` tags).
+
+**Patterns to avoid:** Filter state hidden inside a dropdown only (Airtable, Workable) — user
+can't see what's applied from the table.
+← [Airtable](https://mobbin.com/screens/b3b21595-5794-4b20-bb85-ba48a59f12a1),
+[Workable](https://mobbin.com/screens/197b7105-f9d9-4c78-a67b-9f5ecc212190)
+
+**Changes to the plan (US-4.3):** chips row above `RunTable`; chip = `tag: value ×`; "+ Add
+filter" opens a value multi-select per tag key; filter state mirrored in URL (already in the
+story). Status stays the first column.
+
+### (d) Empty state — US-4.5
+
+**Pattern to use:** Two side-by-side CTAs — primary "connect real data", secondary "try demo
+data" — with one sentence of context. Steep does exactly this ("Connect data source" /
+"Try demo data"). Grok's console pairs the empty state with a ready-to-copy command block.
+← [Steep get started](https://mobbin.com/screens/befce3e9-03ba-47d4-b4bc-5ecd3b647d8c),
+[Grok console](https://mobbin.com/screens/8d063d6f-c0ef-4a38-931a-f6fd0c353397)
+
+**Patterns to avoid:** Illustration-heavy "Get your first install" with a single marketing CTA
+(Whop) — developers want the command, not the mascot.
+← [Whop](https://mobbin.com/screens/6de0f2b2-772e-4d3f-8354-3b24feb3f690).
+Panels that say "No data" with no path forward (PandaDoc production panel).
+← [PandaDoc](https://mobbin.com/screens/788ff117-8786-4b9e-a168-ef25d94a0ac1)
+
+**Changes to the plan (US-4.5):** primary = copyable `argus demo --open` block; secondary =
+"Attach to my graph" linking to Guide; keep the existing "reading from `<path>`" diagnostic line
+under both. No illustration.
+
 ## No evidence found for
 
-- **Screen-level layout references** for run-list / run-detail / compare views — Mobbin not
-  connected. `[needs Mobbin pass]`.
+- **Compare / diff view** layout (`app/compare/`) — not searched; out of this PRD's story list.
 - **Open-source governance specifics** (CLA bots, CODEOWNERS granularity, release cadence) — the
   Lenny's archive is product/growth-oriented; searches for `maintainer|contributors|CLA` returned
   growth stories, not governance mechanics. PRD §6 relies on common OSS practice (Apache
