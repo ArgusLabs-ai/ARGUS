@@ -5,7 +5,6 @@ import pytest
 from argus.correlator import compare_replay, correlate
 from argus.models import (
     AnomalySignal,
-    CorrelationReport,
     InspectionResult,
     NodeEvent,
     RunRecord,
@@ -74,7 +73,8 @@ def test_origin_clean_run():
 
 @pytest.mark.unit
 def test_origin_single_clean_predecessors():
-    """Single origin — node B fails in a chain A->B->C where A is clean -> B identified as origin."""
+    """Single origin — node B fails in a chain A->B->C where A is clean
+    -> B identified as origin."""
     insp_b = InspectionResult(
         is_silent_failure=True,
         missing_fields=["score"],
@@ -118,7 +118,8 @@ def test_origin_crash():
 
 @pytest.mark.unit
 def test_origin_behavioral_only():
-    """Behavioral-only origin — anomaly signals only, no structural evidence -> confidence capped at 0.40."""
+    """Behavioral-only origin — anomaly signals only, no structural evidence
+    -> confidence capped at 0.40."""
     anomaly = AnomalySignal(
         anomaly_id="BA-001",
         severity="warning",
@@ -145,7 +146,8 @@ def test_origin_behavioral_only():
 
 @pytest.mark.unit
 def test_origin_multiple():
-    """Multiple origins — two independent failure points in fan-out graph -> both detected, sorted by confidence."""
+    """Multiple origins — two independent failure points in fan-out graph
+    -> both detected, sorted by confidence."""
     tf_critical = ToolFailure(
         failure_type="error_response",
         field_name="api_res",
@@ -188,7 +190,8 @@ def test_origin_multiple():
 
 @pytest.mark.unit
 def test_origin_suppression():
-    """Origin suppression — A has structural failures, B (downstream) also fails -> B should NOT be separate origin."""
+    """Origin suppression — A has structural failures, B (downstream) also fails
+    -> B should NOT be separate origin."""
     tf_critical = ToolFailure(
         failure_type="error_response",
         field_name="res",
@@ -227,7 +230,8 @@ def test_origin_suppression():
 
 @pytest.mark.unit
 def test_origin_behavioral_upstream_does_not_suppress_structural_downstream():
-    """Behavioral upstream doesn't suppress structural downstream — A has behavioral anomaly, B crashes -> B is origin."""
+    """Behavioral upstream doesn't suppress structural downstream — A has behavioral anomaly,
+    B crashes -> B is origin."""
     anomaly = AnomalySignal(
         anomaly_id="BA-001",
         severity="warning",
@@ -254,7 +258,8 @@ def test_origin_behavioral_upstream_does_not_suppress_structural_downstream():
 
 @pytest.mark.unit
 def test_field_drop_basic():
-    """Basic field drop — node A drops field "score", downstream B has "score" missing -> link created confidence 0.85."""
+    """Basic field drop — node A drops field "score", downstream B has "score" missing
+    -> link created confidence 0.85."""
     insp_a = InspectionResult(
         is_silent_failure=True,
         missing_fields=["score"],
@@ -289,7 +294,8 @@ def test_field_drop_basic():
 
 @pytest.mark.unit
 def test_field_drop_key_error():
-    """Field drop causing KeyError — node A drops "score", node B crashes with KeyError: 'score' -> link confidence 0.95."""
+    """Field drop causing KeyError — node A drops "score", node B crashes
+    with KeyError: 'score' -> link confidence 0.95."""
     insp_a = InspectionResult(
         is_silent_failure=True,
         missing_fields=["score"],
@@ -315,7 +321,8 @@ def test_field_drop_key_error():
 
 @pytest.mark.unit
 def test_field_drop_not_yet_produced_exclusion():
-    """Not-yet-produced exclusion — field "summary" never produced before B flags it missing -> NO propagation link."""
+    """Not-yet-produced exclusion — field "summary" never produced before B flags it missing
+    -> NO propagation link."""
     insp_b = InspectionResult(
         is_silent_failure=True,
         missing_fields=["summary"],
@@ -383,7 +390,8 @@ def test_field_drop_multi_hop():
 
 @pytest.mark.unit
 def test_placeholder_direct_text_match():
-    """Direct text match — node A PH-* signal evidence text appears in node B input -> link confidence 0.90."""
+    """Direct text match — node A PH-* signal evidence text appears in node B input
+    -> link confidence 0.90."""
     sig_a = SemanticSignal(
         sig_id="PH-001",
         category="placeholder_outputs",
@@ -504,7 +512,8 @@ def test_placeholder_short_evidence_excluded():
 
 @pytest.mark.unit
 def test_anomaly_cascade_matching_ids():
-    """Matching anomaly IDs — node A has BA-001 (score > 0.7), node B also has BA-001 -> link created."""
+    """Matching anomaly IDs — node A has BA-001 (score > 0.7), node B also has BA-001
+    -> link created."""
     anom_a = AnomalySignal(
         anomaly_id="BA-001",
         severity="critical",
@@ -571,7 +580,8 @@ def test_anomaly_cascade_non_matching_ids():
 
 @pytest.mark.unit
 def test_anomaly_cascade_low_suspicion_score():
-    """Low suspicion score — A has anomaly with score 0.3 -> should NOT trigger cascade detection."""
+    """Low suspicion score — A has anomaly with score 0.3
+    -> should NOT trigger cascade detection."""
     anom_a = AnomalySignal(
         anomaly_id="BA-001",
         severity="warning",
@@ -649,7 +659,8 @@ def test_chain_assembly_single():
 
 @pytest.mark.unit
 def test_chain_classification():
-    """Chain classification — all links field_drop -> field_drop_cascade; mixed -> mixed_degradation."""
+    """Chain classification — all links field_drop -> field_drop_cascade;
+    mixed -> mixed_degradation."""
     insp_a = InspectionResult(
         is_silent_failure=True,
         missing_fields=["field_x"],
@@ -679,7 +690,8 @@ def test_chain_classification():
 
 @pytest.mark.unit
 def test_chain_tool_failure_at_origin():
-    """Tool failure at origin — origin has tool_failure -> chain classified as tool_failure_cascade."""
+    """Tool failure at origin — origin has tool_failure
+    -> chain classified as tool_failure_cascade."""
     tf = ToolFailure(
         failure_type="error_response",
         field_name="res",
@@ -720,7 +732,8 @@ def test_chain_tool_failure_at_origin():
 
 @pytest.mark.unit
 def test_timeline_labels_and_ordering():
-    """Timeline — labels correct (ORIGIN:, PROPAGATION:, CRASH:, clean), events follow step_index order."""
+    """Timeline — labels correct (ORIGIN:, PROPAGATION:, CRASH:, clean),
+    events follow step_index order."""
     insp_a = InspectionResult(
         is_silent_failure=True,
         missing_fields=["field_x"],
