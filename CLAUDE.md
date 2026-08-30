@@ -52,7 +52,7 @@ Every wrapped node executes through this pipeline:
 4. **Semantic validators**: custom per-node or wildcard validators
 5. **Anomaly detection**: behavioral anomaly signals (output size, timing, structure)
 6. **LLM semantic judge** (`semantic_checker.py`): evidence-aware final ruling — receives all prior signals (validator results, anomaly signals, inspection findings) as context. Cannot override validator failures or critical anomalies. Returns `evidence_considered` and `overridden_signals` for audit trail.
-7. Status assigned: `pass | fail | crashed | semantic_fail | interrupted`
+7. Status assigned: `pass | fail | crashed | semantic_fail | degraded_input | interrupted` (plus `retried` / `skipped` set at finalize). Full vocabulary and the node → run roll-up: `docs/STATUS.md`
 8. `NodeEvent` recorded; auto-finalize if last node or error
 
 ### Core Classes
