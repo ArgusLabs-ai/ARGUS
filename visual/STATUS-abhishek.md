@@ -59,3 +59,12 @@ fault-injection recall matrix, `/api/replay` state-patch + preview endpoints.
 - No `visual/` or PRD existed before this folder — roadmap lived in chat logs and `good-to-have-dev/`.
 - Owner-gated paths mean you cannot ship a release or CI change alone. PRD §6 (governance)
   proposes a documented release cadence so that isn't a bottleneck.
+
+## Positioning in the open-source project (see GAPS.md §C-3)
+
+Role that fits the footprint: **community / triage maintainer** — 48 h first response on
+external issues and PRs, keep ≥5 `good first issue`s live, review fixture + signature PRs, own
+the monthly fault-matrix recall number. Owner keeps core detection + releases.
+
+Owner-only asks to bundle into one request: `maintain` permission, path-level CODEOWNERS
+(replay / state_patch / llm_proxy / providers), Discussions on, Dependabot, release-request path.
