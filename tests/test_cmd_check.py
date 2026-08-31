@@ -15,6 +15,11 @@ from argus.storage import save_run
 pytest_plugins = ["pytester"]
 
 
+@pytest.fixture(autouse=True)
+def _clear_argus_run_id(monkeypatch):
+    monkeypatch.delenv("ARGUS_RUN_ID", raising=False)
+
+
 def _now(offset_s: float = 0.0) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=offset_s)).isoformat()
 
@@ -203,6 +208,55 @@ def test_check_specific_run_id_ignores_newer_failure():
 
     prefix = CliRunner().invoke(app, ["check", "keep-cle"])
     assert prefix.exit_code == 0, prefix.output
+
+
+@pytest.mark.unit
+def test_check_argus_run_id_wins_over_last(monkeypatch):
+    selected = make_run_record(events=[make_event()], status="clean", run_id="env-clean")
+    selected.started_at = _now(-10)
+    newer = make_run_record(
+        events=[make_event(status="crashed")],
+        status="crashed",
+        run_id="newer-crash",
+    )
+    newer.started_at = _now()
+    selected_path = save_run(selected)
+    save_run(newer)
+    monkeypatch.setenv("ARGUS_RUN_ID", selected.run_id)
+
+    result = CliRunner().invoke(app, ["check", "last"])
+
+    assert result.exit_code == 0, result.output
+    assert f"checked  {selected_path}" in result.output
+
+
+@pytest.mark.unit
+def test_check_explicit_id_wins_over_argus_run_id(monkeypatch):
+    selected = make_run_record(events=[make_event()], status="clean", run_id="cli-clean")
+    env_run = make_run_record(
+        events=[make_event(status="crashed")],
+        status="crashed",
+        run_id="env-crash",
+    )
+    selected_path = save_run(selected)
+    save_run(env_run)
+    monkeypatch.setenv("ARGUS_RUN_ID", env_run.run_id)
+
+    result = CliRunner().invoke(app, ["check", selected.run_id])
+
+    assert result.exit_code == 0, result.output
+    assert f"checked  {selected_path}" in result.output
+
+
+@pytest.mark.unit
+def test_check_missing_argus_run_id_exits_one(monkeypatch):
+    monkeypatch.setenv("ARGUS_RUN_ID", "missing-env-run")
+
+    result = CliRunner().invoke(app, ["check", "last"])
+
+    assert result.exit_code == 1
+    assert "missing-env-run" in result.output
+    assert "No run found" in result.output
 
 
 @pytest.mark.unit
