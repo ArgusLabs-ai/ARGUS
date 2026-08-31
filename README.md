@@ -233,8 +233,9 @@ watcher = ArgusWatcher(graph, config=config)
 argus list                           # all recorded runs
 argus show last                      # most recent run
 argus show <id>                      # inspect a specific run
-argus check last                     # CI gate — exit 1 on crash / silent failure / semantic fail
-argus check <id>                     # same gate for a specific run
+argus check <id>                     # CI gate for an exact run; prints the JSON path checked
+ARGUS_RUN_ID=<id> argus check        # CI-friendly selection when the id comes from an earlier step
+argus check last                     # newest-file fallback — avoid when runs may share a workspace
 argus inspect <id> --step <node>     # dump raw input/output for a node
 argus fix <id>                       # fix prompt for the root cause, ready to paste
 argus replay <id> <node>             # re-run from a node
@@ -262,7 +263,7 @@ Silent failures become test failures without changing how you invoke the graph:
 pytest --argus
 ```
 
-ARGUS auto-wraps `StateGraph.compile()` / compiled `invoke()` for the test session. A clean pipeline stays a passing test; missing fields, tool failures, crashes, and semantic degradation fail that test. Tests that never invoke a graph are unchanged. Pair with `argus check last` in CI after a standalone run.
+ARGUS auto-wraps `StateGraph.compile()` / compiled `invoke()` for the test session. A clean pipeline stays a passing test; missing fields, tool failures, crashes, and semantic degradation fail that test. Tests that never invoke a graph are unchanged. After a standalone CI run, pass its exact id with `argus check <id>` or `ARGUS_RUN_ID=<id> argus check`; `argus check last` only means the newest file and can select a stale or unrelated run in a shared workspace.
 
 ---
 
