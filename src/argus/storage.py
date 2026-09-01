@@ -356,6 +356,7 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         subgraph_run_ids=data.get("subgraph_run_ids", []),
         interrupted=data.get("interrupted", False),
         interrupt_node=data.get("interrupt_node"),
+        state_patch=data.get("state_patch"),
         behavior_config=behavior_config,
         correlation=correlation,
         llm_investigation=llm_investigation,

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import operator
+import sys
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -589,7 +590,7 @@ class TestCLI:
 
         import subprocess
         result = subprocess.run(
-            ["python3", "-m", "argus.cli.main", "show", run_id],
+            [sys.executable, "-m", "argus.cli.main", "show", run_id],
             capture_output=True, text=True, cwd=str(tmp_path),
         )
         # Should not crash — exit 0 or at least produce output
@@ -610,7 +611,7 @@ class TestCLI:
 
         import subprocess
         result = subprocess.run(
-            ["python3", "-m", "argus.cli.main", "show", "last"],
+            [sys.executable, "-m", "argus.cli.main", "show", "last"],
             capture_output=True, text=True, cwd=str(tmp_path),
         )
         assert result.returncode == 0 or len(result.stdout) > 0

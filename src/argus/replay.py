@@ -61,16 +61,50 @@ class ReplayEngine:
     def __init__(self, max_field_size: int = 50_000) -> None:
         self._max_field_size = max_field_size
 
+    @staticmethod
+    def _patch_input(
+        input_state: dict[str, Any],
+        patch: dict[str, Any] | None,
+        create_missing: bool,
+        node_name: str,
+    ) -> dict[str, Any]:
+        """Apply an optional state patch to a recorded input state.
+
+        Patching happens on the raw recorded dict *before* deserialization, so
+        typed states (pydantic / dataclass / TypedDict) are validated by the
+        deserializer against the patched values rather than bypassed.
+        """
+        if not patch:
+            return input_state
+        from argus.state_patch import PatchError, apply_patch
+
+        try:
+            return apply_patch(input_state, patch, create_missing=create_missing)
+        except PatchError as exc:
+            raise PatchError(
+                f"cannot patch input state for node '{node_name}': {exc}"
+            ) from exc
+
     def replay_node(
         self,
         run_id: str,
         node_name: str,
         state_type: type | None = None,
+        patch: dict[str, Any] | None = None,
+        create_missing: bool = False,
     ) -> str:
         """Re-execute a single node in isolation using its original input state.
 
         Imports the node function via stored node_fn_refs, runs it with the
         original input_state, and records a single-step RunRecord.
+
+        Args:
+            run_id: the run-id (or prefix) to replay from
+            node_name: the node to re-run
+            state_type: optional state type class for deserialization
+            patch: optional state patch applied to the node's recorded input
+                before replaying (see :mod:`argus.state_patch`)
+            create_missing: allow the patch to create keys that do not exist
 
         Returns:
             new run-id of the single-node replay run
@@ -95,7 +129,8 @@ class ReplayEngine:
                     "Re-record the run with the latest argus to enable single-node replay."
                 )
 
-        state = safe_deserialize(step.input_state, state_type)
+        raw_state = self._patch_input(step.input_state, patch, create_missing, node_name)
+        state = safe_deserialize(raw_state, state_type)
         fp = (record.node_fn_paths or {}).get(node_name)
         fn = _import_fn(record.node_fn_refs[node_name], file_path=fp)
 
@@ -107,6 +142,7 @@ class ReplayEngine:
         session.set_edges({})
         session.parent_run_id = record.run_id
         session.replay_from_step = node_name
+        session.state_patch = patch or None
         session.node_fn_refs = {node_name: record.node_fn_refs[node_name]}
 
         wrapped = session.wrap(node_name, fn)
@@ -121,6 +157,8 @@ class ReplayEngine:
         from_node: str,
         app_factory: Callable[[], Any] | None = None,
         state_type: type | None = None,
+        patch: dict[str, Any] | None = None,
+        create_missing: bool = False,
     ) -> str:
         """Replay a run starting from from_node.
 
@@ -129,6 +167,10 @@ class ReplayEngine:
             from_node: the node name to start replay from
             app_factory: optional — only needed if the run has no stored node_fn_refs
             state_type: optional state type class for deserialization
+            patch: optional state patch applied to from_node's recorded input
+                before replaying (see :mod:`argus.state_patch`).  Upstream
+                nodes stay frozen, so only the resumed trajectory changes.
+            create_missing: allow the patch to create keys that do not exist
 
         Returns:
             new run-id of the replay run
@@ -151,17 +193,18 @@ class ReplayEngine:
             if s.output_dict is not None:
                 frozen_map[s.node_name].append(s.output_dict)
 
-        # deserialize the input state
-        state = safe_deserialize(step.input_state, state_type)
+        # apply the optional patch to the raw recorded state, then deserialize
+        raw_state = self._patch_input(step.input_state, patch, create_missing, from_node)
+        state = safe_deserialize(raw_state, state_type)
 
         # Try factory-free replay first, fall back to factory mode
         if record.node_fn_refs:
-            return self._replay_direct(record, from_node, state, frozen_map)
+            return self._replay_direct(record, from_node, state, frozen_map, patch)
 
         # Auto-locate source files before requiring a factory
         record = self._auto_locate(record)
         if record.node_fn_refs:
-            return self._replay_direct(record, from_node, state, frozen_map)
+            return self._replay_direct(record, from_node, state, frozen_map, patch)
 
         if app_factory is not None:
             return self._replay_with_factory(
@@ -170,6 +213,7 @@ class ReplayEngine:
                 state,
                 frozen_map,
                 app_factory,
+                patch,
             )
 
         raise ValueError(
@@ -204,6 +248,7 @@ class ReplayEngine:
         from_node: str,
         state: Any,
         frozen_map: dict[str, list[Any]],
+        patch: dict[str, Any] | None = None,
     ) -> str:
         """Replay by importing node functions directly — no factory needed."""
         from argus.session import ArgusSession
@@ -233,6 +278,7 @@ class ReplayEngine:
         session.set_edges(record.graph_edge_map)
         session.parent_run_id = record.run_id
         session.replay_from_step = from_node
+        session.state_patch = patch or None
         session.frozen_outputs = dict(frozen_map)
         session.node_fn_refs = record.node_fn_refs
 
@@ -294,6 +340,7 @@ class ReplayEngine:
         state: Any,
         frozen_map: dict[str, list[Any]],
         app_factory: Callable[[], Any],
+        patch: dict[str, Any] | None = None,
     ) -> str:
         """Replay using a factory function (legacy fallback)."""
         from argus.watcher import ArgusWatcher
@@ -337,6 +384,7 @@ class ReplayEngine:
             if watcher._session is not None:
                 watcher._session.parent_run_id = record.run_id
                 watcher._session.replay_from_step = from_node
+                watcher._session.state_patch = patch or None
                 watcher._session.frozen_outputs = dict(frozen_map)
             new_run_id = watcher.run_id
             app = graph.compile()
