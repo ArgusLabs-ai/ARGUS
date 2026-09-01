@@ -384,95 +384,6 @@ def test_loop_retried_on_self_correct():
 
 
 @pytest.mark.unit
-def test_loop_analysis_with_mocked_llm(monkeypatch):
-    """Loop analysis produces LoopAnalysisResult via mocked LLM proxy."""
-    import json
-
-    from argus.loop_analyzer import analyze_loops
-    from argus.models import NodeEvent, RunRecord
-
-    # Build a minimal RunRecord with a 3-iteration loop
-    events = []
-    for i in range(3):
-        events.append(
-            NodeEvent(
-                step_index=i,
-                node_name="code_writer",
-                status="retried" if i < 2 else "pass",
-                input_state={},
-                output_dict={"code": f"v{i}"},
-                duration_ms=100.0,
-                timestamp_utc="2026-01-01T00:00:00Z",
-                attempt_index=i,
-                total_iterations=3,
-            )
-        )
-
-    record = RunRecord(
-        run_id="test-loop",
-        argus_version="0.7.5",
-        started_at="2026-01-01T00:00:00Z",
-        completed_at="2026-01-01T00:00:01Z",
-        duration_ms=300.0,
-        overall_status="clean",
-        first_failure_step=None,
-        root_cause_chain=[],
-        graph_node_names=["code_writer"],
-        graph_edge_map={"code_writer": ["code_writer"]},
-        initial_state={},
-        steps=events,
-        is_cyclic=True,
-    )
-
-    mock_response = {
-        "choices": [
-            {
-                "message": {
-                    "content": json.dumps(
-                        {
-                            "summary": "Took 3 attempts. Attempt 1 had syntax error.",
-                            "is_stalled": False,
-                            "stall_details": None,
-                            "unnecessary_retries": 0,
-                            "unnecessary_details": None,
-                            "iteration_diffs": [
-                                {
-                                    "from_attempt": 0,
-                                    "to_attempt": 1,
-                                    "summary": "Fixed syntax error",
-                                    "fields_changed": ["code"],
-                                },
-                            ],
-                        }
-                    )
-                }
-            }
-        ],
-        "usage": {"prompt_tokens": 100, "completion_tokens": 50},
-    }
-
-    monkeypatch.setattr(
-        "argus.llm_proxy.is_available", lambda: True
-    )
-    monkeypatch.setattr(
-        "argus.llm_proxy.create_chat_completion",
-        lambda **kw: mock_response,
-    )
-
-    results = analyze_loops(record)
-    assert len(results) == 1
-    la = results[0]
-    assert la.node_name == "code_writer"
-    assert la.total_iterations == 3
-    assert "3 attempts" in la.summary
-    assert la.is_stalled is False
-    assert la.unnecessary_retries == 0
-    assert len(la.iteration_diffs) == 1
-    assert la.iteration_diffs[0].summary == "Fixed syntax error"
-    assert la.error is None
-
-
-@pytest.mark.unit
 def test_loop_no_retry_when_final_fails():
     """Loop where final iteration also fails: no retried status applied."""
     from argus.storage import load_run
@@ -992,6 +903,58 @@ def test_latency_no_thresholds_no_flags():
     inspection = _make_inspection()
     session._check_latency_signals(1, inspection)
     assert len(inspection.tool_failures) == 0
+
+
+# ── Semantic signal severity gates node status (issue #46) ────────────────────
+# A "warning" severity signature match (e.g. an ambiguous suspicious-phrase
+# hit) must not, on its own, fail a node — only "critical" severity does.
+# Before this fix any registry match at all flipped pass -> semantic_fail
+# regardless of severity.
+
+
+@pytest.mark.unit
+def test_warning_severity_signal_does_not_fail_node():
+    from argus.models import LLMInvestigationConfig
+
+    session = ArgusSession(llm_investigation=LLMInvestigationConfig(enabled=False))
+    session.set_node_names(["summarize"])
+
+    def node(state):
+        # PH-001 (placeholder_outputs, warning severity, exact_ci — fixed
+        # 1.0 match confidence): literal TODO placeholder left in output.
+        return {"result": "TODO"}
+
+    wrapped = session.wrap("summarize", node)
+    wrapped({"input": "doc"})
+    session.finalize()
+
+    loaded = load_run(session.run_id)
+    step = loaded.steps[0]
+    assert step.status == "pass"
+    assert any(s.sig_id == "PH-001" for s in step.inspection.semantic_signals)
+
+
+@pytest.mark.unit
+def test_critical_severity_signal_fails_node():
+    from argus.models import LLMInvestigationConfig
+
+    session = ArgusSession(llm_investigation=LLMInvestigationConfig(enabled=False))
+    session.set_node_names(["summarize"])
+
+    def node(state):
+        # PH-002 (placeholder_outputs, critical severity, exact_ci — fixed
+        # 1.0 match confidence, so it's unaffected by the length-based
+        # confidence heuristic that other match strategies apply).
+        return {"result": "PLACEHOLDER"}
+
+    wrapped = session.wrap("summarize", node)
+    wrapped({"input": "doc"})
+    session.finalize()
+
+    loaded = load_run(session.run_id)
+    step = loaded.steps[0]
+    assert step.status in ("fail", "semantic_fail")
+    assert any(s.sig_id == "PH-002" for s in step.inspection.semantic_signals)
 
 
 # ── Conditional branch skipping (VAR-61) ──────────────────────────────────────

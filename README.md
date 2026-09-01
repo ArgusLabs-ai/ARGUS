@@ -124,8 +124,6 @@ result = app.invoke(initial_state)
 |---------|---------|
 | **Silent failures** | Node returns `{}` or drops a required field — no exception, pipeline keeps running broken |
 | **Semantic failures** | Output structure is fine but values are wrong (placeholders, refusals, degraded text) |
-| **Loop stalls** | Agent retries 5 times producing identical output — stuck loop burning tokens |
-| **Unnecessary retries** | Loop produces correct answer on attempt 2, but validator forces 3 more iterations |
 | **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field |
 | **Contract violations** | Output types don't match the next node's expected input schema |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
@@ -143,7 +141,6 @@ Runs in order, each more expensive — only fires when needed:
 4. **Correlator** — traces failure propagation across nodes. Points at the *origin*, not the crash site.
 5. **LLM semantic judge** — evidence-aware final ruling. Receives all signals from layers 1–4 before deciding. Cannot override validator failures or critical anomalies.
 6. **LLM investigator** — root cause explanations and debugging suggestions. Only on ambiguous failures.
-7. **Loop analyzer** — LLM analysis for looped nodes: summarizes iterations, detects stalls, flags wasted retries.
 
 ---
 
@@ -153,8 +150,7 @@ Pipelines with loops (LLM -> compiler -> if fail, retry) get special treatment:
 
 - Earlier iterations that self-corrected are marked `retried` (not counted as failures)
 - Only the **final iteration** determines pass/fail
-- LLM analyzes every loop: what went wrong, what changed between attempts, whether retries were necessary
-- Dashboard shows iteration badges, collapse/expand, and natural-language loop summaries
+- Dashboard shows iteration badges, collapse/expand across attempts
 
 ---
 
