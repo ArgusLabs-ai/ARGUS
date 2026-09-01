@@ -133,7 +133,7 @@ result = app.invoke(initial_state)
 
 ## Detection Layers
 
-Runs in order, each more expensive — only fires when needed:
+Runs in order, each more expensive — only fires when needed. Every status a layer can assign, and how node statuses roll up into the run verdict, is specified in [`docs/STATUS.md`](docs/STATUS.md).
 
 1. **Heuristics** — 150+ failure signatures (placeholders, empty results, error keys, semantic degradation). Zero cost.
 2. **Validators** — custom per-node business-logic constraints. Deterministic.

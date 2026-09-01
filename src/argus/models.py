@@ -1,7 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal
+
+# Closed status vocabularies. Documented in docs/STATUS.md — change both together.
+StepStatus = Literal[
+    "pass",
+    "fail",
+    "crashed",
+    "semantic_fail",
+    "degraded_input",
+    "interrupted",
+    "retried",
+    "skipped",
+]
+RunStatus = Literal["clean", "crashed", "interrupted", "silent_failure"]
 
 
 @dataclass
@@ -164,9 +177,7 @@ class DisambiguationResult:
 class NodeEvent:
     step_index: int
     node_name: str
-    # "pass" | "fail" | "crashed" | "degraded_input" | "semantic_fail"
-    # | "interrupted" | "retried"
-    status: str
+    status: StepStatus  # see docs/STATUS.md
     input_state: dict[str, Any]
     output_dict: dict[str, Any] | None
     duration_ms: float
@@ -253,7 +264,7 @@ class RunRecord:
     started_at: str
     completed_at: str | None
     duration_ms: float | None
-    overall_status: str  # "clean" | "silent_failure" | "crashed"
+    overall_status: RunStatus  # see docs/STATUS.md for the node → run roll-up
     first_failure_step: str | None
     root_cause_chain: list[str]
     graph_node_names: list[str]

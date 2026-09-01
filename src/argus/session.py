@@ -55,8 +55,10 @@ from argus.models import (
     LLMUsage,
     NodeEvent,
     RunRecord,
+    RunStatus,
     SemanticCheckResult,
     SemanticSignal,
+    StepStatus,
     ToolFailure,
     ValidatorResult,
 )
@@ -76,7 +78,7 @@ class _PendingJudge:
     validator_results: list[ValidatorResult]
     anomaly_signals: list[AnomalySignal]
     ambiguous_signals: list[SemanticSignal]
-    deterministic_status: str
+    deterministic_status: StepStatus
     node_name: str
     input_snap: dict
     output_snap: dict
@@ -742,6 +744,7 @@ class ArgusSession:
             self._node_attempt_counts[node_name] = attempt_idx + 1
 
             # determine status
+            status: StepStatus
             if is_interrupt:
                 status = "interrupted"
                 exc_str = None
@@ -1036,7 +1039,7 @@ class ArgusSession:
 
     def _apply_judge_verdict(
         self,
-        status: str,
+        status: StepStatus,
         semantic_check_result: SemanticCheckResult | None,
         disambiguation_results: list[DisambiguationResult],
         inspection: InspectionResult | None,
@@ -1046,7 +1049,7 @@ class ArgusSession:
         behavior_type_val: str | None,
         output_snap: dict | None,
         input_snap: dict | None = None,
-    ) -> str:
+    ) -> StepStatus:
         """Apply LLM disambiguation + coherence verdict to status. Returns new status."""
         if disambiguation_results and inspection is not None:
             dismissed_ids = {
@@ -1312,6 +1315,7 @@ class ArgusSession:
         has_semantic_fail = any(e.status == "semantic_fail" for e in active_events)
         has_degraded = any(e.status == "degraded_input" for e in active_events)
 
+        overall_status: RunStatus
         if has_crash:
             overall_status = "crashed"
         elif has_interrupt:
