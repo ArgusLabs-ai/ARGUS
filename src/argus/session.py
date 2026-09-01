@@ -1486,6 +1486,14 @@ class ArgusSession:
         except Exception:
             pass
 
+        # Normalized findings list — the one shape consumers read (docs/STATUS.md)
+        try:
+            from argus.findings import collect_findings  # noqa: PLC0415
+
+            record.findings = collect_findings(record.steps, record.tool_chain_findings)
+        except Exception:
+            pass
+
         # Apply redaction / state stripping before persisting to disk
         if not self._persist_state:
             record.initial_state = {}

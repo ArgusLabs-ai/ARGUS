@@ -153,3 +153,106 @@ def test_finalize_silent_on_clean(capsys):
     assert loaded.overall_status == "clean"
     err = capsys.readouterr().err
     assert "[argus]" not in err
+
+
+# ── collect_findings: the normalized per-run list ─────────────────────────────
+
+from argus.findings import collect_findings  # noqa: E402
+from argus.models import AnomalySignal, SemanticCheckResult, ValidatorResult  # noqa: E402
+
+
+def _judge_fail(reason="off-topic"):
+    return SemanticCheckResult(
+        passed=False,
+        reason=reason,
+        confidence=0.9,
+        model="test",
+        prompt_tokens=1,
+        completion_tokens=1,
+        duration_ms=1.0,
+    )
+
+
+@pytest.mark.unit
+def test_collect_findings_flattens_every_source():
+    search = make_event(
+        node_name="search",
+        status="fail",
+        step_index=0,
+        inspection=make_inspection(
+            missing=["documents"],
+            is_silent=True,
+            severity="critical",
+            message="missing documents",
+            tool_failures=[ToolFailure("rate_limit", "resp", "warning", "HTTP 429")],
+        ),
+        validator_results=[ValidatorResult("search:nonempty", False, "no hits", "critical")],
+        anomaly_signals=[
+            AnomalySignal("BA-003", "warning", 0.7, "output 10x smaller", "~1KB", "80B", "")
+        ],
+        semantic_check=_judge_fail(),
+    )
+    crash = make_event(
+        node_name="rank", status="crashed", step_index=1, exception="KeyError: 'documents'"
+    )
+    retried = make_event(node_name="rank", status="retried", step_index=2, exception="boom")
+
+    findings = collect_findings([search, crash, retried])
+
+    sources = {f.source for f in findings}
+    assert {"heuristic", "validator", "anomaly", "llm", "crash"} <= sources
+    # critical first, then warnings
+    sev = [f.severity for f in findings]
+    assert sev == sorted(sev, key={"critical": 0, "warning": 1, "info": 2}.get)
+    # retried steps contribute nothing
+    assert not any(f.node == "rank" and f.type != "crash" for f in findings)
+    # every reason is a sentence that names the node
+    assert all(f.reason.endswith(".") or ":" in f.reason for f in findings)
+    assert all(f.node in f.reason for f in findings)
+
+
+@pytest.mark.unit
+def test_collect_findings_ids_are_stable_and_deduped():
+    ev = make_event(
+        node_name="a",
+        status="fail",
+        inspection=make_inspection(missing=["x"], is_silent=True, severity="critical"),
+    )
+    a = collect_findings([ev])
+    b = collect_findings([ev])
+    assert [f.id for f in a] == [f.id for f in b]
+    assert len({f.id for f in a}) == len(a)
+    assert a[0].type == "missing_field" and a[0].field_path == "x"
+
+
+@pytest.mark.unit
+def test_collect_findings_empty_on_clean():
+    assert collect_findings([make_event(), make_event(node_name="b", step_index=1)]) == []
+
+
+@pytest.mark.unit
+def test_findings_roundtrip_and_backfill(tmp_path, monkeypatch):
+    import json
+
+    from argus.storage import save_run
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".argus" / "runs").mkdir(parents=True, exist_ok=True)
+    ev = make_event(
+        node_name="a",
+        status="fail",
+        inspection=make_inspection(missing=["x"], is_silent=True, severity="critical"),
+    )
+    record = make_run_record(events=[ev], status="silent_failure", run_id="rt-1")
+    record.findings = collect_findings(record.steps)
+    path = save_run(record)
+    loaded = load_run("rt-1")
+    assert loaded.findings == record.findings and loaded.findings
+
+    # Strip the field to simulate a schema "1" file → back-filled on load.
+    data = json.loads(path.read_text())
+    data.pop("findings")
+    data["schema_version"] = "1"
+    path.write_text(json.dumps(data))
+    old = load_run("rt-1")
+    assert [f.id for f in old.findings] == [f.id for f in record.findings]

@@ -54,6 +54,7 @@ Every wrapped node executes through this pipeline:
 6. **LLM semantic judge** (`semantic_checker.py`): evidence-aware final ruling — receives all prior signals (validator results, anomaly signals, inspection findings) as context. Cannot override validator failures or critical anomalies. Returns `evidence_considered` and `overridden_signals` for audit trail.
 7. Status assigned: `pass | fail | crashed | semantic_fail | degraded_input | interrupted` (plus `retried` / `skipped` set at finalize). Full vocabulary and the node → run roll-up: `docs/STATUS.md`
 8. `NodeEvent` recorded; auto-finalize if last node or error
+9. At finalize, every per-step signal (inspection, validators, anomalies, judge, crash, tool-chain) is flattened into `RunRecord.findings` — one `Finding` per signal with a stable content-hash `id`, a full-sentence `reason`, and a `source`. Consumers read this list, not the step shapes (`findings.collect_findings`, schema_version "2"; older records are back-filled on load)
 
 ### Core Classes
 
@@ -85,6 +86,7 @@ Every wrapped node executes through this pipeline:
 | `src/argus/pytest_plugin.py` | pytest `--argus` plugin: fail tests whose instrumented invoke was not clean |
 | `src/argus/cli/main.py` | `argus` CLI entry point (Typer) |
 | `src/argus/cli/cmd_doctor.py` | `argus doctor` diagnostic command |
+| `src/argus/findings.py` | `collect_findings()` — builds `RunRecord.findings`; also the one-line terminal summary after invoke |
 | `src/argus/data/signatures.json` | Bundled semantic failure signatures |
 
 ### Semantic Signature Registry (`registry.py` + `data/signatures.json`)

@@ -248,6 +248,22 @@ export interface ReplayComparisonResult {
   error?: string | null
 }
 
+export type FindingSource = 'heuristic' | 'validator' | 'anomaly' | 'llm' | 'crash'
+
+/** One normalized failure signal on a run — mirrors argus.models.Finding. */
+export interface Finding {
+  id: string
+  node: string
+  type: string
+  severity: 'critical' | 'warning' | 'info'
+  reason: string
+  source: FindingSource
+  field_path?: string | null
+  origin_node?: string | null
+  confidence?: number | null
+  suppressed?: boolean
+}
+
 export interface ToolChainFinding {
   finding_id: string
   finding_type: 'retry_storm' | 'ordering_anomaly' | 'unused_result' | 'argument_degradation'
@@ -309,6 +325,7 @@ export interface RunRecord {
   replay_comparison?: ReplayComparisonResult | null
   loop_analyses?: LoopAnalysisResult[] | null
   tool_chain_findings?: ToolChainFinding[] | null
+  findings?: Finding[]
   node_fn_refs?: Record<string, string> | null
   node_fn_paths?: Record<string, string> | null
   dry_run?: boolean

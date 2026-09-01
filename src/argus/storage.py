@@ -6,12 +6,14 @@ import os
 from pathlib import Path
 from typing import Any
 
+from argus.findings import collect_findings
 from argus.models import (
     AnomalySignal,
     BehaviorConfig,
     CorrelationReport,
     DegradationOrigin,
     FieldMismatch,
+    Finding,
     InspectionResult,
     LLMInvestigationResult,
     NodeDiffSummary,
@@ -36,7 +38,7 @@ _RUNS_DIR = "runs"
 
 # Bump when the RunRecord schema changes in a backward-incompatible way.
 # Old runs without this field are treated as schema version "0".
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"  # "2": adds RunRecord.findings (back-filled on load)
 
 
 def resolve_project_root(start: Path | None = None) -> Path:
@@ -333,6 +335,11 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
     replay_comparison = _deserialize_replay_comparison(rc_data) if rc_data else None
     loop_analyses = _deserialize_loop_analyses(data.get("loop_analyses", []))
     tool_chain_findings = _deserialize_tool_chain_findings(data.get("tool_chain_findings", []))
+    if "findings" in data:
+        findings = _deserialize_findings(data["findings"])
+    else:
+        # Pre-"2" record: derive the list from the per-step data it already carries.
+        findings = collect_findings(steps, tool_chain_findings)
     return RunRecord(
         run_id=data["run_id"],
         argus_version=data.get("argus_version", "unknown"),
@@ -363,6 +370,7 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         replay_comparison=replay_comparison,
         loop_analyses=loop_analyses,
         tool_chain_findings=tool_chain_findings,
+        findings=findings,
         dry_run=data.get("dry_run", False),
         coverage_summary=data.get("coverage_summary", {}),
     )
@@ -377,8 +385,7 @@ def _deserialize_correlation(data: dict[str, Any]) -> CorrelationReport:
             confidence=o["confidence"],
             reason=o["reason"],
             confidence_breakdown=tuple(
-                (str(item[0]), float(item[1]))
-                for item in o.get("confidence_breakdown", [])
+                (str(item[0]), float(item[1])) for item in o.get("confidence_breakdown", [])
             ),
         )
         for o in data.get("degradation_origins", [])
@@ -550,6 +557,24 @@ def _deserialize_tool_chain_findings(
             description=f.get("description", ""),
             evidence=f.get("evidence", ""),
             confidence=f.get("confidence", 0.0),
+        )
+        for f in items
+    ]
+
+
+def _deserialize_findings(items: list[dict[str, Any]]) -> list[Finding]:
+    return [
+        Finding(
+            id=f.get("id", ""),
+            node=f.get("node", ""),
+            type=f.get("type", ""),
+            severity=f.get("severity", "warning"),
+            reason=f.get("reason", ""),
+            source=f.get("source", "heuristic"),
+            field_path=f.get("field_path"),
+            origin_node=f.get("origin_node"),
+            confidence=f.get("confidence"),
+            suppressed=f.get("suppressed", False),
         )
         for f in items
     ]

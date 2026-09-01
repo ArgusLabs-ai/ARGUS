@@ -17,6 +17,31 @@ StepStatus = Literal[
 RunStatus = Literal["clean", "crashed", "interrupted", "silent_failure"]
 
 
+FindingSource = Literal["heuristic", "validator", "anomaly", "llm", "crash"]
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One normalized failure signal on a run. Flat, stable, consumer-facing.
+
+    Built at finalize by ``argus.findings.collect_findings`` from the per-step
+    inspection / validator / anomaly / judge data, so downstream consumers
+    (``argus check --format json``, exporters, the dashboard) read one list
+    instead of walking every step shape. See docs/STATUS.md.
+    """
+
+    id: str  # stable content hash: sha1(type|node|field_path|source)[:10]
+    node: str
+    type: str  # e.g. "missing_field", "empty_output", "placeholder_outputs", "crash"
+    severity: str  # "critical" | "warning" | "info"
+    reason: str  # full sentence readable without seeing the node
+    source: FindingSource
+    field_path: str | None = None
+    origin_node: str | None = None  # upstream culprit when known
+    confidence: float | None = None
+    suppressed: bool = False
+
+
 @dataclass
 class ValidatorResult:
     validator_name: str  # e.g. "*:check_length" or "summarize:my_fn"
@@ -292,6 +317,9 @@ class RunRecord:
     replay_comparison: ReplayComparisonResult | None = None
     loop_analyses: list[LoopAnalysisResult] = field(default_factory=list)
     tool_chain_findings: list[ToolChainFinding] = field(default_factory=list)
+    # Flat, normalized list of every failure signal on the run (schema_version >= "2").
+    # Back-filled on load for older records. See docs/STATUS.md and findings.py.
+    findings: list[Finding] = field(default_factory=list)
     dry_run: bool = False  # True if this run skipped persistence (VAR-75)
     # Fraction of the run actually evaluated by each detection layer, 0.0–1.0.
     # Keys: "structural", "heuristic", "judge". Empty on old runs / when a layer
