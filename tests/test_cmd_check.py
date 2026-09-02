@@ -302,3 +302,79 @@ def test_pytest_without_argus_flag_does_not_fail_silent_invoke(pytester: pytest.
     pytester.makepyfile(_SILENT_TEST)
     result = pytester.runpytest("-q")
     result.assert_outcomes(passed=1)
+
+
+# ── argus check --format json / --fail-on ────────────────────────────────────
+
+
+def _unclean_record(run_id: str):
+    record = make_run_record(
+        events=[
+            make_event(
+                node_name="search",
+                status="fail",
+                inspection=make_inspection(
+                    missing=["documents"], is_silent=True, severity="critical"
+                ),
+            )
+        ],
+        status="silent_failure",
+        run_id=run_id,
+    )
+    from argus.findings import collect_findings
+
+    record.findings = collect_findings(record.steps)
+    record.started_at = _now()
+    return record
+
+
+@pytest.mark.unit
+def test_check_json_fail_shape_and_exit_code():
+    import json
+
+    save_run(_unclean_record("json-fail"))
+    result = CliRunner().invoke(app, ["check", "last", "--format", "json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)  # stdout is only the JSON object
+    assert payload["run_id"] == "json-fail"
+    assert payload["overall_status"] == "silent_failure"
+    assert payload["passed"] is False
+    assert payload["fail_on"] is None
+    assert "search" in payload["failing_nodes"]
+    assert payload["findings"] and payload["findings"][0]["type"] == "missing_field"
+    for key in ("id", "node", "type", "severity", "reason", "source"):
+        assert key in payload["findings"][0]
+
+
+@pytest.mark.unit
+def test_check_json_clean_exits_zero():
+    import json
+
+    record = make_run_record(events=[make_event()], status="clean", run_id="json-clean")
+    record.started_at = _now()
+    save_run(record)
+    result = CliRunner().invoke(app, ["check", "last", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["passed"] is True and payload["findings"] == []
+
+
+@pytest.mark.unit
+def test_check_fail_on_filters_gate():
+    save_run(_unclean_record("failon-1"))
+    # silent_failure run; only crashes should fail → passes
+    ok = CliRunner().invoke(app, ["check", "last", "--fail-on", "crashed"])
+    assert ok.exit_code == 0, ok.output
+    # include silent_failure → fails
+    bad = CliRunner().invoke(app, ["check", "last", "--fail-on", "crashed,silent_failure"])
+    assert bad.exit_code == 1
+
+
+@pytest.mark.unit
+def test_check_fail_on_rejects_unknown_value():
+    import json
+
+    save_run(_unclean_record("failon-2"))
+    result = CliRunner().invoke(app, ["check", "last", "--fail-on", "bogus", "--format", "json"])
+    assert result.exit_code == 2
+    assert "bogus" in json.loads(result.output)["error"]
