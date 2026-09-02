@@ -116,6 +116,7 @@ _COMMANDS = [
     ("check <id>", "CI gate for a specific run (full id or 8-char prefix)"),
     ("replay <id> <node>", "re-run from a saved node checkpoint"),
     ("replay <id> <node> --only", "re-run just that node in isolation"),
+    ("replay <id> <node> --set k=v", "edit the state, then resume from that node"),
     ("replay <id> <node> --app mod:fn", "replay with a live graph factory"),
     ("inspect <id> --step <node>", "dump raw input / output state for a node"),
     ("diff <id>", "diff a replay run against its original"),
@@ -134,6 +135,7 @@ _WHEN_TO_USE = [
     ("show", "understand what happened: statuses, warnings, root cause"),
     ("check", "fail CI when the last (or given) run was not clean"),
     ("replay", "re-run from a broken node after fixing the code (warns about live calls)"),
+    ("replay --set", "fix a bad value in the saved state and resume — no code change"),
     ("inspect", "read exact input/output JSON for a specific step"),
     ("fix", "hand the root cause to a coding agent as a ready-made prompt"),
     ("diff", "verify a fix actually changed behaviour between runs"),
@@ -145,6 +147,11 @@ _OPTIONS = [
         "str",
         "zero-arg callable returning StateGraph or CompiledGraph",
     ),
+    ("replay  --set  path=value", "str", "patch a state value before replaying (repeatable)"),
+    ("replay  --delete  path", "str", "drop a state field before replaying (repeatable)"),
+    ("replay  --patch  file.json", "str", "state patch document to apply before replaying"),
+    ("replay  --dry-run", "flag", "show what the patch changes without executing"),
+    ("replay  --create-missing", "flag", "let the patch add keys that don't exist yet"),
     ("inspect --step / -s  <node>", "str", "node name to inspect  (required)"),
     ("show <id>", "str", "full run id or 8-char prefix"),
     (
@@ -333,6 +340,19 @@ def cmd_check(
         None,
         help="Run ID, 8-char prefix, or 'last' for the most recent run.",
     ),
+    output_format: str = typer.Option(
+        "text",
+        "--format",
+        help="Output format: text (default) or json (one object on stdout, nothing else).",
+    ),
+    fail_on: Optional[str] = typer.Option(
+        None,
+        "--fail-on",
+        help=(
+            "Comma-separated run statuses that fail the gate "
+            "(crashed, interrupted, silent_failure). Default: any non-clean run."
+        ),
+    ),
 ) -> None:
     """Fail (exit 1) if the last or given run was not clean.
 
@@ -340,8 +360,10 @@ def cmd_check(
 
         argus check last
         argus check <run-id>
+        argus check last --format json
+        argus check last --fail-on crashed,silent_failure
     """
-    check_run(run_id)
+    check_run(run_id, output_format=output_format, fail_on=fail_on)
 
 
 @app.command("list")
@@ -377,9 +399,61 @@ def cmd_replay(
             help="Re-run only the specified node in isolation (skip downstream).",
         ),
     ] = False,
+    patch: Annotated[
+        Optional[str],
+        typer.Option(
+            "--patch",
+            help="JSON file with a state patch to apply before replaying.",
+        ),
+    ] = None,
+    set_: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--set",
+            help="Patch a value: 'path=value' (repeatable). e.g. --set meta.retries=0",
+        ),
+    ] = None,
+    delete: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--delete",
+            help="Remove a field before replaying (repeatable). e.g. --delete docs",
+        ),
+    ] = None,
+    create_missing: Annotated[
+        bool,
+        typer.Option(
+            "--create-missing",
+            help="Allow the patch to add keys that don't exist yet.",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Show what the patch changes without running anything.",
+        ),
+    ] = False,
 ) -> None:
-    """Re-run a pipeline from a saved step using stored input state."""
-    replay_run(run_id=run_id, from_step=from_step, app_module_str=app, only=only)
+    """Re-run a pipeline from a saved step, optionally patching its state first."""
+    from argus.cli.cmd_replay import build_patch
+    from argus.state_patch import PatchError
+
+    try:
+        patch_doc = build_patch(patch, set_, delete)
+    except PatchError as exc:
+        _console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from None
+
+    replay_run(
+        run_id=run_id,
+        from_step=from_step,
+        app_module_str=app,
+        only=only,
+        patch=patch_doc,
+        create_missing=create_missing,
+        dry_run=dry_run,
+    )
 
 
 @app.command("inspect")

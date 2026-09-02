@@ -11,6 +11,7 @@ import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from rich.console import Console
@@ -473,26 +474,132 @@ def _import_factory_for_ui(spec: str):
     return fn
 
 
+_MAX_PREVIEW_VALUE_CHARS = 2000
+
+
+class _PatchRequestError(Exception):
+    """A patch request that must be rejected, carrying its wire response."""
+
+    def __init__(self, error: str, message: str, status: int) -> None:
+        super().__init__(message)
+        self.error = error
+        self.message = message
+        self.status = status
+
+    def as_response(self) -> tuple[dict[str, str], int]:
+        return {"error": self.error, "message": self.message}, self.status
+
+
+def _resolve_patch_preview(
+    run_record: Any,
+    from_step: str,
+    patch: Any,
+    create_missing: bool,
+) -> list[Any]:
+    """Validate a patch against a run's recorded state and return its changes.
+
+    Shared by ``/api/replay`` — which discards the result and only wants the
+    validation — and ``/api/replay/preview``, which returns it. One code path
+    means a preview can never report a patch as valid that the real replay
+    would then reject.
+    """
+    from argus.state_patch import (  # noqa: PLC0415
+        PatchError,
+        preview_patch,
+        validate_patch,
+    )
+
+    if not isinstance(patch, dict):
+        raise _PatchRequestError(
+            "invalid_patch",
+            f"patch must be a JSON object, got {type(patch).__name__}",
+            400,
+        )
+
+    target = next((s for s in run_record.steps if s.node_name == from_step), None)
+    if target is None:
+        available = [s.node_name for s in run_record.steps]
+        raise _PatchRequestError(
+            "unknown_node",
+            f"node '{from_step}' not found in run. Available: {', '.join(available)}",
+            404,
+        )
+
+    try:
+        validate_patch(patch)
+        # Dry-run against the real recorded state so a bad path is rejected
+        # before anything is executed or enqueued.
+        return preview_patch(target.input_state, patch, create_missing=create_missing)
+    except PatchError as exc:
+        raise _PatchRequestError("invalid_patch", str(exc), 400) from exc
+
+
+def _cap_preview_value(value: Any) -> Any:
+    """Cap one preview value so a large state subtree cannot flood the response.
+
+    The editor calls the preview endpoint on every pause in typing, so an
+    uncapped before/after would ship whole state trees per keystroke.
+    """
+    try:
+        text = json.dumps(value, default=str, ensure_ascii=False)
+    except Exception:
+        text = str(value)
+    if len(text) <= _MAX_PREVIEW_VALUE_CHARS:
+        return value
+    return {
+        "__argus_truncated__": True,
+        "preview": text[:_MAX_PREVIEW_VALUE_CHARS],
+        "full_length": len(text),
+    }
+
+
+def _serialize_patch_changes(changes: list[Any]) -> list[dict[str, Any]]:
+    """Render PatchChange records for the wire, with values capped."""
+    return [
+        {
+            "op": c.op,
+            "path": c.path,
+            "before": _cap_preview_value(c.before),
+            "after": _cap_preview_value(c.after),
+            "existed": c.existed,
+        }
+        for c in changes
+    ]
+
+
 def _run_replay_worker(
     job_id: str,
     run_id: str,
     from_node: str,
     app_module_str: str | None,
     mode: str = "full",
+    patch: dict[str, Any] | None = None,
+    create_missing: bool = False,
 ) -> None:
-    """Background thread: runs ReplayEngine and updates _replay_jobs on completion."""
+    """Background thread: runs ReplayEngine and updates _replay_jobs on completion.
+
+    The optional *patch* edits the replayed node's recorded input state before
+    execution; it is validated by the request handler before this thread starts.
+    """
     from argus.replay import ReplayEngine  # noqa: PLC0415
 
     try:
         engine = ReplayEngine()
         if mode == "node":
-            new_run_id = engine.replay_node(run_id=run_id, node_name=from_node)
+            new_run_id = engine.replay_node(
+                run_id=run_id,
+                node_name=from_node,
+                patch=patch,
+                create_missing=create_missing,
+            )
         else:
             factory = _import_factory_for_ui(app_module_str) if app_module_str else None
             new_run_id = engine.replay(
                 run_id=run_id,
                 from_node=from_node,
                 app_factory=factory,
+                patch=patch,
+                create_missing=create_missing,
             )
         with _replay_lock:
             _replay_jobs[job_id] = {"status": "done", "run_id": new_run_id, "error": None}
@@ -1054,18 +1161,90 @@ def _make_handler(
                             )
                             return
 
+                # Validate the optional state patch up front. A patch that fails
+                # inside the worker thread would surface only as a generic job
+                # error, losing the "did you mean" hint that makes it fixable.
+                patch = data.get("patch")
+                create_missing = bool(data.get("create_missing", False))
+                if patch is not None:
+                    try:
+                        _resolve_patch_preview(
+                            run_record, from_step, patch, create_missing
+                        )
+                    except _PatchRequestError as exc:
+                        err_body, err_status = exc.as_response()
+                        self._send_json(err_body, err_status)
+                        return
+
                 job_id = str(uuid.uuid4())
                 with _replay_lock:
                     _replay_jobs[job_id] = {"status": "running", "run_id": None, "error": None}
 
                 t = threading.Thread(
                     target=_run_replay_worker,
-                    args=(job_id, run_id, from_step, effective_app, replay_mode),
+                    args=(
+                        job_id,
+                        run_id,
+                        from_step,
+                        effective_app,
+                        replay_mode,
+                        patch,
+                        create_missing,
+                    ),
                     daemon=True,
                 )
                 t.start()
 
                 self._send_json({"job_id": job_id}, 202)
+            elif path == "/api/replay/preview":
+                # Answers "what would this patch change?" without running
+                # anything — no job is started and no run is written.
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length)
+                try:
+                    data = json.loads(body)
+                except Exception:
+                    self._send_json({"error": "invalid JSON"}, 400)
+                    return
+
+                run_id = (data.get("run_id") or "").strip()
+                from_step = (data.get("from_step") or "").strip()
+                if not run_id or not from_step:
+                    self._send_json({"error": "run_id and from_step are required"}, 400)
+                    return
+
+                if "patch" not in data:
+                    self._send_json({"error": "patch is required"}, 400)
+                    return
+
+                from argus.storage import load_run as _load_run  # noqa: PLC0415
+
+                try:
+                    run_record = _load_run(run_id)
+                except (FileNotFoundError, ValueError):
+                    self._send_json({"error": "run not found"}, 404)
+                    return
+
+                try:
+                    changes = _resolve_patch_preview(
+                        run_record,
+                        from_step,
+                        data.get("patch"),
+                        bool(data.get("create_missing", False)),
+                    )
+                except _PatchRequestError as exc:
+                    err_body, err_status = exc.as_response()
+                    self._send_json(err_body, err_status)
+                    return
+
+                from argus.state_patch import format_changes  # noqa: PLC0415
+
+                self._send_json(
+                    {
+                        "changes": _serialize_patch_changes(changes),
+                        "summary": format_changes(changes),
+                    }
+                )
             elif path.startswith("/api/feedback/") and path.endswith("/resolve"):
                 fb_id = path[len("/api/feedback/") : -len("/resolve")]
                 length = int(self.headers.get("Content-Length", 0))

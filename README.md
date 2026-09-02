@@ -133,7 +133,7 @@ result = app.invoke(initial_state)
 
 ## Detection Layers
 
-Runs in order, each more expensive — only fires when needed:
+Runs in order, each more expensive — only fires when needed. Every status a layer can assign, and how node statuses roll up into the run verdict, is specified in [`docs/STATUS.md`](docs/STATUS.md).
 
 1. **Heuristics** — 150+ failure signatures (placeholders, empty results, error keys, semantic degradation). Zero cost.
 2. **Validators** — custom per-node business-logic constraints. Deterministic.
@@ -165,6 +165,33 @@ argus diff <rerun-id>                 # compare vs original
 ```
 
 External API calls (OpenAI, etc.) are recorded by default — replays are free and deterministic.
+
+### Time-Travel: edit the state, then resume
+
+Spotted the bad value? Fix it in the saved state and resume from there — no code change, no re-running the steps that already worked:
+
+```bash
+argus replay <run-id> node_7 --set status=OK          # correct a value
+argus replay <run-id> node_7 --delete stale_field     # reproduce a dropped field
+argus replay <run-id> node_7 --patch fix.json         # a full patch document
+argus replay <run-id> node_7 --set status=OK --dry-run  # preview, run nothing
+```
+
+Upstream nodes stay frozen, so only the resumed trajectory changes. Paths are dotted with list
+indices — `items[0].name` — and match the `field_path` ARGUS reports on a failing signal, so you
+can paste one straight in. A patch file takes the same three ops:
+
+```json
+{
+  "delete": ["broken_field"],
+  "set":    {"query": "fixed query", "meta.retries": 0},
+  "merge":  {"config": {"temperature": 0}}
+}
+```
+
+Patches are strict by default: a mistyped path errors with a "did you mean" hint instead of
+silently adding a field (use `--create-missing` to add new keys). Every patched replay records
+the patch it ran with, so the run explains its own divergence from the original.
 
 ---
 
@@ -235,7 +262,9 @@ argus show last                      # most recent run
 argus show <id>                      # inspect a specific run
 argus check <id>                     # CI gate for an exact run; prints the JSON path checked
 ARGUS_RUN_ID=<id> argus check        # CI-friendly selection when the id comes from an earlier step
-argus check last                     # newest-file fallback — avoid when runs may share a workspace
+argus check last                     # newest-file fallback — avoid in a shared workspace
+argus check last --format json       # same verdict as one JSON object (run_id, overall_status, passed, findings[])
+argus check last --fail-on crashed,silent_failure   # only these run statuses fail the gate
 argus inspect <id> --step <node>     # dump raw input/output for a node
 argus fix <id>                       # fix prompt for the root cause, ready to paste
 argus replay <id> <node>             # re-run from a node

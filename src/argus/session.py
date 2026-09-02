@@ -55,8 +55,10 @@ from argus.models import (
     LLMUsage,
     NodeEvent,
     RunRecord,
+    RunStatus,
     SemanticCheckResult,
     SemanticSignal,
+    StepStatus,
     ToolFailure,
     ValidatorResult,
 )
@@ -76,7 +78,7 @@ class _PendingJudge:
     validator_results: list[ValidatorResult]
     anomaly_signals: list[AnomalySignal]
     ambiguous_signals: list[SemanticSignal]
-    deterministic_status: str
+    deterministic_status: StepStatus
     node_name: str
     input_snap: dict
     output_snap: dict
@@ -358,6 +360,8 @@ class ArgusSession:
         # set by ReplayEngine or ArgusWatcher for linked runs
         self.parent_run_id: str | None = parent_run_id
         self.replay_from_step: str | None = None
+        # patch applied to the replayed input state, recorded for provenance
+        self.state_patch: dict[str, Any] | None = None
 
         # frozen outputs for replay — maps node_name → list of saved output dicts (FIFO)
         self.frozen_outputs: dict[str, list[Any]] | None = None
@@ -740,6 +744,7 @@ class ArgusSession:
             self._node_attempt_counts[node_name] = attempt_idx + 1
 
             # determine status
+            status: StepStatus
             if is_interrupt:
                 status = "interrupted"
                 exc_str = None
@@ -1034,7 +1039,7 @@ class ArgusSession:
 
     def _apply_judge_verdict(
         self,
-        status: str,
+        status: StepStatus,
         semantic_check_result: SemanticCheckResult | None,
         disambiguation_results: list[DisambiguationResult],
         inspection: InspectionResult | None,
@@ -1044,7 +1049,7 @@ class ArgusSession:
         behavior_type_val: str | None,
         output_snap: dict | None,
         input_snap: dict | None = None,
-    ) -> str:
+    ) -> StepStatus:
         """Apply LLM disambiguation + coherence verdict to status. Returns new status."""
         if disambiguation_results and inspection is not None:
             dismissed_ids = {
@@ -1310,6 +1315,7 @@ class ArgusSession:
         has_semantic_fail = any(e.status == "semantic_fail" for e in active_events)
         has_degraded = any(e.status == "degraded_input" for e in active_events)
 
+        overall_status: RunStatus
         if has_crash:
             overall_status = "crashed"
         elif has_interrupt:
@@ -1372,6 +1378,7 @@ class ArgusSession:
             node_fn_paths=self.node_fn_paths,
             parent_run_id=self.parent_run_id,
             replay_from_step=self.replay_from_step,
+            state_patch=self.state_patch,
             interrupted=has_interrupt,
             interrupt_node=interrupt_node,
             total_llm_calls=total_llm_calls,
@@ -1476,6 +1483,14 @@ class ArgusSession:
             from argus.tool_chain_analyzer import analyze_tool_chains
 
             record.tool_chain_findings = analyze_tool_chains(record)
+        except Exception:
+            pass
+
+        # Normalized findings list — the one shape consumers read (docs/STATUS.md)
+        try:
+            from argus.findings import collect_findings  # noqa: PLC0415
+
+            record.findings = collect_findings(record.steps, record.tool_chain_findings)
         except Exception:
             pass
 
