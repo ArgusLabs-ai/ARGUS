@@ -1,15 +1,10 @@
 import type { Metadata } from 'next'
-import { GeistSans } from 'geist/font/sans'
-import { JetBrains_Mono } from 'next/font/google'
 import Sidebar from '@/components/Sidebar'
 import { AuthProvider } from '@/lib/auth'
 import './globals.css'
 
-const jetbrainsMono = JetBrains_Mono({
-  variable: '--font-jetbrains-mono',
-  subsets: ['latin'],
-  display: 'swap',
-})
+// The interface uses the system stacks defined by --sans / --mono in globals.css
+// (SF Pro / SF Mono per the spec), so no webfont is loaded.
 
 const SITE_URL = 'https://arguslabs.in'
 const SITE_TITLE = 'ARGUS — Production Readiness for AI Agent Pipelines'
@@ -68,8 +63,15 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`dark ${GeistSans.variable} ${jetbrainsMono.variable}`}>
+    <html lang="en">
       <head>
+        {/* Applies a stored theme before first paint so there is no flash of the
+            OS theme on reload. Must be inline and synchronous. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('argus-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}})()`,
+          }}
+        />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{

@@ -466,3 +466,21 @@ html, body {
   );
   border-radius: inherit;
 }
+
+/* ── Segmented control (spec primitive; full set lands in Task 9) ── */
+.seg{
+  display: inline-flex; padding: 2px; gap: 2px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-ctl);
+  background: var(--void);
+}
+.seg button{
+  border: none; background: transparent;
+  color: var(--ink-3);
+  font-family: var(--sans); font-size: 12.5px; font-weight: 500;
+  padding: 4px 12px; border-radius: 5px; cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.seg button:hover{ color: var(--ink); }
+.seg button[aria-selected="true"]{ background: var(--raised); color: var(--ink); }

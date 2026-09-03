@@ -4,6 +4,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAuth } from '@/lib/auth'
+import ThemeToggle from '@/components/ThemeToggle'
 import { cn } from '@/lib/utils'
 import {
   Activity,
@@ -217,6 +218,11 @@ export default function Sidebar() {
             </li>
           ))}
         </ul>
+      </div>
+
+      {/* Theme */}
+      <div className="border-t border-sidebar-border px-3 py-2.5">
+        <ThemeToggle />
       </div>
 
       {/* User footer */}
