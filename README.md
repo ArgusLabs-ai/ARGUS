@@ -124,8 +124,6 @@ result = app.invoke(initial_state)
 |---------|---------|
 | **Silent failures** | Node returns `{}` or drops a required field — no exception, pipeline keeps running broken |
 | **Semantic failures** | Output structure is fine but values are wrong (placeholders, refusals, degraded text) |
-| **Loop stalls** | Agent retries 5 times producing identical output — stuck loop burning tokens |
-| **Unnecessary retries** | Loop produces correct answer on attempt 2, but validator forces 3 more iterations |
 | **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field |
 | **Contract violations** | Output types don't match the next node's expected input schema |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
@@ -135,7 +133,7 @@ result = app.invoke(initial_state)
 
 ## Detection Layers
 
-Runs in order, each more expensive — only fires when needed:
+Runs in order, each more expensive — only fires when needed. Every status a layer can assign, and how node statuses roll up into the run verdict, is specified in [`docs/STATUS.md`](docs/STATUS.md).
 
 1. **Heuristics** — 150+ failure signatures (placeholders, empty results, error keys, semantic degradation). Zero cost.
 2. **Validators** — custom per-node business-logic constraints. Deterministic.
@@ -143,7 +141,6 @@ Runs in order, each more expensive — only fires when needed:
 4. **Correlator** — traces failure propagation across nodes. Points at the *origin*, not the crash site.
 5. **LLM semantic judge** — evidence-aware final ruling. Receives all signals from layers 1–4 before deciding. Cannot override validator failures or critical anomalies.
 6. **LLM investigator** — root cause explanations and debugging suggestions. Only on ambiguous failures.
-7. **Loop analyzer** — LLM analysis for looped nodes: summarizes iterations, detects stalls, flags wasted retries.
 
 ---
 
@@ -153,8 +150,7 @@ Pipelines with loops (LLM -> compiler -> if fail, retry) get special treatment:
 
 - Earlier iterations that self-corrected are marked `retried` (not counted as failures)
 - Only the **final iteration** determines pass/fail
-- LLM analyzes every loop: what went wrong, what changed between attempts, whether retries were necessary
-- Dashboard shows iteration badges, collapse/expand, and natural-language loop summaries
+- Dashboard shows iteration badges, collapse/expand across attempts
 
 ---
 
@@ -264,8 +260,11 @@ watcher = ArgusWatcher(graph, config=config)
 argus list                           # all recorded runs
 argus show last                      # most recent run
 argus show <id>                      # inspect a specific run
-argus check last                     # CI gate — exit 1 on crash / silent failure / semantic fail
-argus check <id>                     # same gate for a specific run
+argus check <id>                     # CI gate for an exact run; prints the JSON path checked
+ARGUS_RUN_ID=<id> argus check        # CI-friendly selection when the id comes from an earlier step
+argus check last                     # newest-file fallback — avoid in a shared workspace
+argus check last --format json       # same verdict as one JSON object (run_id, overall_status, passed, findings[])
+argus check last --fail-on crashed,silent_failure   # only these run statuses fail the gate
 argus inspect <id> --step <node>     # dump raw input/output for a node
 argus fix <id>                       # fix prompt for the root cause, ready to paste
 argus replay <id> <node>             # re-run from a node
@@ -293,7 +292,7 @@ Silent failures become test failures without changing how you invoke the graph:
 pytest --argus
 ```
 
-ARGUS auto-wraps `StateGraph.compile()` / compiled `invoke()` for the test session. A clean pipeline stays a passing test; missing fields, tool failures, crashes, and semantic degradation fail that test. Tests that never invoke a graph are unchanged. Pair with `argus check last` in CI after a standalone run.
+ARGUS auto-wraps `StateGraph.compile()` / compiled `invoke()` for the test session. A clean pipeline stays a passing test; missing fields, tool failures, crashes, and semantic degradation fail that test. Tests that never invoke a graph are unchanged. After a standalone CI run, pass its exact id with `argus check <id>` or `ARGUS_RUN_ID=<id> argus check`; `argus check last` only means the newest file and can select a stale or unrelated run in a shared workspace.
 
 ---
 

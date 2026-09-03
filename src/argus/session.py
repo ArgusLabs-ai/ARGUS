@@ -55,8 +55,10 @@ from argus.models import (
     LLMUsage,
     NodeEvent,
     RunRecord,
+    RunStatus,
     SemanticCheckResult,
     SemanticSignal,
+    StepStatus,
     ToolFailure,
     ValidatorResult,
 )
@@ -76,7 +78,7 @@ class _PendingJudge:
     validator_results: list[ValidatorResult]
     anomaly_signals: list[AnomalySignal]
     ambiguous_signals: list[SemanticSignal]
-    deterministic_status: str
+    deterministic_status: StepStatus
     node_name: str
     input_snap: dict
     output_snap: dict
@@ -742,6 +744,7 @@ class ArgusSession:
             self._node_attempt_counts[node_name] = attempt_idx + 1
 
             # determine status
+            status: StepStatus
             if is_interrupt:
                 status = "interrupted"
                 exc_str = None
@@ -786,7 +789,14 @@ class ArgusSession:
                 self._check_latency_signals(duration_ms, inspection)
                 # Determine raw status from inspection
                 _has_failure = inspection.is_silent_failure or inspection.has_tool_failure
-                _has_signals = bool(inspection.semantic_signals)
+                # Only critical-severity semantic signals affect status — a
+                # "warning" signal (e.g. an ambiguous suspicious-phrase match)
+                # is recorded on the event for visibility but must not alone
+                # fail the node. Mirrors how ToolFailure already gates on
+                # severity == "critical" for has_tool_failure above.
+                _has_signals = any(
+                    s.severity == "critical" for s in inspection.semantic_signals
+                )
 
                 if _has_failure or _has_signals:
                     # Before blaming this node, check if it's operating on
@@ -1029,7 +1039,7 @@ class ArgusSession:
 
     def _apply_judge_verdict(
         self,
-        status: str,
+        status: StepStatus,
         semantic_check_result: SemanticCheckResult | None,
         disambiguation_results: list[DisambiguationResult],
         inspection: InspectionResult | None,
@@ -1039,7 +1049,7 @@ class ArgusSession:
         behavior_type_val: str | None,
         output_snap: dict | None,
         input_snap: dict | None = None,
-    ) -> str:
+    ) -> StepStatus:
         """Apply LLM disambiguation + coherence verdict to status. Returns new status."""
         if disambiguation_results and inspection is not None:
             dismissed_ids = {
@@ -1069,7 +1079,12 @@ class ArgusSession:
                 _has_failure = (
                     inspection.is_silent_failure or inspection.has_tool_failure
                 )
-                _has_signals = bool(inspection.semantic_signals)
+                # Same severity gate as the initial status determination —
+                # a leftover warning-severity signal shouldn't re-fail a
+                # node the disambiguation pass otherwise cleared.
+                _has_signals = any(
+                    s.severity == "critical" for s in inspection.semantic_signals
+                )
                 if not _has_failure and not _has_signals:
                     status = "pass"
                 elif _has_failure:
@@ -1300,6 +1315,7 @@ class ArgusSession:
         has_semantic_fail = any(e.status == "semantic_fail" for e in active_events)
         has_degraded = any(e.status == "degraded_input" for e in active_events)
 
+        overall_status: RunStatus
         if has_crash:
             overall_status = "crashed"
         elif has_interrupt:
@@ -1467,6 +1483,14 @@ class ArgusSession:
             from argus.tool_chain_analyzer import analyze_tool_chains
 
             record.tool_chain_findings = analyze_tool_chains(record)
+        except Exception:
+            pass
+
+        # Normalized findings list — the one shape consumers read (docs/STATUS.md)
+        try:
+            from argus.findings import collect_findings  # noqa: PLC0415
+
+            record.findings = collect_findings(record.steps, record.tool_chain_findings)
         except Exception:
             pass
 

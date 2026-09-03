@@ -33,6 +33,7 @@ mypy src/argus
 argus --help
 argus show <run-id>
 argus check last
+ARGUS_RUN_ID=<run-id> argus check
 argus diff <run-a> <run-b>
 argus replay <run-id> <node>
 argus ui
@@ -52,8 +53,9 @@ Every wrapped node executes through this pipeline:
 4. **Semantic validators**: custom per-node or wildcard validators
 5. **Anomaly detection**: behavioral anomaly signals (output size, timing, structure)
 6. **LLM semantic judge** (`semantic_checker.py`): evidence-aware final ruling — receives all prior signals (validator results, anomaly signals, inspection findings) as context. Cannot override validator failures or critical anomalies. Returns `evidence_considered` and `overridden_signals` for audit trail.
-7. Status assigned: `pass | fail | crashed | semantic_fail | interrupted`
+7. Status assigned: `pass | fail | crashed | semantic_fail | degraded_input | interrupted` (plus `retried` / `skipped` set at finalize). Full vocabulary and the node → run roll-up: `docs/STATUS.md`
 8. `NodeEvent` recorded; auto-finalize if last node or error
+9. At finalize, every per-step signal (inspection, validators, anomalies, judge, crash, tool-chain) is flattened into `RunRecord.findings` — one `Finding` per signal with a stable content-hash `id`, a full-sentence `reason`, and a `source`. Consumers read this list, not the step shapes (`findings.collect_findings`, schema_version "2"; older records are back-filled on load)
 
 ### Core Classes
 
@@ -81,10 +83,11 @@ Every wrapped node executes through this pipeline:
 | `src/argus/providers.py` | Per-provider request/response translation for BYOK (message format, model remapping, response normalization) |
 | `src/argus/signature_generalizer.py` | Generalizes failure signatures via LLM + heuristic fallback. Uses `llm_proxy` for the LLM path |
 | `src/argus/check.py` | CI gate: evaluate a `RunRecord` as clean vs crash / silent_failure / semantic_fail |
-| `src/argus/cli/cmd_check.py` | `argus check last` / `argus check <id>` — exit 1 when the run was not clean |
+| `src/argus/cli/cmd_check.py` | `argus check <id>` / `ARGUS_RUN_ID=<id> argus check` / `argus check last` — grade one run, print its file, and exit 1 when it was not clean |
 | `src/argus/pytest_plugin.py` | pytest `--argus` plugin: fail tests whose instrumented invoke was not clean |
 | `src/argus/cli/main.py` | `argus` CLI entry point (Typer) |
 | `src/argus/cli/cmd_doctor.py` | `argus doctor` diagnostic command |
+| `src/argus/findings.py` | `collect_findings()` — builds `RunRecord.findings`; also the one-line terminal summary after invoke |
 | `src/argus/data/signatures.json` | Bundled semantic failure signatures |
 
 ### Semantic Signature Registry (`registry.py` + `data/signatures.json`)
@@ -93,8 +96,9 @@ Detects placeholder/degraded LLM outputs using match strategies:
 - `exact_ci`, `contains_ci`, `prefix_ci`: string matching
 - `regex`: compiled pattern
 - `repetition`: n-gram repetition detection
+- `semantic_similarity`: embedding cosine match (6 bundled signatures use it)
 
-Categories: `placeholder_outputs`, `null_like_semantic`, `suspicious_phrases`, `corrupted_markers`, `repeated_filler_text`, `malformed_embedded_json` → mapped to `placeholder_detected` or `semantic_degradation` failure types.
+Categories: `placeholder_outputs`, `null_like_semantic`, `suspicious_phrases`, `corrupted_markers`, `repeated_filler`, `malformed_payload`, `empty_semantic_state`, `semantic_refusal` → mapped to `placeholder_detected`, `semantic_degradation`, or `structural_anomaly` failure types by `_CATEGORY_TO_FAILURE` in `inspector.py`.
 
 ### LLM Transport
 
