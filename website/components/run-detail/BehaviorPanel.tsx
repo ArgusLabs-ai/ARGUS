@@ -12,6 +12,8 @@ const BEHAVIOR_LABELS: Record<string, string> = {
   detailed_text: 'Detailed Text',
   tool_output: 'Tool Output',
   reasoning_chain: 'Reasoning Chain',
+  chat_response: 'Chat Response',
+  code_generation: 'Code Generation',
 }
 
 export default function BehaviorPanel({ run }: { run: RunRecord }) {

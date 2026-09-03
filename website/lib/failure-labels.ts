@@ -11,10 +11,12 @@ export const FAILURE_META: Record<string, FailureMeta> = {
   error_response:     { label: 'Error Response',     category: 'Tool',      categoryColor: '#ef4444' },
   rate_limit:         { label: 'Rate Limited',        category: 'Tool',      categoryColor: '#ef4444' },
   empty_result:       { label: 'Empty Result',        category: 'Tool',      categoryColor: '#ef4444' },
+  empty_output:       { label: 'Empty Output',        category: 'Tool',      categoryColor: '#ef4444' },
   error_in_data:      { label: 'Error in Data',       category: 'Tool',      categoryColor: '#ef4444' },
   partial_failure:    { label: 'Partial Failure',     category: 'Tool',      categoryColor: '#ef4444' },
   // Quality — output exists but is degraded
   truncated_output:                { label: 'Truncated',          category: 'Quality',   categoryColor: '#f59e0b' },
+  json_in_string:                  { label: 'Double-Encoded JSON', category: 'Quality',  categoryColor: '#f59e0b' },
   confidence_mismatch:             { label: 'Confidence Mismatch', category: 'Quality',  categoryColor: '#f59e0b' },
   retrieval_quality_low:           { label: 'Low Retrieval',      category: 'Quality',   categoryColor: '#f59e0b' },
   shallow_context:                 { label: 'Shallow Context',    category: 'Quality',   categoryColor: '#f59e0b' },
