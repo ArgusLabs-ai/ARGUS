@@ -483,4 +483,7 @@ html, body {
   transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
 }
 .seg button:hover{ color: var(--ink); }
-.seg button[aria-selected="true"]{ background: var(--raised); color: var(--ink); }
+/* aria-pressed for standalone toggle groups (ThemeToggle); aria-selected
+   for tab-like segmented controls. Both read as "the active segment". */
+.seg button[aria-selected="true"],
+.seg button[aria-pressed="true"]{ background: var(--raised); color: var(--ink); }

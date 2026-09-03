@@ -21,7 +21,7 @@ export default function ThemeToggle() {
         <button
           key={option}
           type="button"
-          aria-selected={theme === option}
+          aria-pressed={theme === option}
           onClick={() => choose(option)}
         >
           {option[0].toUpperCase() + option.slice(1)}

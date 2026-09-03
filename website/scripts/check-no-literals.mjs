@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs'
 
 const GUARDED = [
   'lib/failure-labels.ts',
+  'components/run-detail/StepInspector.tsx',
+  'components/run-detail/StepInspectorSignals.tsx',
 ]
 
 const LITERAL = /#[0-9a-fA-F]{3,8}\b|rgba?\(/g
