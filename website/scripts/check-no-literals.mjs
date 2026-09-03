@@ -6,6 +6,9 @@ const GUARDED = [
   'lib/failure-labels.ts',
   'components/run-detail/StepInspector.tsx',
   'components/run-detail/StepInspectorSignals.tsx',
+  'app/approvals/page.tsx',
+  'app/approvals/ApprovalRows.tsx',
+  'app/approvals/types.ts',
 ]
 
 const LITERAL = /#[0-9a-fA-F]{3,8}\b|rgba?\(/g
