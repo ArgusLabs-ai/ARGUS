@@ -9,104 +9,328 @@ html, body {
   overflow: hidden;
 }
 
-/* ── Dark observability theme — ARGUS Redesign (grey-black + indigo accent) ── */
-:root {
+/* ── Argus Instrument interface spec — dual-theme token set ──────
+   Light is the bare :root. The dark blocks redefine every token, guarded
+   so an explicit [data-theme="light"] choice still wins. Nothing below
+   this block should declare a colour literal.  */
+:root{
+  color-scheme: light;
+
+  /* ── Grounds — macOS light: neutral, faintly cool ── */
+  --rail:        #F0F0F2;
+  --ex:          #F0F0F2;
+  --band:        #E7E7EA;
+  --void:        #FFFFFF;
+  --panel:       #FFFFFF;
+  --raised:      #FFFFFF;
+  --raised-hover:#F4F4F6;
+  --line:        #E2E2E6;
+  --line-2:      #D3D3D9;
+  --line-3:      #B6B6BE;
+
+  /* ── Label hierarchy — Apple's four levels ── */
+  --ink:         #1D1D1F;
+  --ink-2:       #55555C;
+  --ink-3:       #6E6E76;
+  --ink-4:       #8A8A92;
+
+  --hover:        rgba(0,0,0,0.040);
+  --fill-subtle:  rgba(0,0,0,0.055);
+  --dot:          rgba(0,0,0,0.085);
+  --overlay:      rgba(252,252,253,0.80);
+
+  /* ── Accent — system blue ── */
+  --iris:        #007AFF;
+  --iris-bright: #0057D1;
+  --iris-dim:    rgba(0,122,255,0.10);
+  --iris-line:   rgba(0,122,255,0.34);
+  --on-accent:   #FFFFFF;
+  --on-signal:   #FFFFFF;
+
+  /* ── Signal — Apple system colours, light variants ── */
+  --ok:          #248A3D;
+  --tool:        #D70015;
+  --quality:     #B25000;
+  --semantic:    #8944AB;
+  --coherence:   #0071A4;
+  --idle:        #AEAEB4;
+
+  --ok-dim:        rgba(36,138,61,0.10);
+  --tool-dim:      rgba(215,0,21,0.08);
+  --quality-dim:   rgba(178,80,0,0.09);
+  --semantic-dim:  rgba(137,68,171,0.08);
+  --coherence-dim: rgba(0,113,164,0.09);
+
+  --surf-tool:      #FFF2F2;
+  --surf-quality:   #FFF6EC;
+  --surf-semantic:  #FAF3FD;
+  --surf-coherence: #EFF8FC;
+
+  --glow-tool: rgba(215,0,21,0.20);
+  --glow-iris: rgba(0,122,255,0.24);
+
+  --edge-pass: rgba(90,90,100,0.34);
+  --edge-skip: rgba(90,90,100,0.14);
+
+  /* Code + diff */
+  --j-key:  #0057D1;
+  --j-str:  #248A3D;
+  --j-num:  #B25000;
+  --j-bool: #8944AB;
+  --diff-add-bg: rgba(36,138,61,0.09);
+  --diff-add-fg: #1B6E31;
+  --diff-del-bg: rgba(215,0,21,0.07);
+  --diff-del-fg: #B00012;
+  --sk-hi: #EDEDF0;
+
+  --shadow-md: 0 6px 20px -8px rgba(0,0,0,0.20);
+  --shadow-lg: 0 28px 70px -18px rgba(0,0,0,0.30), 0 0 0 .5px rgba(0,0,0,0.10);
+
+  /* ── Type — SF Pro for interface, SF Mono for machine values ── */
+  --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'SF Mono', ui-monospace, Menlo, 'Cascadia Mono', Consolas, monospace;
+
+  --r-chip:  5px;
+  --r-ctl:   6px;
+  --r-panel: 10px;
+
+  --ease: cubic-bezier(.32,.72,0,1);
+  --fast: 120ms;
+  --med:  220ms;
+}
+
+/* ── macOS dark: neutral charcoal, sidebar sits above content ── */
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+
+    --rail:        #232326;
+    --ex:          #232326;
+    --band:        #2A2A2E;
+    --void:        #17171A;
+    --panel:       #1E1E21;
+    --raised:      #26262A;
+    --raised-hover:#303036;
+    --line:        #303034;
+    --line-2:      #3A3A40;
+    --line-3:      #4A4A52;
+
+    --ink:         #F2F2F5;
+    --ink-2:       #A8A8B0;
+    --ink-3:       #8A8A93;
+    --ink-4:       #6E6E77;
+
+    --hover:        rgba(255,255,255,0.055);
+    --fill-subtle:  rgba(255,255,255,0.075);
+    --dot:          rgba(255,255,255,0.060);
+    --overlay:      rgba(38,38,42,0.80);
+
+    --iris:        #0A84FF;
+    --iris-bright: #6BB4FF;
+    --iris-dim:    rgba(10,132,255,0.16);
+    --iris-line:   rgba(10,132,255,0.40);
+    --on-accent:   #FFFFFF;
+    --on-signal:   #FFFFFF;
+
+    --ok:          #30D158;
+    --tool:        #FF453A;
+    --quality:     #FF9F0A;
+    --semantic:    #DA8FFF;
+    --coherence:   #64D2FF;
+    --idle:        #5A5A62;
+
+    --ok-dim:        rgba(48,209,88,0.14);
+    --tool-dim:      rgba(255,69,58,0.14);
+    --quality-dim:   rgba(255,159,10,0.14);
+    --semantic-dim:  rgba(218,143,255,0.14);
+    --coherence-dim: rgba(100,210,255,0.14);
+
+    --surf-tool:      #241618;
+    --surf-quality:   #241C10;
+    --surf-semantic:  #221827;
+    --surf-coherence: #10202A;
+
+    --glow-tool: rgba(255,69,58,0.45);
+    --glow-iris: rgba(10,132,255,0.45);
+
+    --edge-pass: rgba(168,168,176,0.32);
+    --edge-skip: rgba(168,168,176,0.12);
+
+    --j-key:  #6BB4FF;
+    --j-str:  #30D158;
+    --j-num:  #FF9F0A;
+    --j-bool: #DA8FFF;
+    --diff-add-bg: rgba(48,209,88,0.10);
+    --diff-add-fg: #7FE3A0;
+    --diff-del-bg: rgba(255,69,58,0.10);
+    --diff-del-fg: #FF9A93;
+    --sk-hi: #2E2E33;
+
+    --shadow-md: 0 8px 26px -10px rgba(0,0,0,0.75);
+    --shadow-lg: 0 30px 76px -20px rgba(0,0,0,0.85), 0 0 0 .5px rgba(255,255,255,0.10);
+  }
+}
+
+:root[data-theme="dark"]{
   color-scheme: dark;
 
-  --background:              #0a0a0a;
-  --foreground:              #ffffff;
-  --card:                    #0d0d0d;
-  --card-foreground:         #ffffff;
-  --popover:                 #0d0d0d;
-  --popover-foreground:      #ffffff;
-  --primary:                 #5b6af0;
-  --primary-foreground:      #ffffff;
-  --secondary:               #0d0d0d;
-  --secondary-foreground:    #ffffff;
-  --muted:                   #0d0d0d;
-  --muted-foreground:        #6b6b6b;
-  --accent:                  #0d0d0d;
-  --accent-foreground:       #ffffff;
-  --destructive:             #ef4444;
-  --destructive-foreground:  #ffffff;
-  --success:                 #22c55e;
-  --success-foreground:      #0a0a0a;
-  --warning:                 #f59e0b;
-  --warning-foreground:      #0a0a0a;
-  --border:                  #1a1a1a;
-  --input:                   #1a1a1a;
-  --ring:                    #5b6af0;
-  --radius:                  10px;
+  --rail:        #232326;
+  --ex:          #232326;
+  --band:        #2A2A2E;
+  --void:        #17171A;
+  --panel:       #1E1E21;
+  --raised:      #26262A;
+  --raised-hover:#303036;
+  --line:        #303034;
+  --line-2:      #3A3A40;
+  --line-3:      #4A4A52;
 
-  /* Code blocks */
-  --code-bg:                 #0a0a0a;
-  --code-header:             #151515;
+  --ink:         #F2F2F5;
+  --ink-2:       #A8A8B0;
+  --ink-3:       #8A8A93;
+  --ink-4:       #6E6E77;
 
-  /* Text hierarchy */
-  --text-secondary:          #6b6b6b;
-  --text-tertiary:           #454545;
+  --hover:        rgba(255,255,255,0.055);
+  --fill-subtle:  rgba(255,255,255,0.075);
+  --dot:          rgba(255,255,255,0.060);
+  --overlay:      rgba(38,38,42,0.80);
 
-  /* Status */
-  --failure:                 #ef4444;
-  --running:                 #3b82f6;
+  --iris:        #0A84FF;
+  --iris-bright: #6BB4FF;
+  --iris-dim:    rgba(10,132,255,0.16);
+  --iris-line:   rgba(10,132,255,0.40);
+  --on-accent:   #FFFFFF;
+  --on-signal:   #FFFFFF;
 
-  /* Sidebar */
-  --sidebar:                 #0d0d0d;
-  --sidebar-foreground:      #888888;
-  --sidebar-primary:         #5b6af0;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent:          #0d0d0d;
-  --sidebar-accent-foreground: #ffffff;
-  --sidebar-border:          #1a1a1a;
-  --sidebar-ring:            #5b6af0;
+  --ok:          #30D158;
+  --tool:        #FF453A;
+  --quality:     #FF9F0A;
+  --semantic:    #DA8FFF;
+  --coherence:   #64D2FF;
+  --idle:        #5A5A62;
 
-  /* ── Legacy compatibility aliases ────────────────────────────── */
-  --bg-base:        var(--background);
-  --bg-surface:     var(--card);
-  --bg-elevated:    var(--card);
-  --bg-overlay:     var(--popover);
-  --border-subtle:  var(--border);
-  --border-default: var(--border);
-  --border-strong:  #2a2a2a;
-  --text-primary:   var(--foreground);
-  --text-muted:     #454545;
-  --text-faint:     #2a2a2a;
-  --accent-blue:    var(--primary);
-  --accent-blue-dim: rgba(91,106,240,0.10);
-  --accent-green:   var(--success);
-  --accent-red:     var(--destructive);
-  --accent-amber:   var(--warning);
-  --accent-magenta: #a855f7;
-  --accent-cyan:    #3b82f6;
-  --sidebar-bg:     var(--sidebar);
-  --sidebar-active: rgba(91,106,240,0.10);
-  --sidebar-text:   var(--sidebar-foreground);
-  --sidebar-muted:  var(--muted-foreground);
+  --ok-dim:        rgba(48,209,88,0.14);
+  --tool-dim:      rgba(255,69,58,0.14);
+  --quality-dim:   rgba(255,159,10,0.14);
+  --semantic-dim:  rgba(218,143,255,0.14);
+  --coherence-dim: rgba(100,210,255,0.14);
+
+  --surf-tool:      #241618;
+  --surf-quality:   #241C10;
+  --surf-semantic:  #221827;
+  --surf-coherence: #10202A;
+
+  --glow-tool: rgba(255,69,58,0.45);
+  --glow-iris: rgba(10,132,255,0.45);
+
+  --edge-pass: rgba(168,168,176,0.32);
+  --edge-skip: rgba(168,168,176,0.12);
+
+  --j-key:  #6BB4FF;
+  --j-str:  #30D158;
+  --j-num:  #FF9F0A;
+  --j-bool: #DA8FFF;
+  --diff-add-bg: rgba(48,209,88,0.10);
+  --diff-add-fg: #7FE3A0;
+  --diff-del-bg: rgba(255,69,58,0.10);
+  --diff-del-fg: #FF9A93;
+  --sk-hi: #2E2E33;
+
+  --shadow-md: 0 8px 26px -10px rgba(0,0,0,0.75);
+  --shadow-lg: 0 30px 76px -20px rgba(0,0,0,0.85), 0 0 0 .5px rgba(255,255,255,0.10);
+}
+
+/* ── Bridge: old token names → spec tokens ─────────────────────────
+   Lets existing Tailwind classes keep working while components are
+   restyled phase by phase. Delete a line once no component reads it.  */
+:root, :root[data-theme="dark"] {
+  --background:             var(--void);
+  --foreground:             var(--ink);
+  --card:                   var(--panel);
+  --card-foreground:        var(--ink);
+  --popover:                var(--raised);
+  --popover-foreground:     var(--ink);
+  --primary:                var(--iris);
+  --primary-foreground:     var(--on-accent);
+  --secondary:              var(--panel);
+  --secondary-foreground:   var(--ink);
+  --muted:                  var(--panel);
+  --muted-foreground:       var(--ink-3);
+  --accent:                 var(--panel);
+  --accent-foreground:      var(--ink);
+  --destructive:            var(--tool);
+  --destructive-foreground: var(--on-signal);
+  --success:                var(--ok);
+  --success-foreground:     var(--on-signal);
+  --warning:                var(--quality);
+  --warning-foreground:     var(--on-signal);
+  --border:                 var(--line);
+  --input:                  var(--line-2);
+  --ring:                   var(--iris);
+  --radius:                 var(--r-panel);
+
+  --code-bg:                var(--void);
+  --code-header:            var(--band);
+  --text-secondary:         var(--ink-2);
+  --text-tertiary:          var(--ink-3);
+  --failure:                var(--tool);
+  --running:                var(--iris);
+
+  --sidebar:                var(--rail);
+  --sidebar-foreground:     var(--ink-2);
+  --sidebar-primary:        var(--iris);
+  --sidebar-primary-foreground: var(--on-accent);
+  --sidebar-accent:         var(--hover);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border:         var(--line);
+  --sidebar-ring:           var(--iris);
+
+  --bg-base:        var(--void);
+  --bg-surface:     var(--panel);
+  --bg-elevated:    var(--raised);
+  --bg-overlay:     var(--overlay);
+  --border-subtle:  var(--line);
+  --border-default: var(--line);
+  --border-strong:  var(--line-3);
+  --text-primary:   var(--ink);
+  --text-muted:     var(--ink-3);
+  --text-faint:     var(--ink-4);
+  --accent-blue:    var(--iris);
+  --accent-blue-dim: var(--iris-dim);
+  --accent-green:   var(--ok);
+  --accent-red:     var(--tool);
+  --accent-amber:   var(--quality);
+  --accent-magenta: var(--semantic);
+  --accent-cyan:    var(--coherence);
+  --sidebar-bg:     var(--rail);
+  --sidebar-active: var(--iris-dim);
+  --sidebar-text:   var(--ink-2);
+  --sidebar-muted:  var(--ink-3);
 }
 
 /* ── Base layer ────────────────────────────────────────────────── */
 @layer base {
   * {
     border-color: var(--border);
-    outline-color: rgba(91,106,240,0.5);
+    outline-color: var(--iris-line);
   }
   body {
     background-color: var(--background);
     color: var(--foreground);
-    font-family: var(--font-geist-sans), 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: var(--sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
     letter-spacing: -0.011em;
   }
   html {
-    font-family: var(--font-geist-sans), 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: var(--sans);
   }
 }
 
 /* ── Monospace ─────────────────────────────────────────────────── */
 .font-mono, code, pre, .mono {
-  font-family: var(--font-jetbrains-mono), 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace;
+  font-family: var(--mono);
   font-variant-ligatures: none;
   letter-spacing: 0;
 }
@@ -119,20 +343,20 @@ html, body {
 /* ── Scrollbar ─────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--line-3); }
 
 /* ── Thin scrollbars for code/terminal blocks ─────────────────── */
 .scrollbar-thin::-webkit-scrollbar { height: 8px; width: 8px; }
-.scrollbar-thin::-webkit-scrollbar-thumb { background-color: #2a2a2a; border-radius: 4px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background-color: var(--line-2); border-radius: 4px; }
 .scrollbar-thin::-webkit-scrollbar-track { background-color: transparent; }
 
 /* ── JSON viewer syntax highlighting ───────────────────────────── */
-.json-key     { color: #8b9bf4; }
-.json-string  { color: #7faf8e; }
-.json-number  { color: #c0926a; }
-.json-boolean { color: #c0926a; }
-.json-null    { color: #8a8a8a; }
+.json-key     { color: var(--j-key); }
+.json-string  { color: var(--j-str); }
+.json-number  { color: var(--j-num); }
+.json-boolean { color: var(--j-bool); }
+.json-null    { color: var(--ink-4); }
 
 /* ── Sidebar nav transition ────────────────────────────────────── */
 .nav-item {
@@ -151,7 +375,7 @@ html, body {
   transition: background 100ms ease;
 }
 .step-row:hover {
-  background: rgba(91,106,240,0.06);
+  background: var(--iris-dim);
 }
 
 /* ── Page transition ───────────────────────────────────────────── */
@@ -167,6 +391,7 @@ html, body {
 .detail-overlay-backdrop {
   position: absolute;
   inset: 0;
+  /* ponytail: a black scrim reads correctly in both themes; not tokenised. */
   background: rgba(0, 0, 0, 0.6);
   z-index: 40;
   animation: overlayFadeIn 150ms ease-out;
@@ -204,8 +429,8 @@ html, body {
 
 /* ── Dot-grid background for execution graph canvas ──────────── */
 .dot-grid {
-  background-color: #0a0a0a;
-  background-image: radial-gradient(#1c1c1c 1px, transparent 1px);
+  background-color: var(--void);
+  background-image: radial-gradient(var(--dot) 1px, transparent 1px);
   background-size: 20px 20px;
 }
 
@@ -236,8 +461,8 @@ html, body {
     0deg,
     transparent 0px,
     transparent 2px,
-    rgba(255,255,255,0.015) 2px,
-    rgba(255,255,255,0.015) 4px
+    var(--dot) 2px,
+    var(--dot) 4px
   );
   border-radius: inherit;
 }
