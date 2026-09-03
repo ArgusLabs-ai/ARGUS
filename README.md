@@ -4,6 +4,7 @@
   <a href="https://pypi.org/project/argus-agents/"><img src="https://img.shields.io/pypi/v/argus-agents" alt="PyPI version"/></a>
   <a href="https://pypi.org/project/argus-agents/"><img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9+"/></a>
   <a href="https://github.com/VaradDurge/ARGUS/releases"><img src="https://img.shields.io/badge/status-beta-6366f1" alt="Beta"/></a>
+  <a href="https://discord.gg/67XTFTDSgd"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"/></a>
 </div>
 
 ---
@@ -12,7 +13,7 @@
 
 Your LangGraph pipeline runs fine — no exception. But three nodes later, something crashes with a `KeyError`. The real cause? A node upstream silently dropped a field. ARGUS catches this.
 
-Beta, and under active development. ARGUS is early. Expect rough edges and bugs, and expect things to move. Issues and pull requests are welcome.
+Beta, and under active development. ARGUS is early. Expect rough edges and bugs, and expect things to move. Issues and pull requests are welcome. Contributors: join the [Discord](https://discord.gg/67XTFTDSgd) before opening a PR — that is where updates land.
 
 ---
 
@@ -345,6 +346,10 @@ For AI setup prompts and integration guides, visit **[arguslabs.in](https://argu
 ---
 
 **v0.8.12** — [changelog](https://github.com/VaradDurge/ARGUS/releases)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Join the [Discord](https://discord.gg/67XTFTDSgd) before opening a PR for updates and to talk through the change.
 
 ## License
 
