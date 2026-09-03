@@ -82,3 +82,6 @@ supabase/.temp/
 # Misc reference files
 argus_architecture.html
 
+
+# Local demo pipeline (real API keys / real network calls; not for the repo)
+demo/research_agent/
