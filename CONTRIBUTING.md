@@ -188,7 +188,8 @@ contributions**. PRs that modify them will be closed.
 ## Review & Merge Process
 
 - `master` is protected: **all changes land via pull request** — no direct pushes.
-- CI (ruff + pytest on Python 3.9/3.11/3.12) must pass.
+- CI (ruff + pytest on Python 3.9/3.11/3.12) must pass, including the
+  eat-own-cooking gate: `pytest tests/test_argus_ci_gate.py --argus`.
 - At least one **code owner** approval is required (see [CODEOWNERS](.github/CODEOWNERS)).
 - Only maintainers merge to `master`.
 
