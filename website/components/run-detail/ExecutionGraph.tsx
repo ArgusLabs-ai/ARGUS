@@ -1,474 +1,459 @@
 'use client'
 
-import { useState } from 'react'
-import type { RunRecord, StepStatus } from '@/lib/types'
-import { formatDur } from '@/lib/run-utils'
+/* Execution graph — a direct port of the Argus Instrument spec graph.
+   Drag nodes, pan the canvas, wheel-zoom, click a node to inspect it.
+   Geometry (node width, tool-row offset, bezier control points, arrowheads)
+   matches the spec exactly; see globals.css for the .g* rules. */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Zap,
-  FileText,
-  Sparkles,
-  Database,
-  Wrench,
-  Search,
-  ShieldCheck,
-  Send,
-  Check,
-  X,
-  Minus,
-  AlertTriangle,
-  Maximize2,
-  type LucideIcon,
+  Zap, Shuffle, Database, Sparkles, Wrench, ShieldCheck, FileOutput, Circle,
+  AlertTriangle, X as XIcon, Info, Check, Clock, Plug, Maximize2, type LucideIcon,
 } from 'lucide-react'
+import type { RunRecord, StepStatus } from '@/lib/types'
+import { getFailureMeta } from '@/lib/failure-labels'
 
-const SENTINEL = new Set(['__start__', '__end__', 'START', 'END'])
+const W = 178          // node width — spec
+const NODE_H = 52      // node box height used for edge anchoring — spec
+const TOOL_GAP_Y = 30  // node bottom → tool row — spec
+const GAP_X = 96
+const GAP_Y = 132
+const PAD = 48
 
-const NODE_W = 168
-const NODE_H = 62
-const GAP_X = 56
-const GAP_Y = 26
-const PAD = 28
+/* ── kinds ───────────────────────────────────────────────────── */
 
 type NodeKind = 'trigger' | 'transform' | 'retrieval' | 'llm' | 'tool' | 'guard' | 'output' | 'default'
 
+const KIND_ICON: Record<NodeKind, LucideIcon> = {
+  trigger: Zap, transform: Shuffle, retrieval: Database, llm: Sparkles,
+  tool: Wrench, guard: ShieldCheck, output: FileOutput, default: Circle,
+}
+
 function inferKind(name: string): NodeKind {
   const n = name.toLowerCase()
-  if (n.includes('ingest') || n.includes('event') || n.includes('trigger') || n.includes('webhook')) return 'trigger'
-  if (n.includes('parse') || n.includes('extract') || n.includes('transform') || n.includes('diff')) return 'transform'
-  if (n.includes('embed') || n.includes('retriev') || n.includes('vector') || n.includes('fetch')) return 'retrieval'
-  if (n.includes('llm') || n.includes('plan') || n.includes('synth') || n.includes('summar') || n.includes('review') || n.includes('analyz')) return 'llm'
-  if (n.includes('tool') || n.includes('code') || n.includes('exec') || n.includes('web') || n.includes('search')) return 'tool'
-  if (n.includes('guard') || n.includes('check') || n.includes('test') || n.includes('valid')) return 'guard'
-  if (n.includes('respond') || n.includes('output') || n.includes('send') || n.includes('publish')) return 'output'
+  if (/(ingest|start|trigger|input|entry)/.test(n)) return 'trigger'
+  if (/(fetch|retriev|search|query|load|source)/.test(n)) return 'retrieval'
+  if (/(summar|synth|generat|plan|llm|model|revise|draft|answer)/.test(n)) return 'llm'
+  if (/(verify|validat|check|guard|review)/.test(n)) return 'guard'
+  if (/(final|output|report|emit|render)/.test(n)) return 'output'
+  if (/(merge|map|transform|parse|format|normal)/.test(n)) return 'transform'
+  if (/(tool|call|api|http)/.test(n)) return 'tool'
   return 'default'
 }
 
-const kindIcon: Record<NodeKind, LucideIcon> = {
-  trigger: Zap,
-  transform: FileText,
-  retrieval: Database,
-  llm: Sparkles,
-  tool: Wrench,
-  guard: ShieldCheck,
-  output: Send,
-  default: Search,
+/* ── status ──────────────────────────────────────────────────── */
+
+type S = 'pass' | 'fail' | 'crashed' | 'semantic' | 'degraded' | 'running' | 'skipped'
+
+const STATUS_META: Record<S, { cls: string; label: string; color: string; badge: LucideIcon | null }> = {
+  pass:     { cls: 's-pass',     label: 'pass',           color: 'var(--ok)',          badge: null },
+  fail:     { cls: 's-fail',     label: 'silent failure', color: 'var(--quality)',     badge: AlertTriangle },
+  crashed:  { cls: 's-crashed',  label: 'crashed',        color: 'var(--tool)',        badge: XIcon },
+  semantic: { cls: 's-semantic', label: 'semantic fail',  color: 'var(--semantic)',    badge: AlertTriangle },
+  degraded: { cls: 's-degraded', label: 'degraded input', color: 'var(--coherence)',   badge: Info },
+  running:  { cls: 's-running',  label: 'running',        color: 'var(--iris-bright)', badge: null },
+  skipped:  { cls: 's-skipped',  label: 'not reached',    color: 'var(--ink-3)',       badge: null },
 }
 
-type MappedStatus = 'succeeded' | 'crashed' | 'failed' | 'semantic_fail' | 'degraded' | 'running' | 'skipped' | 'pending'
+const SEVERITY: Partial<Record<S, number>> = { crashed: 4, semantic: 3, fail: 2, degraded: 1 }
 
-function mapStatus(s: StepStatus | undefined): MappedStatus {
-  if (!s) return 'pending'
-  if (s === 'pass') return 'succeeded'
-  if (s === 'crashed') return 'crashed'
-  if (s === 'fail') return 'failed'
-  if (s === 'semantic_fail') return 'semantic_fail'
-  if (s === 'degraded_input') return 'degraded'
-  if (s === 'interrupted') return 'running'
-  if (s === 'skipped') return 'skipped'
-  if (s === 'retried') return 'skipped'
-  return 'succeeded'
+const EDGE_COLOR: Record<S, string> = {
+  pass: 'var(--edge-pass)', running: 'var(--iris)', skipped: 'var(--edge-skip)',
+  crashed: 'var(--tool)', semantic: 'var(--semantic)', fail: 'var(--quality)',
+  degraded: 'var(--coherence)',
 }
 
-interface LayoutNode {
-  id: string
-  label: string
-  kind: NodeKind
-  status: MappedStatus
-  col: number
-  row: number
-  durationMs: number | null
-}
-
-function dagLayers(names: string[], edgeMap: Record<string, string[]>) {
-  const nodeSet = new Set(names)
-  const indegree = new Map(names.map((n) => [n, 0]))
-  const outgoing = new Map<string, string[]>()
-  for (const n of names) outgoing.set(n, [])
-
-  for (const [src, tgts] of Object.entries(edgeMap ?? {})) {
-    if (!nodeSet.has(src)) continue
-    for (const tgt of tgts ?? []) {
-      if (!nodeSet.has(tgt)) continue
-      outgoing.get(src)?.push(tgt)
-      indegree.set(tgt, (indegree.get(tgt) ?? 0) + 1)
-    }
+function mapStatus(s: StepStatus | undefined): S {
+  switch (s) {
+    case 'pass': return 'pass'
+    case 'crashed': return 'crashed'
+    case 'semantic_fail': return 'semantic'
+    case 'degraded_input': return 'degraded'
+    case 'fail': case 'retried': return 'fail'
+    case 'skipped': case undefined: return 'skipped'
+    default: return 'pass'
   }
+}
 
-  const layers: string[][] = []
-  let ready = names.filter((n) => (indegree.get(n) ?? 0) === 0)
+/* ── tool chips, derived from real per-node findings ──────────── */
+
+type ToolStatus = 'ok' | 'error' | 'slow' | 'empty' | 'skipped'
+const TOOL_META: Record<ToolStatus, { cls: string; icon: LucideIcon }> = {
+  ok:      { cls: 't-ok',      icon: Check },
+  error:   { cls: 't-error',   icon: AlertTriangle },
+  slow:    { cls: 't-slow',    icon: Clock },
+  empty:   { cls: 't-empty',   icon: Info },
+  skipped: { cls: 't-skipped', icon: Plug },
+}
+
+interface Tool { id: string; tag: string; status: ToolStatus }
+
+function toolsFor(run: RunRecord, node: string): Tool[] {
+  const step = (run.steps ?? []).find((s) => s.node_name === node)
+  if (!step) return []
+  const insp = step.inspection
+  const out: Tool[] = []
+
+  for (const tf of insp?.tool_failures ?? []) {
+    const meta = getFailureMeta(tf.failure_type)
+    const status: ToolStatus =
+      tf.failure_type.includes('empty') ? 'empty'
+      : /slow|timeout|latency|fast/.test(tf.failure_type) ? 'slow'
+      : tf.severity === 'critical' ? 'error' : 'slow'
+    out.push({ id: tf.field_name || meta.label, tag: meta.label, status })
+  }
+  for (const sig of insp?.semantic_signals ?? []) {
+    out.push({
+      id: sig.field_path?.join('.') || 'output',
+      tag: sig.sig_id,
+      status: sig.severity === 'critical' ? 'error' : 'slow',
+    })
+  }
+  for (const an of step.anomaly_signals ?? []) {
+    out.push({ id: an.field_path || 'behaviour', tag: an.anomaly_id, status: an.severity === 'critical' ? 'error' : 'slow' })
+  }
+  return out.slice(0, 4)
+}
+
+/* ── layout ──────────────────────────────────────────────────── */
+
+function dagLayers(names: string[], edgeMap: Record<string, string[]>): string[][] {
+  const indeg: Record<string, number> = {}
+  names.forEach((n) => { indeg[n] = 0 })
+  for (const [, tos] of Object.entries(edgeMap ?? {})) {
+    for (const t of tos) if (t in indeg) indeg[t] += 1
+  }
   const seen = new Set<string>()
+  const layers: string[][] = []
+  let ready = names.filter((n) => indeg[n] === 0)
+  if (!ready.length) ready = names.slice(0, 1)
 
-  while (ready.length > 0) {
+  while (ready.length && seen.size < names.length) {
     const layer = ready.filter((n) => !seen.has(n))
-    if (layer.length === 0) break
+    if (!layer.length) break
     layers.push(layer)
-    for (const n of layer) seen.add(n)
-    const next: string[] = []
+    layer.forEach((n) => seen.add(n))
+    const next = new Set<string>()
     for (const n of layer) {
-      for (const t of outgoing.get(n) ?? []) {
-        indegree.set(t, (indegree.get(t) ?? 0) - 1)
-        if ((indegree.get(t) ?? 0) === 0) next.push(t)
+      for (const t of edgeMap?.[n] ?? []) {
+        if (seen.has(t)) continue
+        indeg[t] -= 1
+        if (indeg[t] <= 0) next.add(t)
       }
     }
-    ready = names.filter((n) => next.includes(n))
+    ready = Array.from(next)
   }
-
-  const leftovers = names.filter((n) => !seen.has(n))
-  if (leftovers.length) layers.push(...leftovers.map((n) => [n]))
-  return layers.length ? layers : names.map((n) => [n])
+  const left = names.filter((n) => !seen.has(n))
+  if (left.length) layers.push(left)
+  return layers.length ? layers : [names]
 }
 
-function nodePos(col: number, row: number) {
-  return {
-    x: PAD + col * (NODE_W + GAP_X),
-    y: PAD + row * (NODE_H + GAP_Y),
-  }
+interface GNode {
+  id: string; kind: NodeKind; status: S; ms: number | null
+  x: number; y: number; isRoot: boolean; tools: Tool[]
 }
 
-const FAILURE_STATUSES = new Set<MappedStatus>(['crashed', 'failed', 'semantic_fail', 'degraded'])
-
-function edgeKind(from: LayoutNode, to: LayoutNode): 'failed' | 'running' | 'active' | 'idle' {
-  if (FAILURE_STATUSES.has(from.status) || FAILURE_STATUSES.has(to.status)) return 'failed'
-  if (from.status === 'running' || to.status === 'running') return 'running'
-  if (from.status === 'succeeded' && to.status === 'succeeded') return 'active'
-  return 'idle'
-}
-
-const edgeStroke: Record<string, string> = {
-  failed: 'var(--tool)',
-  running: 'var(--iris)',
-  active: 'color-mix(in srgb, var(--iris) 45%, transparent)',
-  idle: 'var(--fill-subtle)',
-}
-
-const statusStyles: Record<MappedStatus, string> = {
-  succeeded:     'border-[var(--line-2)] bg-[var(--raised)] hover:border-[var(--line-3)]',
-  crashed:       'border-[1.5px] border-[var(--tool)] bg-[var(--surf-tool)] shadow-[0_0_0_3px_var(--tool-dim),0_0_26px_-8px_var(--glow-tool)]',
-  failed:        'border-[var(--quality)] bg-[var(--surf-quality)]',
-  semantic_fail: 'border-[var(--semantic)] bg-[var(--surf-semantic)]',
-  degraded:      'border-[var(--quality)] bg-[var(--surf-quality)]',
-  running:       'border-[var(--iris)] bg-[var(--iris-dim)] shadow-[0_0_20px_-6px_var(--glow-iris)]',
-  skipped:       'border-[var(--hover)] border-dashed bg-[var(--hover)] opacity-55',
-  pending:       'border-[var(--hover)] border-dashed bg-[var(--hover)] opacity-55',
-}
-
-// Color constants per status — reused by glyph, icon bg, and glow
-const STATUS_COLOR: Record<MappedStatus, string> = {
-  succeeded:     'var(--ok)',
-  crashed:       'var(--tool)',
-  failed:        'var(--quality)',
-  semantic_fail: 'var(--semantic)',
-  degraded:      'var(--quality)',
-  running:       'var(--iris)',
-  skipped:       'var(--ink-3)',
-  pending:       'var(--ink-3)',
-}
-
-function StatusGlyph({ status }: { status: MappedStatus }) {
-  if (status === 'succeeded')
-    return <Check className="h-3 w-3" style={{ color: STATUS_COLOR.succeeded }} strokeWidth={2.5} />
-  if (status === 'crashed')
-    return <X className="h-3 w-3" style={{ color: STATUS_COLOR.crashed }} strokeWidth={2.5} />
-  if (status === 'failed')
-    return <AlertTriangle className="h-3 w-3" style={{ color: STATUS_COLOR.failed }} strokeWidth={2.5} />
-  if (status === 'semantic_fail')
-    return <AlertTriangle className="h-3 w-3" style={{ color: STATUS_COLOR.semantic_fail }} strokeWidth={2.5} />
-  if (status === 'degraded')
-    return <AlertTriangle className="h-3 w-3" style={{ color: STATUS_COLOR.degraded }} strokeWidth={2.5} />
-  if (status === 'running')
-    return <AlertTriangle className="h-3 w-3 animate-pulse" style={{ color: STATUS_COLOR.running }} strokeWidth={2.5} />
-  return <Minus className="h-3 w-3 text-[var(--ink-3)]" strokeWidth={2.5} />
-}
-
-function NodeCard({
-  node,
-  selected,
-  onSelect,
-}: {
-  node: LayoutNode
-  selected: boolean
-  onSelect: (id: string) => void
-}) {
-  const Icon = kindIcon[node.kind]
-  const { x, y } = nodePos(node.col, node.row)
-
-  const c = STATUS_COLOR[node.status]
-  const isError = FAILURE_STATUSES.has(node.status)
-  const glowStyle = isError
-    ? { boxShadow: `0 0 0 1px ${c}, 0 0 22px -4px ${c}88` }
-    : node.status === 'running'
-      ? { boxShadow: '0 0 18px -4px color-mix(in srgb, var(--iris) 45%, transparent)' }
-      : undefined
-
-  return (
-    <button
-      onClick={() => onSelect(node.id)}
-      style={{ left: x, top: y, width: NODE_W, height: NODE_H, ...glowStyle }}
-      className={[
-        'absolute flex items-center gap-2.5 rounded-[10px] border px-3 py-2.5 text-left transition-all',
-        statusStyles[node.status],
-        selected ? 'ring-2 ring-[var(--iris)] ring-offset-2 ring-offset-[var(--panel)]' : '',
-      ].join(' ')}
-    >
-      <span
-        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[6px]"
-        style={{
-          background: isError
-            ? `${c}26`
-            : node.status === 'running'
-              ? 'var(--iris-dim)'
-              : 'var(--hover)',
-          color: isError
-            ? c
-            : node.status === 'running'
-              ? 'var(--iris)'
-              : 'var(--ink)',
-        }}
-      >
-        <Icon className="h-4 w-4" />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate font-mono text-[12px] font-medium tracking-[-0.015em] text-[var(--ink)]">
-          {node.label}
-        </span>
-        <span className="mt-0.5 flex items-center gap-1 font-mono text-[11px] tabular-nums text-[var(--ink-3)]">
-          <StatusGlyph status={node.status} />
-          {node.durationMs != null ? formatDur(node.durationMs) : node.status === 'pending' ? 'queued' : '—'}
-        </span>
-      </span>
-    </button>
-  )
-}
-
-function Legend() {
-  const items = [
-    { label: 'Succeeded', color: STATUS_COLOR.succeeded },
-    { label: 'Crashed', color: STATUS_COLOR.crashed },
-    { label: 'Silent Fail', color: STATUS_COLOR.failed },
-    { label: 'Semantic', color: STATUS_COLOR.semantic_fail },
-    { label: 'Degraded', color: STATUS_COLOR.degraded },
-    { label: 'Skipped', color: STATUS_COLOR.skipped },
-  ]
-  return (
-    <div className="hidden items-center gap-3 md:flex">
-      {items.map((i) => (
-        <span key={i.label} className="flex items-center gap-1.5 text-[11px] text-[var(--ink-3)]">
-          <span className="h-2 w-2 rounded-full" style={{ background: i.color }} />
-          {i.label}
-        </span>
-      ))}
-    </div>
-  )
-}
+/* ── component ───────────────────────────────────────────────── */
 
 export default function ExecutionGraph({
-  run,
-  onViewFull,
-  onSelectNode,
+  run, onViewFull, onSelectNode,
 }: {
   run: RunRecord
   onViewFull?: () => void
-  onSelectNode?: (nodeName: string | null) => void
+  onSelectNode?: (n: string) => void
 }) {
-  const [selectedNode, setSelectedNode] = useState<string | null>(null)
+  const names = useMemo(() => run.graph_node_names ?? [], [run])
+  const edgeMap = useMemo(() => run.graph_edge_map ?? {}, [run])
+  const chain = useMemo(() => run.root_cause_chain ?? [], [run])
 
-  const names = (run.graph_node_names ?? []).filter((n) => !n.startsWith('__') && !SENTINEL.has(n))
-  const stepMap = new Map((run.steps ?? []).map((s) => [s.node_name, s]))
-  const layers = dagLayers(names, run.graph_edge_map ?? {})
+  const initial = useMemo<GNode[]>(() => {
+    const layers = dagLayers(names, edgeMap)
+    const rootSet = new Set(run.root_cause_chain ?? [])
+    const stepFor = (n: string) => (run.steps ?? []).find((s) => s.node_name === n)
+    const out: GNode[] = []
+    layers.forEach((layer, col) => {
+      layer.forEach((id, row) => {
+        const st = stepFor(id)
+        out.push({
+          id,
+          kind: inferKind(id),
+          status: mapStatus(st?.status),
+          ms: st ? Math.round(st.duration_ms) : null,
+          x: PAD + col * (W + GAP_X),
+          y: PAD + row * GAP_Y - ((layer.length - 1) * GAP_Y) / 2 + 150,
+          isRoot: rootSet.has(id),
+          tools: toolsFor(run, id),
+        })
+      })
+    })
+    return out
+  }, [run, names, edgeMap])
 
-  const firstFailureIdx = run.first_failure_step
-    ? (run.steps ?? []).findIndex((s) => s.node_name === run.first_failure_step)
-    : -1
+  const [nodes, setNodes] = useState<GNode[]>(initial)
+  useEffect(() => setNodes(initial), [initial])
 
-  const layoutNodes: LayoutNode[] = []
-  const byId = new Map<string, LayoutNode>()
+  const [scale, setScale] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [selected, setSelected] = useState<string | null>(null)
+  const [panning, setPanning] = useState(false)
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const drag = useRef<{ id: string | null; ox: number; oy: number } | null>(null)
 
-  for (let col = 0; col < layers.length; col++) {
-    const layer = layers[col]
-    for (let row = 0; row < layer.length; row++) {
-      const name = layer[row]
-      const step = stepMap.get(name)
-      let status = mapStatus(step?.status)
+  const byId = useMemo(() => Object.fromEntries(nodes.map((n) => [n.id, n])), [nodes])
 
-      if (step && step.status === 'pass' && firstFailureIdx >= 0 && step.step_index > firstFailureIdx && run.overall_status !== 'clean') {
-        status = 'succeeded'
-      }
-      if (!step && firstFailureIdx >= 0) {
-        status = 'skipped'
-      }
-
-      const node: LayoutNode = {
-        id: name,
-        label: name.length > 18 ? name.slice(0, 17) + '…' : name,
-        kind: inferKind(name),
-        status,
-        col,
-        row,
-        durationMs: step?.duration_ms ?? null,
-      }
-      layoutNodes.push(node)
-      byId.set(name, node)
+  /* pan */
+  const onCanvasDown = useCallback((e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest('.gnode')) return
+    setPanning(true)
+    const sx = e.clientX - pan.x
+    const sy = e.clientY - pan.y
+    const move = (ev: PointerEvent) => setPan({ x: ev.clientX - sx, y: ev.clientY - sy })
+    const up = () => {
+      setPanning(false)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
     }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }, [pan])
+
+  /* node drag */
+  const onNodeDown = useCallback((e: React.PointerEvent, id: string) => {
+    e.stopPropagation()
+    const n = byId[id]
+    if (!n) return
+    drag.current = { id, ox: e.clientX / scale - n.x, oy: e.clientY / scale - n.y }
+    const move = (ev: PointerEvent) => {
+      const d = drag.current
+      if (!d?.id) return
+      setNodes((prev) => prev.map((p) =>
+        p.id === d.id ? { ...p, x: ev.clientX / scale - d.ox, y: ev.clientY / scale - d.oy } : p))
+    }
+    const up = () => {
+      drag.current = null
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }, [byId, scale])
+
+  /* wheel zoom */
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      setScale((s) => Math.min(2, Math.max(0.35, s - e.deltaY * 0.0015)))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  function nudge(e: React.KeyboardEvent, id: string) {
+    const d = e.shiftKey ? 24 : 8
+    const delta: Record<string, [number, number]> = {
+      ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d],
+    }
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault(); setSelected(id); onSelectNode?.(id); return
+    }
+    const mv = delta[e.key]
+    if (!mv) return
+    e.preventDefault()
+    setNodes((prev) => prev.map((p) => (p.id === id ? { ...p, x: p.x + mv[0], y: p.y + mv[1] } : p)))
   }
 
-  const edges: { from: string; to: string }[] = []
-  for (const [src, tgts] of Object.entries(run.graph_edge_map ?? {})) {
-    if (!byId.has(src)) continue
-    for (const tgt of tgts ?? []) {
-      if (!byId.has(tgt)) continue
-      edges.push({ from: src, to: tgt })
-    }
+  /* edges */
+  const edgeState = (a: GNode, b: GNode): S => {
+    if (a.status === 'running' || b.status === 'running') return 'running'
+    if (a.status === 'skipped' && b.status === 'skipped') return 'skipped'
+    const sa = SEVERITY[a.status] ?? 0
+    const sb = SEVERITY[b.status] ?? 0
+    if (sa === 0 && sb === 0) return 'pass'
+    return sa >= sb ? a.status : b.status
   }
 
-  const maxCol = Math.max(0, ...layoutNodes.map((n) => n.col))
-  const maxRow = Math.max(0, ...layoutNodes.map((n) => n.row))
-  const canvasW = PAD * 2 + (maxCol + 1) * NODE_W + maxCol * GAP_X
-  const canvasH = PAD * 2 + (maxRow + 1) * NODE_H + maxRow * GAP_Y
+  const paths = useMemo(() => {
+    const out: { d: string; head: string; color: string; width: number; cls: string }[] = []
+    for (const [from, tos] of Object.entries(edgeMap)) {
+      for (const to of tos) {
+        const a = byId[from]
+        const b = byId[to]
+        if (!a || !b) continue
+        const st = edgeState(a, b)
+        const ai = chain.indexOf(a.id)
+        const bi = chain.indexOf(b.id)
+        const isProp = ai > -1 && bi === ai + 1
+        const sx = a.x + W
+        const sy = a.y + NODE_H / 2
+        const ex = b.x
+        const ey = b.y + NODE_H / 2
+        const dx = Math.max(36, Math.abs(ex - sx) * 0.5)
+        out.push({
+          d: `M${sx},${sy} C${sx + dx},${sy} ${ex - dx},${ey} ${ex},${ey}`,
+          head: `M${ex - 6},${ey - 3.6} L${ex},${ey} L${ex - 6},${ey + 3.6} Z`,
+          color: EDGE_COLOR[st],
+          width: st === 'pass' || st === 'skipped' ? 1.2 : 1.9,
+          cls: st === 'running' ? 'e-live' : isProp ? 'e-prop' : '',
+        })
+      }
+    }
+    return out
+  }, [byId, edgeMap, chain])
+
+  const extent = useMemo(() => ({
+    w: Math.max(900, ...nodes.map((n) => n.x + W + 80)),
+    h: Math.max(470, ...nodes.map((n) => n.y + NODE_H + TOOL_GAP_Y + 90)),
+  }), [nodes])
+
+  const sel = selected ? byId[selected] : null
 
   return (
-    <div
-      className="overflow-hidden rounded-[var(--r-panel)]"
-      style={{ background: 'var(--panel)', border: '1px solid var(--line)' }}
-    >
-      {/* Header */}
+    <div className="gwrap">
+      <div className="gbar">
+        <h2 className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>Execution Graph</h2>
+        <span className="chip chip-idle !h-[20px] !px-[7px] font-mono !text-[11px]">{nodes.length} nodes</span>
+        <span className="gbar-sp" />
+        <div className="glegend">
+          {(['pass', 'crashed', 'fail', 'semantic', 'degraded', 'skipped'] as S[]).map((s) => (
+            <span key={s} className="glegend-i">
+              <i style={{ background: STATUS_META[s].color }} />
+              {STATUS_META[s].label}
+            </span>
+          ))}
+        </div>
+        <div className="gzoom">
+          <button type="button" aria-label="Zoom out" onClick={() => setScale((s) => Math.max(0.35, s - 0.15))}>−</button>
+          <span className="gzoom-val">{Math.round(scale * 100)}%</span>
+          <button type="button" aria-label="Zoom in" onClick={() => setScale((s) => Math.min(2, s + 0.15))}>+</button>
+        </div>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm btn-icon"
+          aria-label="Reset view"
+          onClick={() => { setScale(1); setPan({ x: 0, y: 0 }); setNodes(initial) }}
+        >
+          <Maximize2 />
+        </button>
+        {onViewFull && (
+          <button type="button" className="btn btn-sm btn-ghost" onClick={onViewFull}>Full view</button>
+        )}
+      </div>
+
       <div
-        className="flex items-center justify-between px-4 py-2.5"
-        style={{ borderBottom: '1px solid var(--line)' }}
+        ref={canvasRef}
+        className={`gcanvas${panning ? ' panning' : ''}`}
+        onPointerDown={onCanvasDown}
       >
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-[var(--ink)]">Execution Graph</h2>
-          <span
-            className="chip chip-idle !h-[20px] !px-[7px] font-mono !text-[11px]"
+        <span className="gtick tl" /><span className="gtick tr" />
+        <span className="gtick bl" /><span className="gtick br" />
+
+        <div
+          style={{
+            position: 'absolute', top: 0, left: 0, transformOrigin: '0 0',
+            transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${scale})`,
+            willChange: 'transform',
+          }}
+        >
+          <svg
+            width={extent.w}
+            height={extent.h}
+            style={{ position: 'absolute', top: 0, left: 0, overflow: 'visible', pointerEvents: 'none' }}
           >
-            {layoutNodes.length} nodes
-          </span>
-        </div>
-        <div className="flex items-center gap-3">
-          <Legend />
-          {onViewFull && (
-            <button
-              onClick={onViewFull}
-              className="rounded-md p-1.5 text-[var(--ink-3)] transition-colors hover:text-[var(--ink)]"
-              style={{ background: 'transparent' }}
-            >
-              <Maximize2 className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Graph area */}
-      <div className="overflow-x-auto" style={{ background: 'radial-gradient(circle at center, var(--dot) 1px, transparent 1px) 0 0 / 26px 26px, var(--void)' }}>
-        <div style={{ padding: 16 }}>
-          <div
-            className="relative mx-auto"
-            style={{ width: canvasW, height: Math.max(canvasH, 280), minWidth: '100%' }}
-          >
-            {/* Dotted grid background */}
-            <div
-              className="pointer-events-none absolute inset-0"
-              style={{
-                opacity: 0.4,
-                backgroundImage: 'radial-gradient(circle at center, var(--line-2) 1px, transparent 1px)',
-                backgroundSize: '22px 22px',
-              }}
-            />
-
-            {/* Edges — SVG bezier curves */}
-            <svg className="pointer-events-none absolute inset-0" width={canvasW} height={canvasH}>
-              <defs>
-                {(['active', 'failed', 'running', 'idle'] as const).map((kind) => (
-                  <marker
-                    key={kind}
-                    id={`arrow-${kind}`}
-                    markerWidth="6"
-                    markerHeight="6"
-                    refX="5"
-                    refY="3"
-                    orient="auto"
-                  >
-                    <path d="M0,0 L6,3 L0,6 Z" fill={edgeStroke[kind]} />
-                  </marker>
-                ))}
-              </defs>
-              {edges.map((e) => {
-                const from = byId.get(e.from)
-                const to = byId.get(e.to)
-                if (!from || !to) return null
-                const fp = nodePos(from.col, from.row)
-                const tp = nodePos(to.col, to.row)
-                const sx = fp.x + NODE_W
-                const sy = fp.y + NODE_H / 2
-                const tx = tp.x
-                const ty = tp.y + NODE_H / 2
-                const colGap = to.col - from.col
-                let d: string
-                if (colGap > 1) {
-                  // ponytail: check if any node sits in intermediate columns near the curve path
-                  // and deflect control points to route around them
-                  const midY = (sy + ty) / 2
-                  let hasObstacle = false
-                  for (const n of layoutNodes) {
-                    if (n.col > from.col && n.col < to.col) {
-                      const np = nodePos(n.col, n.row)
-                      const nCenterY = np.y + NODE_H / 2
-                      if (Math.abs(nCenterY - midY) < NODE_H) {
-                        hasObstacle = true
-                        break
-                      }
-                    }
-                  }
-                  if (hasObstacle) {
-                    // Route below all nodes to avoid overlap
-                    const detourY = canvasH - PAD / 2
-                    d = `M ${sx},${sy} C ${sx + 40},${detourY} ${tx - 40},${detourY} ${tx},${ty}`
-                  } else {
-                    const dx = Math.max(28, (tx - sx) / 2)
-                    d = `M ${sx},${sy} C ${sx + dx},${sy} ${tx - dx},${ty} ${tx},${ty}`
-                  }
-                } else {
-                  const dx = Math.max(28, (tx - sx) / 2)
-                  d = `M ${sx},${sy} C ${sx + dx},${sy} ${tx - dx},${ty} ${tx},${ty}`
-                }
-                const kind = edgeKind(from, to)
-                return (
-                  <path
-                    key={`${e.from}-${e.to}`}
-                    d={d}
-                    fill="none"
-                    stroke={edgeStroke[kind]}
-                    strokeWidth={kind === 'idle' ? 1 : 1.75}
-                    strokeDasharray={kind === 'running' ? '5 4' : kind === 'idle' ? '3 4' : undefined}
-                    markerEnd={`url(#arrow-${kind})`}
-                    className={kind === 'running' ? 'animate-[dash_1s_linear_infinite]' : undefined}
-                  />
-                )
-              })}
-            </svg>
-
-            {/* Nodes — absolutely positioned */}
-            {layoutNodes.map((n) => (
-              <NodeCard
-                key={n.id}
-                node={n}
-                selected={selectedNode === n.id}
-                onSelect={(id) => {
-                  setSelectedNode((p) => {
-                    const next = p === id ? null : id
-                    onSelectNode?.(next)
-                    return next
-                  })
-                }}
-              />
+            {paths.map((p, i) => (
+              <g key={i}>
+                <path d={p.d} fill="none" stroke={p.color} strokeWidth={p.width} className={p.cls} />
+                <path d={p.head} fill={p.color} />
+              </g>
             ))}
-          </div>
-        </div>
-      </div>
+          </svg>
 
-      {/* Scrollbar track */}
-      <div
-        className="h-2"
-        style={{ background: 'var(--hover)', borderTop: '1px solid var(--hover)' }}
-      />
+          {nodes.map((n) => {
+            const m = STATUS_META[n.status]
+            const Icon = KIND_ICON[n.kind]
+            const Badge = m.badge
+            return (
+              <div key={n.id}>
+                <div
+                  className={`gnode ${m.cls}${n.isRoot ? ' rootcause' : ''}`}
+                  style={{ transform: `translate3d(${n.x}px, ${n.y}px, 0)` }}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${n.id}, ${m.label}${n.ms != null ? `, ${n.ms} milliseconds` : ''}${n.isRoot ? ', root cause' : ''}`}
+                  onPointerDown={(e) => onNodeDown(e, n.id)}
+                  onClick={() => { setSelected(n.id); onSelectNode?.(n.id) }}
+                  onKeyDown={(e) => nudge(e, n.id)}
+                >
+                  {n.isRoot && <span className="gnode-tab">ROOT CAUSE</span>}
+                  <div className="gnode-top">
+                    <span className="gnode-ico"><Icon /></span>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="gnode-name">{n.id}</div>
+                      <div className="gnode-sub">
+                        <span style={{ color: m.color }}>●</span>
+                        {n.status === 'skipped' ? 'not reached'
+                          : n.status === 'crashed' ? 'raised'
+                          : `${(n.ms ?? 0).toLocaleString()} ms`}
+                        {n.tools.length > 0 && ` · ${n.tools.length}T`}
+                      </div>
+                    </div>
+                  </div>
+                  {Badge && (
+                    <span className="gnode-badge" style={{ background: m.color }}>
+                      <Badge style={{ width: 9, height: 9 }} />
+                    </span>
+                  )}
+                </div>
+
+                {n.tools.length > 0 && (
+                  <div
+                    className="gtools"
+                    style={{ transform: `translate3d(${n.x}px, ${n.y + NODE_H + TOOL_GAP_Y}px, 0)` }}
+                  >
+                    {n.tools.map((t, i) => {
+                      const tm = TOOL_META[t.status]
+                      const TIcon = tm.icon
+                      return (
+                        <span key={i} className={`gtool ${tm.cls}`} title={`${t.id} — ${t.tag}`}>
+                          <TIcon className="gtool-ico" />
+                          {t.id}
+                          <span className="gtool-kind">·{t.tag}</span>
+                        </span>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {sel && (
+          <div className="ginsp">
+            <div className="ginsp-h">
+              <span className="gnode-name">{sel.id}</span>
+              <span style={{ color: STATUS_META[sel.status].color, fontSize: 11 }}>
+                {STATUS_META[sel.status].label}
+              </span>
+              <button type="button" className="ginsp-x" aria-label="Close inspector" onClick={() => setSelected(null)}>×</button>
+            </div>
+            <div className="ginsp-b">
+              <div className="ginsp-sec">
+                <div className="kv-row"><span className="kv-k">kind</span><span className="kv-v">{sel.kind}</span></div>
+                <div className="kv-row"><span className="kv-k">duration</span><span className="kv-v">{sel.ms ?? '—'} ms</span></div>
+                <div className="kv-row"><span className="kv-k">root cause</span><span className="kv-v">{sel.isRoot ? 'yes' : 'no'}</span></div>
+                <div className="kv-row"><span className="kv-k">signals</span><span className="kv-v">{sel.tools.length}</span></div>
+              </div>
+              {sel.tools.map((t, i) => (
+                <div key={i} className="ginsp-sec">
+                  <div className="kv-row"><span className="kv-k">{t.id}</span><span className="kv-v">{t.tag}</span></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
