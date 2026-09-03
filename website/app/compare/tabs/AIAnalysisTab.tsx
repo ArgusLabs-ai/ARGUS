@@ -4,10 +4,10 @@ import { useState, useEffect } from 'react'
 import type { RunRecord, LLMInvestigationResult } from '@/lib/types'
 import { isReplayOf, runBLabel } from '../lib/compare-utils'
 
-const C_GREEN = '#22c55e'
-const C_AMBER = '#f59e0b'
-const C_RED = '#ef4444'
-const C_INDIGO = '#5b6af0'
+const C_GREEN = 'var(--ok)'
+const C_AMBER = 'var(--quality)'
+const C_RED = 'var(--tool)'
+const C_INDIGO = 'var(--iris)'
 
 function renderWithCode(text: string): (string | JSX.Element)[] {
   const codeRe = /`([^`]+)`|(\b[a-z_]\w*\s*\([^)]*\))|(\b[A-Z][A-Z0-9_]{2,}\b)|(\b\w+\.\w+(?:\.\w+)+\b)/g
@@ -21,7 +21,7 @@ function renderWithCode(text: string): (string | JSX.Element)[] {
       <code
         key={m.index}
         className="text-[12px] font-mono px-1.5 py-0.5 rounded"
-        style={{ background: 'color-mix(in srgb, var(--primary) 6%, transparent)', color: '#8b9bf4', border: '1px solid color-mix(in srgb, var(--primary) 12%, transparent)' }}
+        style={{ background: 'color-mix(in srgb, var(--primary) 6%, transparent)', color: 'var(--iris-bright)', border: '1px solid color-mix(in srgb, var(--primary) 12%, transparent)' }}
       >
         {code}
       </code>
@@ -33,7 +33,7 @@ function renderWithCode(text: string): (string | JSX.Element)[] {
 }
 
 function confColor(c: number) {
-  return c >= 0.75 ? C_GREEN : c >= 0.45 ? C_AMBER : '#6b6b6b'
+  return c >= 0.75 ? C_GREEN : c >= 0.45 ? C_AMBER : 'var(--ink-3)'
 }
 
 function AnalysisPanel({ inv, run, label }: { inv: LLMInvestigationResult; run: RunRecord; label: string }) {
@@ -63,7 +63,7 @@ function AnalysisPanel({ inv, run, label }: { inv: LLMInvestigationResult; run: 
         {hasError && (
           <div className="mt-3 p-3 rounded-lg text-[12px]" style={{ background: 'color-mix(in srgb, var(--failure) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--failure) 12%, transparent)' }}>
             <span className="font-semibold" style={{ color: C_RED }}>Analysis failed: </span>
-            <span style={{ color: '#ef4444' }}>{inv.error}</span>
+            <span style={{ color: 'var(--tool)' }}>{inv.error}</span>
           </div>
         )}
 
@@ -144,7 +144,7 @@ function AnalysisPanel({ inv, run, label }: { inv: LLMInvestigationResult; run: 
                               {nodeName && (
                                 <span
                                   className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded"
-                                  style={{ background: 'color-mix(in srgb, var(--primary) 10%, transparent)', color: '#a855f7', border: '1px solid color-mix(in srgb, #a855f7 20%, transparent)' }}
+                                  style={{ background: 'color-mix(in srgb, var(--primary) 10%, transparent)', color: 'var(--semantic)', border: '1px solid color-mix(in srgb, var(--semantic) 20%, transparent)' }}
                                 >
                                   {nodeName}
                                 </span>
@@ -156,7 +156,7 @@ function AnalysisPanel({ inv, run, label }: { inv: LLMInvestigationResult; run: 
                             {codePart && (
                               <pre
                                 className="mt-2 px-3 py-2 rounded-lg text-[11px] font-mono overflow-x-auto whitespace-pre-wrap"
-                                style={{ background: 'rgba(0,0,0,0.15)', color: '#8b9bf4', border: '1px solid color-mix(in srgb, var(--primary) 10%, transparent)' }}
+                                style={{ background: 'var(--fill-subtle)', color: 'var(--iris-bright)', border: '1px solid color-mix(in srgb, var(--primary) 10%, transparent)' }}
                               >
                                 {codePart}
                               </pre>
@@ -362,7 +362,7 @@ function CompareAnalysisCard({ analysis }: { analysis: CompareAnalysisResult }) 
     <div className="rounded-[10px] border border-border bg-card overflow-hidden" style={{ border: '1px solid color-mix(in srgb, var(--primary) 20%, transparent)' }}>
       <div className="px-4 py-3 flex items-center gap-2.5" style={{ background: 'color-mix(in srgb, var(--primary) 6%, transparent)' }}>
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path d="M8 1l1.5 3.5L13 6l-3 2 .5 4L8 10.5 5.5 12l.5-4-3-2 3.5-1.5L8 1Z" fill="color-mix(in srgb, var(--primary) 15%, transparent)" stroke="#5b6af0" strokeWidth="1"/>
+          <path d="M8 1l1.5 3.5L13 6l-3 2 .5 4L8 10.5 5.5 12l.5-4-3-2 3.5-1.5L8 1Z" fill="color-mix(in srgb, var(--primary) 15%, transparent)" stroke="var(--iris)" strokeWidth="1"/>
         </svg>
         <span className="text-[13px] font-bold" style={{ color: C_INDIGO }}>Comparative AI Analysis</span>
         <span
@@ -442,7 +442,7 @@ export default function AIAnalysisTab({ runA, runB, isLocal = false }: { runA: R
       {/* Compare-specific AI analysis */}
       {compareLoading && (
         <div className="rounded-[10px] border border-border bg-card p-8 flex flex-col items-center justify-center gap-3" style={{ border: '1px solid color-mix(in srgb, var(--primary) 15%, transparent)' }}>
-          <span className="inline-block w-5 h-5 border-2 rounded-full animate-spin" style={{ borderColor: 'color-mix(in srgb, var(--primary) 20%, transparent)', borderTopColor: '#5b6af0' }} />
+          <span className="inline-block w-5 h-5 border-2 rounded-full animate-spin" style={{ borderColor: 'color-mix(in srgb, var(--primary) 20%, transparent)', borderTopColor: 'var(--iris)' }} />
           <p className="text-[12px] font-medium" style={{ color: 'var(--text-tertiary)' }}>Generating comparative analysis...</p>
         </div>
       )}

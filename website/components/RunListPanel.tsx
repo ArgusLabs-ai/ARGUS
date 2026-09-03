@@ -55,11 +55,11 @@ function shortId(id: string): string {
 
 /* ── Node dots — show per-step status as colored dots ──────────── */
 
-const DOT_GREEN  = '#22c55e'
-const DOT_RED    = '#ef4444'
-const DOT_AMBER  = '#eab308'
-const DOT_PURPLE = '#a855f7'
-const DOT_GRAY   = 'rgba(139,143,160,0.20)'
+const DOT_GREEN  = 'var(--ok)'
+const DOT_RED    = 'var(--tool)'
+const DOT_AMBER  = 'var(--quality)'
+const DOT_PURPLE = 'var(--semantic)'
+const DOT_GRAY   = 'var(--line-2)'
 
 function inferDotColors(
   nodeNames: string[],

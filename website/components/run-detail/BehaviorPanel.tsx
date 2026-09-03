@@ -61,7 +61,7 @@ export default function BehaviorPanel({ run }: { run: RunRecord }) {
               className="px-2 py-0.5 rounded-full font-medium"
               style={{
                 color: criticalAnomalies > 0 ? 'var(--failure)' : 'var(--warning)',
-                background: criticalAnomalies > 0 ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)',
+                background: criticalAnomalies > 0 ? 'var(--tool-dim)' : 'var(--quality-dim)',
               }}
             >
               {totalAnomalies} anomal{totalAnomalies === 1 ? 'y' : 'ies'}

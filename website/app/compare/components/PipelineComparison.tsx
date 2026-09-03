@@ -18,8 +18,8 @@ export default function PipelineComparison({
   const labelA = 'Base Run'
   const labelB = isReplay ? `Replay ${runB.run_id.includes('-R') ? runB.run_id.split('-R').pop() : '1'}` : 'Run B'
 
-  const statusColorA = runA.overall_status === 'clean' ? '#22c55e' : '#ef4444'
-  const statusColorB = runB.overall_status === 'clean' ? '#22c55e' : '#ef4444'
+  const statusColorA = runA.overall_status === 'clean' ? 'var(--ok)' : 'var(--tool)'
+  const statusColorB = runB.overall_status === 'clean' ? 'var(--ok)' : 'var(--tool)'
 
   return (
     <div className="flex flex-col gap-3">

@@ -9,11 +9,11 @@ const RUN_STATUS_CONFIG: Record<
   RunStatus,
   { label: string; color: string }
 > = {
-  clean:          { label: 'Clean',          color: '#22c55e' },
-  silent_failure: { label: 'Silent Failure', color: '#eab308' },
-  crashed:        { label: 'Crashed',        color: '#ef4444' },
-  semantic_fail:  { label: 'Semantic Fail',  color: '#a855f7' },
-  interrupted:    { label: 'Interrupted',    color: '#8b8fa0' },
+  clean:          { label: 'Clean',          color: 'var(--ok)' },
+  silent_failure: { label: 'Silent Failure', color: 'var(--quality)' },
+  crashed:        { label: 'Crashed',        color: 'var(--tool)' },
+  semantic_fail:  { label: 'Semantic Fail',  color: 'var(--semantic)' },
+  interrupted:    { label: 'Interrupted',    color: 'var(--ink-3)' },
 }
 
 export function RunStatusBadge({
@@ -25,7 +25,7 @@ export function RunStatusBadge({
   size?: 'default' | 'sm'
   className?: string
 }) {
-  const c = RUN_STATUS_CONFIG[status] ?? { label: status, color: '#8b8fa0' }
+  const c = RUN_STATUS_CONFIG[status] ?? { label: status, color: 'var(--ink-3)' }
 
   return (
     <span
@@ -54,18 +54,18 @@ export function RunStatusBadge({
 /* ── Step Status Badge ─────────────────────────────────────────── */
 
 const STEP_STATUS_CONFIG: Record<StepStatus, { label: string; color: string }> = {
-  pass:           { label: 'pass',           color: '#22c55e' },
-  degraded_input: { label: 'degraded input', color: '#eab308' },
-  fail:           { label: 'fail',           color: '#eab308' },
-  crashed:        { label: 'crashed',        color: '#ef4444' },
-  semantic_fail:  { label: 'semantic fail',  color: '#a855f7' },
-  interrupted:    { label: 'interrupted',    color: '#8b8fa0' },
-  retried:        { label: 'retried',        color: '#6b7280' },
-  skipped:        { label: 'skipped',        color: '#6b7280' },
+  pass:           { label: 'pass',           color: 'var(--ok)' },
+  degraded_input: { label: 'degraded input', color: 'var(--quality)' },
+  fail:           { label: 'fail',           color: 'var(--quality)' },
+  crashed:        { label: 'crashed',        color: 'var(--tool)' },
+  semantic_fail:  { label: 'semantic fail',  color: 'var(--semantic)' },
+  interrupted:    { label: 'interrupted',    color: 'var(--ink-3)' },
+  retried:        { label: 'retried',        color: 'var(--ink-3)' },
+  skipped:        { label: 'skipped',        color: 'var(--ink-3)' },
 }
 
 export function StepStatusBadge({ status, className }: { status: StepStatus; className?: string }) {
-  const c = STEP_STATUS_CONFIG[status] ?? { label: status, color: '#8b8fa0' }
+  const c = STEP_STATUS_CONFIG[status] ?? { label: status, color: 'var(--ink-3)' }
 
   return (
     <span
@@ -81,14 +81,14 @@ export function StepStatusBadge({ status, className }: { status: StepStatus; cla
 /* ── Severity Badge ────────────────────────────────────────────── */
 
 const SEVERITY_COLOR: Record<Severity, string> = {
-  critical: '#ef4444',
-  warning:  '#eab308',
-  info:     '#3b82f6',
-  ok:       '#22c55e',
+  critical: 'var(--tool)',
+  warning:  'var(--quality)',
+  info:     'var(--iris)',
+  ok:       'var(--ok)',
 }
 
 export function SeverityBadge({ severity, className }: { severity: Severity; className?: string }) {
-  const color = SEVERITY_COLOR[severity] ?? '#8b8fa0'
+  const color = SEVERITY_COLOR[severity] ?? 'var(--ink-3)'
 
   return (
     <span

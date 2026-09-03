@@ -134,33 +134,33 @@ function edgeKind(from: LayoutNode, to: LayoutNode): 'failed' | 'running' | 'act
 }
 
 const edgeStroke: Record<string, string> = {
-  failed: '#ef4444',
-  running: '#6366f1',
-  active: 'rgba(99,102,241,0.45)',
-  idle: 'rgba(255,255,255,0.08)',
+  failed: 'var(--tool)',
+  running: 'var(--iris)',
+  active: 'color-mix(in srgb, var(--iris) 45%, transparent)',
+  idle: 'var(--fill-subtle)',
 }
 
 const statusStyles: Record<MappedStatus, string> = {
-  succeeded:     'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.15)]',
-  crashed:       'border-[rgba(239,68,68,0.6)] bg-[rgba(239,68,68,0.07)]',
-  failed:        'border-[rgba(234,179,8,0.6)] bg-[rgba(234,179,8,0.07)]',
-  semantic_fail: 'border-[rgba(168,85,247,0.6)] bg-[rgba(168,85,247,0.07)]',
-  degraded:      'border-[rgba(249,115,22,0.6)] bg-[rgba(249,115,22,0.07)]',
-  running:       'border-[rgba(99,102,241,0.6)] bg-[rgba(99,102,241,0.06)]',
-  skipped:       'border-[rgba(255,255,255,0.06)] border-dashed bg-[rgba(255,255,255,0.02)] opacity-55',
-  pending:       'border-[rgba(255,255,255,0.05)] border-dashed bg-[rgba(255,255,255,0.015)] opacity-55',
+  succeeded:     'border-[var(--fill-subtle)] bg-[var(--hover)] hover:border-[var(--line-2)]',
+  crashed:       'border-[color-mix(in srgb, var(--tool) 45%, transparent)] bg-[var(--tool-dim)]',
+  failed:        'border-[color-mix(in srgb, var(--quality) 45%, transparent)] bg-[var(--quality-dim)]',
+  semantic_fail: 'border-[color-mix(in srgb, var(--semantic) 45%, transparent)] bg-[var(--semantic-dim)]',
+  degraded:      'border-[color-mix(in srgb, var(--quality) 45%, transparent)] bg-[var(--quality-dim)]',
+  running:       'border-[color-mix(in srgb, var(--iris) 45%, transparent)] bg-[var(--iris-dim)]',
+  skipped:       'border-[var(--hover)] border-dashed bg-[var(--hover)] opacity-55',
+  pending:       'border-[var(--hover)] border-dashed bg-[var(--hover)] opacity-55',
 }
 
 // Color constants per status — reused by glyph, icon bg, and glow
 const STATUS_COLOR: Record<MappedStatus, string> = {
-  succeeded:     '#22c55e',
-  crashed:       '#ef4444',
-  failed:        '#eab308',
-  semantic_fail: '#a855f7',
-  degraded:      '#f97316',
-  running:       '#6366f1',
-  skipped:       '#6b7280',
-  pending:       '#6b7280',
+  succeeded:     'var(--ok)',
+  crashed:       'var(--tool)',
+  failed:        'var(--quality)',
+  semantic_fail: 'var(--semantic)',
+  degraded:      'var(--quality)',
+  running:       'var(--iris)',
+  skipped:       'var(--ink-3)',
+  pending:       'var(--ink-3)',
 }
 
 function StatusGlyph({ status }: { status: MappedStatus }) {
@@ -176,7 +176,7 @@ function StatusGlyph({ status }: { status: MappedStatus }) {
     return <AlertTriangle className="h-3 w-3" style={{ color: STATUS_COLOR.degraded }} strokeWidth={2.5} />
   if (status === 'running')
     return <AlertTriangle className="h-3 w-3 animate-pulse" style={{ color: STATUS_COLOR.running }} strokeWidth={2.5} />
-  return <Minus className="h-3 w-3 text-[#6b7280]" strokeWidth={2.5} />
+  return <Minus className="h-3 w-3 text-[var(--ink-3)]" strokeWidth={2.5} />
 }
 
 function NodeCard({
@@ -196,7 +196,7 @@ function NodeCard({
   const glowStyle = isError
     ? { boxShadow: `0 0 0 1px ${c}, 0 0 22px -4px ${c}88` }
     : node.status === 'running'
-      ? { boxShadow: '0 0 18px -4px rgba(99,102,241,0.6)' }
+      ? { boxShadow: '0 0 18px -4px color-mix(in srgb, var(--iris) 45%, transparent)' }
       : undefined
 
   return (
@@ -206,7 +206,7 @@ function NodeCard({
       className={[
         'absolute flex items-center gap-2.5 rounded-lg border px-3 text-left transition-all',
         statusStyles[node.status],
-        selected ? 'ring-2 ring-[#6366f1] ring-offset-2 ring-offset-[#0d0e12]' : '',
+        selected ? 'ring-2 ring-[var(--iris)] ring-offset-2 ring-offset-[var(--panel)]' : '',
       ].join(' ')}
     >
       <span
@@ -215,22 +215,22 @@ function NodeCard({
           background: isError
             ? `${c}26`
             : node.status === 'running'
-              ? 'rgba(99,102,241,0.15)'
-              : 'rgba(255,255,255,0.06)',
+              ? 'var(--iris-dim)'
+              : 'var(--hover)',
           color: isError
             ? c
             : node.status === 'running'
-              ? '#6366f1'
-              : '#e5e7eb',
+              ? 'var(--iris)'
+              : 'var(--ink)',
         }}
       >
         <Icon className="h-4 w-4" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium text-[#e5e7eb]">
+        <span className="block truncate text-[13px] font-medium text-[var(--ink)]">
           {node.label}
         </span>
-        <span className="mt-0.5 flex items-center gap-1 font-mono text-[11px] tabular-nums text-[#6b7280]">
+        <span className="mt-0.5 flex items-center gap-1 font-mono text-[11px] tabular-nums text-[var(--ink-3)]">
           <StatusGlyph status={node.status} />
           {node.durationMs != null ? formatDur(node.durationMs) : node.status === 'pending' ? 'queued' : '—'}
         </span>
@@ -251,7 +251,7 @@ function Legend() {
   return (
     <div className="hidden items-center gap-3 md:flex">
       {items.map((i) => (
-        <span key={i.label} className="flex items-center gap-1.5 text-[11px] text-[#6b7280]">
+        <span key={i.label} className="flex items-center gap-1.5 text-[11px] text-[var(--ink-3)]">
           <span className="h-2 w-2 rounded-full" style={{ background: i.color }} />
           {i.label}
         </span>
@@ -327,18 +327,18 @@ export default function ExecutionGraph({
   return (
     <div
       className="overflow-hidden rounded-xl"
-      style={{ background: 'rgba(13,14,18,0.6)', border: '1px solid rgba(255,255,255,0.06)' }}
+      style={{ background: 'var(--overlay)', border: '1px solid var(--hover)' }}
     >
       {/* Header */}
       <div
         className="flex items-center justify-between px-4 py-2.5"
-        style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+        style={{ borderBottom: '1px solid var(--hover)' }}
       >
         <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-[#e5e7eb]">Execution Graph</h2>
+          <h2 className="text-sm font-semibold text-[var(--ink)]">Execution Graph</h2>
           <span
-            className="rounded-full px-2 py-0.5 font-mono text-[11px] text-[#6b7280]"
-            style={{ background: 'rgba(255,255,255,0.05)' }}
+            className="rounded-full px-2 py-0.5 font-mono text-[11px] text-[var(--ink-3)]"
+            style={{ background: 'var(--hover)' }}
           >
             {layoutNodes.length} nodes
           </span>
@@ -348,7 +348,7 @@ export default function ExecutionGraph({
           {onViewFull && (
             <button
               onClick={onViewFull}
-              className="rounded-md p-1.5 text-[#6b7280] transition-colors hover:text-[#e5e7eb]"
+              className="rounded-md p-1.5 text-[var(--ink-3)] transition-colors hover:text-[var(--ink)]"
               style={{ background: 'transparent' }}
             >
               <Maximize2 className="h-3.5 w-3.5" />
@@ -358,7 +358,7 @@ export default function ExecutionGraph({
       </div>
 
       {/* Graph area */}
-      <div className="overflow-x-auto" style={{ background: 'rgba(0,0,0,0.2)' }}>
+      <div className="overflow-x-auto" style={{ background: 'var(--fill-subtle)' }}>
         <div style={{ padding: 16 }}>
           <div
             className="relative mx-auto"
@@ -369,7 +369,7 @@ export default function ExecutionGraph({
               className="pointer-events-none absolute inset-0"
               style={{
                 opacity: 0.4,
-                backgroundImage: 'radial-gradient(circle at center, rgba(255,255,255,0.12) 1px, transparent 1px)',
+                backgroundImage: 'radial-gradient(circle at center, var(--line-2) 1px, transparent 1px)',
                 backgroundSize: '22px 22px',
               }}
             />
@@ -468,7 +468,7 @@ export default function ExecutionGraph({
       {/* Scrollbar track */}
       <div
         className="h-2"
-        style={{ background: 'rgba(255,255,255,0.02)', borderTop: '1px solid rgba(255,255,255,0.04)' }}
+        style={{ background: 'var(--hover)', borderTop: '1px solid var(--hover)' }}
       />
     </div>
   )

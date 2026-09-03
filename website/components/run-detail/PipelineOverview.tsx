@@ -61,36 +61,36 @@ function dagLayers(nodes: string[], edgeMap: Record<string, string[]>): string[]
 function statusVisual(status: StepStatus | undefined, degradedDownstream: boolean) {
   if (!status) {
     return {
-      color: '#5d6370',
-      border: '#2c2f3a',
-      bg: 'rgba(28,29,36,0.5)',
-      soft: 'rgba(152,162,179,0.12)',
+      color: 'var(--ink-4)',
+      border: 'var(--line-2)',
+      bg: 'var(--overlay)',
+      soft: 'var(--fill-subtle)',
       icon: null as 'check' | 'warn' | 'down' | 'x' | null,
       dashed: true,
     }
   }
   if (status === 'pass' && !degradedDownstream) {
-    return { color: '#3d9e7d', border: 'rgba(61,158,125,0.32)', bg: 'rgba(61,158,125,0.055)', soft: 'rgba(61,158,125,0.14)', icon: 'check' as const, dashed: false }
+    return { color: 'var(--ok)', border: 'color-mix(in srgb, var(--ok) 45%, transparent)', bg: 'var(--ok-dim)', soft: 'var(--ok-dim)', icon: 'check' as const, dashed: false }
   }
   if (status === 'crashed') {
-    return { color: '#d65c5c', border: 'rgba(214,92,92,0.38)', bg: 'rgba(214,92,92,0.075)', soft: 'rgba(214,92,92,0.14)', icon: 'x' as const, dashed: false }
+    return { color: 'var(--tool)', border: 'color-mix(in srgb, var(--tool) 45%, transparent)', bg: 'var(--tool-dim)', soft: 'var(--tool-dim)', icon: 'x' as const, dashed: false }
   }
   if (status === 'fail') {
-    return { color: '#d49a2e', border: 'rgba(212,154,46,0.42)', bg: 'rgba(212,154,46,0.075)', soft: 'rgba(212,154,46,0.14)', icon: 'warn' as const, dashed: false }
+    return { color: 'var(--quality)', border: 'color-mix(in srgb, var(--quality) 45%, transparent)', bg: 'var(--quality-dim)', soft: 'var(--quality-dim)', icon: 'warn' as const, dashed: false }
   }
   if (status === 'semantic_fail') {
-    return { color: '#9a6dc6', border: 'rgba(154,109,198,0.38)', bg: 'rgba(154,109,198,0.075)', soft: 'rgba(154,109,198,0.14)', icon: 'warn' as const, dashed: false }
+    return { color: 'var(--semantic)', border: 'color-mix(in srgb, var(--semantic) 45%, transparent)', bg: 'var(--semantic-dim)', soft: 'var(--semantic-dim)', icon: 'warn' as const, dashed: false }
   }
   if (status === 'degraded_input') {
-    return { color: '#d49a2e', border: 'rgba(212,154,46,0.42)', bg: 'rgba(212,154,46,0.075)', soft: 'rgba(212,154,46,0.14)', icon: 'warn' as const, dashed: false }
+    return { color: 'var(--quality)', border: 'color-mix(in srgb, var(--quality) 45%, transparent)', bg: 'var(--quality-dim)', soft: 'var(--quality-dim)', icon: 'warn' as const, dashed: false }
   }
   if (status === 'interrupted') {
-    return { color: '#d49a2e', border: 'rgba(212,154,46,0.42)', bg: 'rgba(212,154,46,0.075)', soft: 'rgba(212,154,46,0.14)', icon: 'warn' as const, dashed: false }
+    return { color: 'var(--quality)', border: 'color-mix(in srgb, var(--quality) 45%, transparent)', bg: 'var(--quality-dim)', soft: 'var(--quality-dim)', icon: 'warn' as const, dashed: false }
   }
   if (status === 'skipped' || status === 'retried') {
-    return { color: '#5d6370', border: '#2c2f3a', bg: 'rgba(28,29,36,0.5)', soft: 'rgba(152,162,179,0.12)', icon: null, dashed: true }
+    return { color: 'var(--ink-4)', border: 'var(--line-2)', bg: 'var(--overlay)', soft: 'var(--fill-subtle)', icon: null, dashed: true }
   }
-  return { color: '#f97316', border: 'rgba(249,115,22,0.34)', bg: 'rgba(249,115,22,0.065)', soft: 'rgba(249,115,22,0.14)', icon: 'down' as const, dashed: true }
+  return { color: 'var(--quality)', border: 'color-mix(in srgb, var(--quality) 45%, transparent)', bg: 'var(--quality-dim)', soft: 'var(--quality-dim)', icon: 'down' as const, dashed: true }
 }
 
 function StatusIcon({ icon, color }: { icon: ReturnType<typeof statusVisual>['icon']; color: string }) {
@@ -134,15 +134,15 @@ export default function PipelineOverview({ run, onViewFull }: { run: RunRecord; 
 
   const layerVisual = (layer: string[]) => {
     const targets = layer.map(visualFor)
-    const crashed = targets.find((v) => v.color === '#d65c5c')
+    const crashed = targets.find((v) => v.color === 'var(--tool)')
     if (crashed) return crashed
-    const silentFailure = targets.find((v) => v.color === '#d49a2e')
+    const silentFailure = targets.find((v) => v.color === 'var(--quality)')
     if (silentFailure) return silentFailure
-    const semanticFailure = targets.find((v) => v.color === '#9a6dc6')
+    const semanticFailure = targets.find((v) => v.color === 'var(--semantic)')
     if (semanticFailure) return semanticFailure
-    const degraded = targets.find((v) => v.color === '#f97316')
+    const degraded = targets.find((v) => v.color === 'var(--quality)')
     if (degraded) return degraded
-    const pass = targets.find((v) => v.color === '#3d9e7d')
+    const pass = targets.find((v) => v.color === 'var(--ok)')
     return pass ?? targets[0]
   }
 
@@ -232,7 +232,7 @@ export default function PipelineOverview({ run, onViewFull }: { run: RunRecord; 
         onMouseUp={stopDragging}
         onMouseLeave={stopDragging}
         style={{
-          background: 'rgba(28,29,36,0.18)',
+          background: 'var(--overlay)',
           cursor: isDragging ? 'grabbing' : 'grab',
         }}
       >
@@ -266,7 +266,7 @@ export default function PipelineOverview({ run, onViewFull }: { run: RunRecord; 
                       >
                         <span
                           className="absolute -top-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-extrabold tabular-nums"
-                          style={{ background: visual.color, color: '#ffffff', boxShadow: `0 4px 10px ${visual.soft}` }}
+                          style={{ background: visual.color, color: 'var(--on-accent)', boxShadow: `0 4px 10px ${visual.soft}` }}
                         >
                           {displayIndex}
                         </span>
@@ -277,14 +277,14 @@ export default function PipelineOverview({ run, onViewFull }: { run: RunRecord; 
                           {step ? formatDur(step.duration_ms) : '—'}
                         </span>
                         {step?.llm_usage?.total_cost_usd != null && step.llm_usage.total_cost_usd > 0 && (
-                          <span className="text-[10px] font-bold tabular-nums" style={{ color: '#3d9e7d' }}>
+                          <span className="text-[10px] font-bold tabular-nums" style={{ color: 'var(--ok)' }}>
                             {fmtCost(step.llm_usage.total_cost_usd)}
                           </span>
                         )}
                         {visual.icon && (
                           <span
                             className="absolute -bottom-2 -right-2 w-7 h-7 rounded-full flex items-center justify-center"
-                            style={{ background: '#141519', color: visual.color, boxShadow: '0 5px 14px rgba(0,0,0,0.25)' }}
+                            style={{ background: 'var(--panel)', color: visual.color, boxShadow: 'var(--shadow-md)' }}
                           >
                             <svg width="15" height="15" viewBox="0 0 14 14" fill="none">
                               <StatusIcon icon={visual.icon} color={visual.color} />
@@ -315,7 +315,7 @@ export default function PipelineOverview({ run, onViewFull }: { run: RunRecord; 
                       className="absolute left-1/2 top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full"
                       style={{
                         background: targetConnector.color,
-                        boxShadow: `0 0 0 3px #141519, 0 4px 10px ${targetConnector.soft}`,
+                        boxShadow: `0 0 0 3px var(--panel), 0 4px 10px ${targetConnector.soft}`,
                       }}
                     />
                     <span

@@ -200,13 +200,13 @@ export default function ReplayControls({
               style={{
                 background: 'var(--card)',
                 border: '1px solid var(--warning)',
-                color: appFactory ? 'var(--foreground)' : '#2a2a2a',
+                color: appFactory ? 'var(--foreground)' : 'var(--line-2)',
               }}
             />
             <button
               type="submit"
               className="font-mono text-[10px] px-2 py-1 rounded-md transition-colors"
-              style={{ background: 'var(--warning)', color: '#000' }}
+              style={{ background: 'var(--quality-dim)', color: 'var(--quality)', border: '1px solid color-mix(in srgb, var(--quality) 34%, transparent)' }}
             >
               retry
             </button>

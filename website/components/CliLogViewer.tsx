@@ -35,9 +35,9 @@ function levelColor(level: LogLevel | null): string {
 function levelBg(level: LogLevel | null): string {
   switch (level) {
     case 'WARN':
-    case 'WARNING': return 'rgba(245,158,11,0.06)'
-    case 'ERROR':   return 'rgba(239,68,68,0.06)'
-    case 'FATAL':   return 'rgba(239,68,68,0.08)'
+    case 'WARNING': return 'var(--quality-dim)'
+    case 'ERROR':   return 'var(--tool-dim)'
+    case 'FATAL':   return 'var(--tool-dim)'
     default:        return 'transparent'
   }
 }
@@ -51,7 +51,7 @@ function colorizeRest(rest: string): React.ReactNode[] {
 
   while ((match = regex.exec(rest)) !== null) {
     if (match.index > last) {
-      parts.push(<span key={last} style={{ color: '#c8c8c8' }}>{rest.slice(last, match.index)}</span>)
+      parts.push(<span key={last} style={{ color: 'var(--ink-2)' }}>{rest.slice(last, match.index)}</span>)
     }
     const full = match[0]
     if (match[1]) {
@@ -61,20 +61,20 @@ function colorizeRest(rest: string): React.ReactNode[] {
       const val = full.slice(eq + 1)
       parts.push(
         <span key={match.index}>
-          <span style={{ color: '#60a5fa' }}>{key}</span>
+          <span style={{ color: 'var(--iris-bright)' }}>{key}</span>
           <span style={{ color: 'var(--text-tertiary)' }}>=</span>
-          <span style={{ color: '#86efac' }}>{val}</span>
+          <span style={{ color: 'var(--ok)' }}>{val}</span>
         </span>
       )
     } else if (match[2]) {
       // quoted string
-      parts.push(<span key={match.index} style={{ color: '#e2e2e6' }}>{full}</span>)
+      parts.push(<span key={match.index} style={{ color: 'var(--ink)' }}>{full}</span>)
     }
     last = match.index + full.length
   }
 
   if (last < rest.length) {
-    parts.push(<span key={last} style={{ color: '#c8c8c8' }}>{rest.slice(last)}</span>)
+    parts.push(<span key={last} style={{ color: 'var(--ink-2)' }}>{rest.slice(last)}</span>)
   }
 
   return parts
@@ -104,9 +104,9 @@ export default function CliLogViewer({ log, runId }: CliLogViewerProps) {
         <div className="flex items-center gap-3">
           {/* Traffic lights */}
           <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#ef4444' }} />
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#f59e0b' }} />
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#22c55e' }} />
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: 'var(--tool)' }} />
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: 'var(--quality)' }} />
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: 'var(--ok)' }} />
           </div>
           <span className="text-xs font-mono text-muted-foreground">{runId}.log</span>
           <div className="flex items-center gap-1.5 ml-1">
