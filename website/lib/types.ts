@@ -8,6 +8,8 @@ export type BehaviorType =
   | 'detailed_text'
   | 'tool_output'
   | 'reasoning_chain'
+  | 'chat_response'
+  | 'code_generation'
 
 export interface SemanticSignal {
   sig_id: string
@@ -38,9 +40,11 @@ export interface ToolFailure {
     | 'error_response'
     | 'rate_limit'
     | 'empty_result'
+    | 'empty_output'
     | 'error_in_data'
     | 'partial_failure'
     | 'truncated_output'
+    | 'json_in_string'
     | 'confidence_mismatch'
     | 'retrieval_quality_low'
     | 'shallow_context'
@@ -329,6 +333,10 @@ export interface RunRecord {
   node_fn_refs?: Record<string, string> | null
   node_fn_paths?: Record<string, string> | null
   dry_run?: boolean
+  schema_version?: string
+  state_patch?: Record<string, unknown> | null
+  coverage_summary?: Record<string, number>
+  app_factory_ref?: string | null
 }
 
 export interface RunSummary {
