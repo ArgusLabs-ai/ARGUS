@@ -69,7 +69,7 @@ Every wrapped node executes through this pipeline:
 |------|------|
 | `src/argus/session.py` | Core monitoring session, wraps arbitrary callables |
 | `src/argus/watcher.py` | LangGraph adapter (thin wrapper over `ArgusSession`) |
-| `src/argus/pytest_instrument.py` | pytest `--argus` auto-wrap of `StateGraph.compile()` / compiled `invoke()` |
+| `src/argus/pytest_instrument.py` | pytest `--argus` auto-wrap of `StateGraph.compile()` / all Pregel runtime methods (`invoke` / `ainvoke` / `stream` / `astream` / `batch` / `abatch`) |
 | `src/argus/inspector.py` | Silent failure detection + root cause chain |
 | `src/argus/registry.py` | Semantic signature registry for LLM output heuristics |
 | `src/argus/models.py` | Dataclasses: `NodeEvent`, `RunRecord`, `InspectionResult`, `LLMUsage` |
@@ -84,7 +84,7 @@ Every wrapped node executes through this pipeline:
 | `src/argus/signature_generalizer.py` | Generalizes failure signatures via LLM + heuristic fallback. Uses `llm_proxy` for the LLM path |
 | `src/argus/check.py` | CI gate: evaluate a `RunRecord` as clean vs crash / silent_failure / semantic_fail |
 | `src/argus/cli/cmd_check.py` | `argus check <id>` / `ARGUS_RUN_ID=<id> argus check` / `argus check last` — grade one run, print its file, and exit 1 when it was not clean |
-| `src/argus/pytest_plugin.py` | pytest `--argus` plugin: fail tests whose instrumented invoke was not clean |
+| `src/argus/pytest_plugin.py` | pytest `--argus` plugin: fail tests whose instrumented run was not clean |
 | `src/argus/cli/main.py` | `argus` CLI entry point (Typer) |
 | `src/argus/cli/cmd_doctor.py` | `argus doctor` diagnostic command |
 | `src/argus/findings.py` | `collect_findings()` — builds `RunRecord.findings`; also the one-line terminal summary after invoke |
