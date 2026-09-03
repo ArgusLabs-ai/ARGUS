@@ -333,6 +333,10 @@ export interface RunRecord {
   node_fn_refs?: Record<string, string> | null
   node_fn_paths?: Record<string, string> | null
   dry_run?: boolean
+  schema_version?: string
+  state_patch?: Record<string, unknown> | null
+  coverage_summary?: Record<string, number>
+  app_factory_ref?: string | null
 }
 
 export interface RunSummary {
