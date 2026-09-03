@@ -1,6 +1,5 @@
 import type { Metadata } from 'next'
 import Sidebar from '@/components/Sidebar'
-import { AuthProvider } from '@/lib/auth'
 import './globals.css'
 
 // The interface uses the system stacks defined by --sans / --mono in globals.css
@@ -106,12 +105,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="h-screen overflow-hidden bg-background font-sans text-foreground antialiased flex">
-        <AuthProvider>
           <Sidebar />
           <main className="flex-1 flex flex-col h-full overflow-hidden min-w-0">
             {children}
           </main>
-        </AuthProvider>
       </body>
     </html>
   )

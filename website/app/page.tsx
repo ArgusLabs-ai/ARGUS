@@ -12,13 +12,7 @@ function RunListPageInner() {
   const searchParams = useSearchParams()
   const selectedRunId = searchParams.get('run')
   const previousRunId = searchParams.get('from')
-  const { runs, loading, isLocal, user } = useRunList()
-
-  useEffect(() => {
-    if (!loading && isLocal === false && !user) {
-      router.replace('/login')
-    }
-  }, [loading, isLocal, user, router])
+  const { runs, loading } = useRunList()
 
   const handleSelectRun = (id: string) => {
     router.replace(`/?run=${id}`, { scroll: false })

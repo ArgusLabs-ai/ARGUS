@@ -1,9 +1,7 @@
 'use client'
 
-import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useAuth } from '@/lib/auth'
 import ThemeToggle from '@/components/ThemeToggle'
 import { cn } from '@/lib/utils'
 import {
@@ -17,11 +15,9 @@ import {
   Database,
   BookOpen,
   Clock,
-  MessageSquareWarning,
   Settings,
   ChevronsUpDown,
   Search,
-  LogOut,
 } from 'lucide-react'
 
 interface NavItem {
@@ -68,7 +64,6 @@ const navSections: NavSection[] = [
 const bottomItems: NavItem[] = [
   { id: 'guide', href: '/guide', label: 'Guide', icon: <BookOpen className="h-4 w-4" />, exact: true },
   { id: 'changelog', href: '/changelog', label: 'Changelog', icon: <Clock className="h-4 w-4" />, exact: true },
-  { id: 'report', href: '/report', label: 'Report Board', icon: <MessageSquareWarning className="h-4 w-4" />, exact: true },
   { id: 'settings', href: '/settings', label: 'Settings', icon: <Settings className="h-4 w-4" />, exact: false },
 ]
 
@@ -133,20 +128,8 @@ function NavRow({
 
 export default function Sidebar() {
   const pathname = usePathname()
-  const { user, signOut } = useAuth()
 
-  const initials = user?.user_metadata?.full_name
-    ? (user.user_metadata.full_name as string)
-        .split(' ')
-        .map((n: string) => n[0])
-        .join('')
-        .toUpperCase()
-        .slice(0, 2)
-    : user?.email?.[0]?.toUpperCase() ?? '?'
 
-  const avatarUrl = user?.user_metadata?.avatar_url as string | undefined
-  const displayName = user?.user_metadata?.full_name ?? user?.email?.split('@')[0] ?? 'Local Mode'
-  const displayEmail = user?.email ?? 'Connected'
 
   function isActive(item: NavItem) {
     if (item.soon) return false
@@ -225,31 +208,12 @@ export default function Sidebar() {
         <ThemeToggle />
       </div>
 
-      {/* User footer */}
-      <div className="border-t border-sidebar-border p-3">
-        <div className="flex items-center gap-2.5">
-          {user && avatarUrl ? (
-            <Image src={avatarUrl} alt="" width={28} height={28} className="h-7 w-7 shrink-0 rounded-full" />
-          ) : (
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary/40 to-primary/10 text-xs font-semibold text-foreground ring-1 ring-border">
-              {initials}
-            </div>
-          )}
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-foreground">{displayName}</p>
-            <p className="truncate text-[11px] text-muted-foreground">{displayEmail}</p>
-          </div>
-          {user && (
-            <button
-              type="button"
-              onClick={signOut}
-              className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-              title="Sign out"
-            >
-              <LogOut className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
+      {/* Local mode indicator — this dashboard reads .argus/runs via `argus ui`. */}
+      <div className="border-t border-sidebar-border px-3 py-2.5">
+        <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--ok)' }} />
+          Local
+        </span>
       </div>
     </aside>
   )
