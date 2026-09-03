@@ -19,22 +19,22 @@ interface ReplayTreeNode {
 }
 
 function dotColor(status: string): string {
-  if (status === 'clean') return '#22c55e'
-  if (status === 'crashed') return '#ef4444'
-  if (status === 'silent_failure') return '#f59e0b'
-  if (status === 'semantic_fail') return '#a855f7'
-  if (status === 'interrupted') return '#f59e0b'
-  return '#6b6b6b'
+  if (status === 'clean') return 'var(--ok)'
+  if (status === 'crashed') return 'var(--tool)'
+  if (status === 'silent_failure') return 'var(--quality)'
+  if (status === 'semantic_fail') return 'var(--semantic)'
+  if (status === 'interrupted') return 'var(--quality)'
+  return 'var(--ink-3)'
 }
 
 function getStatusInfo(status: string, parentFailing: boolean) {
-  if (status === 'clean' && parentFailing) return { label: 'successful recovery', color: '#22c55e', bg: 'rgba(34,197,94,0.10)' }
-  if (status === 'clean') return { label: 'clean', color: '#22c55e', bg: 'rgba(34,197,94,0.10)' }
-  if (status === 'crashed') return { label: 'crashed', color: '#ef4444', bg: 'rgba(239,68,68,0.10)' }
-  if (status === 'silent_failure') return { label: 'semantic degradation persisted', color: '#f59e0b', bg: 'rgba(245,158,11,0.10)' }
-  if (status === 'semantic_fail') return { label: 'changed retrieval prompt', color: '#a855f7', bg: 'rgba(168,85,247,0.10)' }
-  if (status === 'interrupted') return { label: 'interrupted', color: '#f59e0b', bg: 'rgba(245,158,11,0.10)' }
-  return { label: status.replace(/_/g, ' '), color: '#6b6b6b', bg: 'rgba(107,107,107,0.10)' }
+  if (status === 'clean' && parentFailing) return { label: 'successful recovery', color: 'var(--ok)', bg: 'var(--ok-dim)' }
+  if (status === 'clean') return { label: 'clean', color: 'var(--ok)', bg: 'var(--ok-dim)' }
+  if (status === 'crashed') return { label: 'crashed', color: 'var(--tool)', bg: 'var(--tool-dim)' }
+  if (status === 'silent_failure') return { label: 'semantic degradation persisted', color: 'var(--quality)', bg: 'var(--quality-dim)' }
+  if (status === 'semantic_fail') return { label: 'changed retrieval prompt', color: 'var(--semantic)', bg: 'var(--semantic-dim)' }
+  if (status === 'interrupted') return { label: 'interrupted', color: 'var(--quality)', bg: 'var(--quality-dim)' }
+  return { label: status.replace(/_/g, ' '), color: 'var(--ink-3)', bg: 'var(--fill-subtle)' }
 }
 
 function fmtBranchTime(iso: string): string {
@@ -220,8 +220,8 @@ export default function ReplayBranches({
             <span
               className="text-[10.5px] font-semibold px-2 py-0.5 rounded-md leading-none"
               style={{
-                color: originFailing ? '#ef4444' : '#22c55e',
-                background: originFailing ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)',
+                color: originFailing ? 'var(--tool)' : 'var(--ok)',
+                background: originFailing ? 'var(--tool-dim)' : 'var(--ok-dim)',
               }}
             >
               {originLabel}

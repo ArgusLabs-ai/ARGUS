@@ -75,9 +75,9 @@ export default function RunDetailPanel({
     return (
       <div className="h-full flex flex-col items-center justify-center bg-background">
         <svg width="48" height="48" viewBox="0 0 18 18" fill="none" className="mb-4 opacity-20">
-          <path d="M9 1.5L16.5 5.5V12.5L9 16.5L1.5 12.5V5.5L9 1.5Z" stroke="#5b6af0" strokeWidth="1.2" fill="none"/>
-          <circle cx="9" cy="9" r="2.2" fill="rgba(91,106,240,0.15)" stroke="#5b6af0" strokeWidth="1.1"/>
-          <circle cx="9" cy="9" r="0.9" fill="#5b6af0"/>
+          <path d="M9 1.5L16.5 5.5V12.5L9 16.5L1.5 12.5V5.5L9 1.5Z" stroke="var(--iris)" strokeWidth="1.2" fill="none"/>
+          <circle cx="9" cy="9" r="2.2" fill="var(--iris-dim)" stroke="var(--iris)" strokeWidth="1.1"/>
+          <circle cx="9" cy="9" r="0.9" fill="var(--iris)"/>
         </svg>
         <p className="text-[14px] font-medium text-muted-foreground">Select a run to view details</p>
       </div>
@@ -88,7 +88,7 @@ export default function RunDetailPanel({
     return (
       <div className="h-full flex items-center justify-center bg-background">
         <div className="flex items-center gap-3">
-          <div className="w-5 h-5 border-2 rounded-full animate-spin" style={{ borderColor: 'rgba(255,255,255,0.08)', borderTopColor: '#5b6af0' }} />
+          <div className="w-5 h-5 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--fill-subtle)', borderTopColor: 'var(--iris)' }} />
           <span className="text-[13px] text-muted-foreground">Loading run...</span>
         </div>
       </div>
@@ -103,7 +103,7 @@ export default function RunDetailPanel({
     )
   }
 
-  const statusInfo = STATUS_DOT[run.overall_status] ?? { dot: '\u25CF', color: '#5d6370' }
+  const statusInfo = STATUS_DOT[run.overall_status] ?? { dot: '\u25CF', color: 'var(--ink-4)' }
   const steps = run.steps ?? []
   const canReturnToPreviousRun = Boolean(previousRunId && previousRunId !== run.run_id)
 
@@ -196,7 +196,7 @@ export default function RunDetailPanel({
             className={`text-[13px] px-4 py-3 transition-colors relative whitespace-nowrap ${
               activeTab === tab
                 ? 'text-foreground font-medium'
-                : 'text-muted-foreground hover:text-[#aaaaaa]'
+                : 'text-muted-foreground hover:text-[var(--ink-2)]'
             }`}
           >
             {tab}

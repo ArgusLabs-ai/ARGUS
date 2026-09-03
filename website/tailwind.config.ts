@@ -45,8 +45,8 @@ const config: Config = {
         '2xl': 'calc(var(--radius) * 1.8)',
       },
       fontFamily: {
-        sans: ['var(--font-geist-sans)', 'Geist', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
-        mono: ['var(--font-jetbrains-mono)', 'JetBrains Mono', 'Fira Code', 'Menlo', 'Consolas', 'monospace'],
+        sans: ['var(--sans)'],
+        mono: ['var(--mono)'],
       },
     },
   },

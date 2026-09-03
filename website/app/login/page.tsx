@@ -33,7 +33,7 @@ export default function LoginPage() {
         style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-default)',
-          boxShadow: '0 8px 32px rgba(255,255,255,0.06)',
+          boxShadow: '0 8px 32px var(--hover)',
           minWidth: '360px',
         }}
       >
@@ -48,7 +48,7 @@ export default function LoginPage() {
           >
             <path
               d="M9 1.5L16.5 5.5V12.5L9 16.5L1.5 12.5V5.5L9 1.5Z"
-              stroke="#7c7fc7"
+              stroke="var(--iris)"
               strokeWidth="1.2"
               fill="none"
             />
@@ -56,12 +56,12 @@ export default function LoginPage() {
               cx="9"
               cy="9"
               r="2.2"
-              fill="#7c7fc7"
+              fill="var(--iris)"
               fillOpacity="0.3"
-              stroke="#7c7fc7"
+              stroke="var(--iris)"
               strokeWidth="1.1"
             />
-            <circle cx="9" cy="9" r="0.9" fill="#7c7fc7" />
+            <circle cx="9" cy="9" r="0.9" fill="var(--iris)" />
           </svg>
           <h1
             className="text-lg font-semibold tracking-tight"
@@ -85,13 +85,13 @@ export default function LoginPage() {
           <div
             className="w-full rounded-lg px-4 py-3 flex items-center justify-center"
             style={{
-              background: 'var(--bg-base, #0d0d0d)',
+              background: 'var(--bg-base, var(--panel))',
               border: '1px solid var(--border-default)',
             }}
           >
             <span
               className="font-mono text-sm"
-              style={{ color: '#7c7fc7' }}
+              style={{ color: 'var(--iris)' }}
             >
               argus login
             </span>

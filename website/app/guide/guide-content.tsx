@@ -69,8 +69,8 @@ function CopyButton({ text }: { text: string }) {
       className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded transition-colors"
       style={{
         color: copied ? 'var(--success)' : 'var(--muted-foreground)',
-        background: copied ? 'rgba(34,197,94,0.08)' : 'rgba(255,255,255,0.04)',
-        border: `1px solid ${copied ? 'rgba(34,197,94,0.25)' : 'var(--border)'}`,
+        background: copied ? 'var(--ok-dim)' : 'var(--hover)',
+        border: `1px solid ${copied ? 'color-mix(in srgb, var(--ok) 34%, transparent)' : 'var(--border)'}`,
       }}
     >
       {copied ? 'Copied' : 'Copy'}
@@ -206,7 +206,7 @@ export default function GuideContent() {
         >
           <div
             className="flex items-center justify-between px-5 py-3"
-            style={{ borderBottom: '1px solid var(--border)', background: 'rgba(255,255,255,0.02)' }}
+            style={{ borderBottom: '1px solid var(--border)', background: 'var(--hover)' }}
           >
             <span className="text-xs font-mono text-muted-foreground">prompt.txt</span>
             <CopyButton text={LLM_PROMPT} />
@@ -461,7 +461,7 @@ result = app.invoke(initial_state)`}
         </p>
         <div
           className="rounded-lg px-5 py-4 mb-8"
-          style={{ background: 'rgba(234,179,8,0.06)', border: '1px solid rgba(234,179,8,0.2)' }}
+          style={{ background: 'var(--quality-dim)', border: '1px solid color-mix(in srgb, var(--quality) 34%, transparent)' }}
         >
           <p className="text-[14px] leading-[1.7]">
             <strong className="text-foreground">Use <Code>watcher.attach(graph)</Code> — one call for StateGraph or compiled apps.</strong>
@@ -541,7 +541,7 @@ function Row({ label, text }: { label: string; text: string }) {
     <div className="flex gap-4 items-baseline">
       <span
         className="text-xs font-mono font-medium px-2 py-1 rounded shrink-0"
-        style={{ background: 'rgba(91,106,240,0.08)', color: 'var(--primary)', border: '1px solid rgba(91,106,240,0.15)' }}
+        style={{ background: 'var(--iris-dim)', color: 'var(--primary)', border: '1px solid var(--iris-dim)' }}
       >
         {label}
       </span>
@@ -555,7 +555,7 @@ function Step({ n, title, text }: { n: number; title: string; text: string }) {
     <div className="flex gap-4 items-start">
       <span
         className="w-6 h-6 rounded flex items-center justify-center text-xs font-mono font-medium shrink-0 mt-0.5"
-        style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--muted-foreground)', border: '1px solid var(--border)' }}
+        style={{ background: 'var(--hover)', color: 'var(--muted-foreground)', border: '1px solid var(--border)' }}
       >
         {n}
       </span>
@@ -573,7 +573,7 @@ function CodeBlock({ children, title }: { children: string; title?: string }) {
       {title && (
         <div
           className="px-5 py-2.5 text-xs font-mono text-muted-foreground"
-          style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border)' }}
+          style={{ background: 'var(--hover)', borderBottom: '1px solid var(--border)' }}
         >
           {title}
         </div>

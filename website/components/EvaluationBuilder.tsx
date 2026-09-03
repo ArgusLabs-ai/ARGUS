@@ -271,7 +271,7 @@ export default function EvaluationBuilder({ onEval, currentEval }: Props) {
                   className="text-xs px-1 transition-colors"
                   style={{ color: 'var(--text-muted)', flexShrink: 0, lineHeight: 1 }}
                   onMouseEnter={(e) => {
-                    (e.currentTarget as HTMLButtonElement).style.color = '#d65c5c'
+                    (e.currentTarget as HTMLButtonElement).style.color = 'var(--tool)'
                   }}
                   onMouseLeave={(e) => {
                     (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-muted)'
@@ -304,15 +304,15 @@ export default function EvaluationBuilder({ onEval, currentEval }: Props) {
         onClick={handleEvaluate}
         className="text-xs px-4 py-2 rounded-lg font-medium transition-all"
         style={{
-          background: 'rgba(34, 197, 94, 0.1)',
-          color: '#22c55e',
-          border: '1px solid rgba(34, 197, 94, 0.22)',
+          background: 'var(--ok-dim)',
+          color: 'var(--ok)',
+          border: '1px solid color-mix(in srgb, var(--ok) 34%, transparent)',
         }}
         onMouseEnter={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(34, 197, 94, 0.18)'
+          (e.currentTarget as HTMLButtonElement).style.background = 'color-mix(in srgb, var(--ok) 34%, transparent)'
         }}
         onMouseLeave={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(34, 197, 94, 0.1)'
+          (e.currentTarget as HTMLButtonElement).style.background = 'var(--ok-dim)'
         }}
       >
         Evaluate

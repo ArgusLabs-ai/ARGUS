@@ -21,10 +21,10 @@ function AIAnalysisSummaryCard({ run, onViewFull }: { run: RunRecord; onViewFull
 
   const confPct = Math.round(inv.confidence * 100)
   const confColor = inv.confidence >= 0.75
-    ? { color: '#22c55e', bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.25)' }
+    ? { color: 'var(--ok)', bg: 'var(--ok-dim)', border: 'color-mix(in srgb, var(--ok) 34%, transparent)' }
     : inv.confidence >= 0.45
-      ? { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.25)' }
-      : { color: '#6b6b6b', bg: 'rgba(107,107,107,0.12)', border: 'rgba(107,107,107,0.25)' }
+      ? { color: 'var(--quality)', bg: 'var(--quality-dim)', border: 'color-mix(in srgb, var(--quality) 34%, transparent)' }
+      : { color: 'var(--ink-3)', bg: 'var(--fill-subtle)', border: 'var(--line-2)' }
   const rootCauseNode = run.first_failure_step ?? run.root_cause_chain?.[0]
   const rootCauseStep = run.steps?.findIndex((s) => s.node_name === rootCauseNode)
 
@@ -56,7 +56,7 @@ function AIAnalysisSummaryCard({ run, onViewFull }: { run: RunRecord; onViewFull
         {rootCauseNode && (
           <p className="text-[13px] text-foreground" style={{ lineHeight: 1.4 }}>
             <span style={{ fontWeight: 600 }}>Root cause: </span>
-            <span className="font-mono font-semibold" style={{ color: '#ef4444' }}>{rootCauseNode}</span>
+            <span className="font-mono font-semibold" style={{ color: 'var(--tool)' }}>{rootCauseNode}</span>
             {rootCauseStep !== undefined && rootCauseStep >= 0 && (
               <span className="text-muted-foreground"> (step {rootCauseStep + 1})</span>
             )}
@@ -99,8 +99,8 @@ function UnannotatedBanner({ run }: { run: RunRecord }) {
     <div
       className="rounded-xl border px-4 py-3 flex items-start gap-3"
       style={{
-        background: 'rgba(99,102,241,0.06)',
-        borderColor: 'rgba(99,102,241,0.2)',
+        background: 'var(--iris-dim)',
+        borderColor: 'color-mix(in srgb, var(--iris) 34%, transparent)',
       }}
     >
       <span className="text-[18px] leading-none mt-0.5">💡</span>
@@ -110,8 +110,8 @@ function UnannotatedBanner({ run }: { run: RunRecord }) {
         </p>
         <p className="text-[12px] text-muted-foreground mt-1" style={{ lineHeight: 1.5 }}>
           {unannotatedSteps.length} of {steps.length} steps have unannotated successors — ARGUS can&apos;t check
-          if the right fields are being passed between nodes. Add a <code className="font-mono text-[11px] px-1 py-0.5 rounded" style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>TypedDict</code> annotation
-          to your node functions&apos; <code className="font-mono text-[11px] px-1 py-0.5 rounded" style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>state</code> parameter to enable this.
+          if the right fields are being passed between nodes. Add a <code className="font-mono text-[11px] px-1 py-0.5 rounded" style={{ background: 'var(--iris-dim)', color: 'var(--iris-bright)' }}>TypedDict</code> annotation
+          to your node functions&apos; <code className="font-mono text-[11px] px-1 py-0.5 rounded" style={{ background: 'var(--iris-dim)', color: 'var(--iris-bright)' }}>state</code> parameter to enable this.
         </p>
       </div>
     </div>
