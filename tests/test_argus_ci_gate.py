@@ -31,7 +31,9 @@ def _clean_graph() -> StateGraph:
 
 
 def _require_argus(request: pytest.FixtureRequest) -> None:
-    if not request.config.getoption("--argus"):
+    # default=False: skip instead of crashing when the pytest11 plugin is not loaded
+    # (stale venv, or pytest without `pip install -e .`).
+    if not request.config.getoption("--argus", default=False):
         pytest.skip("requires pytest --argus (CI eat-own-cooking gate; see #56)")
 
 
