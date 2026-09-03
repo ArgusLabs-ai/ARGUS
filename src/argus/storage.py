@@ -164,10 +164,15 @@ def _candidate_runs_dirs() -> list[Path]:
 
 def load_run_text(run_id: str) -> str:
     """Return the raw JSON text for a run (by id or 8-char prefix)."""
+    return resolve_run_path(run_id).read_text(encoding="utf-8")
+
+
+def resolve_run_path(run_id: str) -> Path:
+    """Return the exact JSON path for a run id or unique prefix."""
     last_error: FileNotFoundError | None = None
     for directory in _candidate_runs_dirs():
         try:
-            return _resolve_run_path(run_id, directory).read_text(encoding="utf-8")
+            return _resolve_run_path(run_id, directory)
         except FileNotFoundError as exc:
             last_error = exc
             continue
@@ -182,18 +187,9 @@ def load_run(run_id: str) -> RunRecord:
     searches nested/legacy ``.argus/runs`` directories under the project
     (and cwd, if cwd is outside the project).
     """
-    last_error: FileNotFoundError | None = None
-    for directory in _candidate_runs_dirs():
-        try:
-            path = _resolve_run_path(run_id, directory)
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return _deserialize_run(data)
-        except FileNotFoundError as exc:
-            last_error = exc
-            continue
-
-    root = resolve_project_root()
-    raise FileNotFoundError(f"No run found for id '{run_id}' under {root}") from last_error
+    path = resolve_run_path(run_id)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return _deserialize_run(data)
 
 
 def _run_json_files_newest_first(runs_dir: Path) -> list[Path]:
