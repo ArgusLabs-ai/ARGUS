@@ -141,12 +141,12 @@ const edgeStroke: Record<string, string> = {
 }
 
 const statusStyles: Record<MappedStatus, string> = {
-  succeeded:     'border-[var(--fill-subtle)] bg-[var(--hover)] hover:border-[var(--line-2)]',
-  crashed:       'border-[color-mix(in srgb, var(--tool) 45%, transparent)] bg-[var(--tool-dim)]',
-  failed:        'border-[color-mix(in srgb, var(--quality) 45%, transparent)] bg-[var(--quality-dim)]',
-  semantic_fail: 'border-[color-mix(in srgb, var(--semantic) 45%, transparent)] bg-[var(--semantic-dim)]',
-  degraded:      'border-[color-mix(in srgb, var(--quality) 45%, transparent)] bg-[var(--quality-dim)]',
-  running:       'border-[color-mix(in srgb, var(--iris) 45%, transparent)] bg-[var(--iris-dim)]',
+  succeeded:     'border-[var(--line-2)] bg-[var(--raised)] hover:border-[var(--line-3)]',
+  crashed:       'border-[1.5px] border-[var(--tool)] bg-[var(--surf-tool)] shadow-[0_0_0_3px_var(--tool-dim),0_0_26px_-8px_var(--glow-tool)]',
+  failed:        'border-[var(--quality)] bg-[var(--surf-quality)]',
+  semantic_fail: 'border-[var(--semantic)] bg-[var(--surf-semantic)]',
+  degraded:      'border-[var(--quality)] bg-[var(--surf-quality)]',
+  running:       'border-[var(--iris)] bg-[var(--iris-dim)] shadow-[0_0_20px_-6px_var(--glow-iris)]',
   skipped:       'border-[var(--hover)] border-dashed bg-[var(--hover)] opacity-55',
   pending:       'border-[var(--hover)] border-dashed bg-[var(--hover)] opacity-55',
 }
@@ -204,13 +204,13 @@ function NodeCard({
       onClick={() => onSelect(node.id)}
       style={{ left: x, top: y, width: NODE_W, height: NODE_H, ...glowStyle }}
       className={[
-        'absolute flex items-center gap-2.5 rounded-lg border px-3 text-left transition-all',
+        'absolute flex items-center gap-2.5 rounded-[10px] border px-3 py-2.5 text-left transition-all',
         statusStyles[node.status],
         selected ? 'ring-2 ring-[var(--iris)] ring-offset-2 ring-offset-[var(--panel)]' : '',
       ].join(' ')}
     >
       <span
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
+        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[6px]"
         style={{
           background: isError
             ? `${c}26`
@@ -227,7 +227,7 @@ function NodeCard({
         <Icon className="h-4 w-4" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium text-[var(--ink)]">
+        <span className="block truncate font-mono text-[12px] font-medium tracking-[-0.015em] text-[var(--ink)]">
           {node.label}
         </span>
         <span className="mt-0.5 flex items-center gap-1 font-mono text-[11px] tabular-nums text-[var(--ink-3)]">
@@ -326,19 +326,18 @@ export default function ExecutionGraph({
 
   return (
     <div
-      className="overflow-hidden rounded-xl"
-      style={{ background: 'var(--overlay)', border: '1px solid var(--hover)' }}
+      className="overflow-hidden rounded-[var(--r-panel)]"
+      style={{ background: 'var(--panel)', border: '1px solid var(--line)' }}
     >
       {/* Header */}
       <div
         className="flex items-center justify-between px-4 py-2.5"
-        style={{ borderBottom: '1px solid var(--hover)' }}
+        style={{ borderBottom: '1px solid var(--line)' }}
       >
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-[var(--ink)]">Execution Graph</h2>
           <span
-            className="rounded-full px-2 py-0.5 font-mono text-[11px] text-[var(--ink-3)]"
-            style={{ background: 'var(--hover)' }}
+            className="chip chip-idle !h-[20px] !px-[7px] font-mono !text-[11px]"
           >
             {layoutNodes.length} nodes
           </span>
@@ -358,7 +357,7 @@ export default function ExecutionGraph({
       </div>
 
       {/* Graph area */}
-      <div className="overflow-x-auto" style={{ background: 'var(--fill-subtle)' }}>
+      <div className="overflow-x-auto" style={{ background: 'radial-gradient(circle at center, var(--dot) 1px, transparent 1px) 0 0 / 26px 26px, var(--void)' }}>
         <div style={{ padding: 16 }}>
           <div
             className="relative mx-auto"

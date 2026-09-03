@@ -37,12 +37,15 @@ const config: Config = {
           ring:       'var(--sidebar-ring)',
         },
       },
+      // The spec defines exactly three radii: chip 5px, control 6px, panel 10px.
+      // Every Tailwind step maps onto one of them so nothing renders rounder
+      // than the design allows.
       borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) * 0.8)',
-        sm: 'calc(var(--radius) * 0.6)',
-        xl: 'calc(var(--radius) * 1.4)',
-        '2xl': 'calc(var(--radius) * 1.8)',
+        sm: 'var(--r-chip)',
+        md: 'var(--r-ctl)',
+        lg: 'var(--r-panel)',
+        xl: 'var(--r-panel)',
+        '2xl': 'var(--r-panel)',
       },
       fontFamily: {
         sans: ['var(--sans)'],

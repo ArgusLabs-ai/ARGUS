@@ -76,13 +76,7 @@ function NavRow({
 }) {
   const content = (
     <>
-      <span
-        className={cn(
-          'shrink-0',
-          active ? 'text-primary' : 'text-muted-foreground',
-          item.soon && !active && 'text-muted-foreground/60',
-        )}
-      >
+      <span className="shrink-0" style={{ color: active ? 'var(--iris)' : 'var(--ink-4)' }}>
         {item.icon}
       </span>
       <span className="flex min-w-0 flex-1 items-center text-left">
@@ -91,9 +85,7 @@ function NavRow({
         </span>
       </span>
       {item.soon && (
-        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-          soon
-        </span>
+        <span className="chip chip-idle shrink-0 !h-[18px] !px-[6px] !text-[10px]">soon</span>
       )}
       {item.badge && (
         <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
@@ -104,23 +96,27 @@ function NavRow({
   )
 
   const rowClass = cn(
-    'flex w-full items-center gap-2.5 rounded-md border-l-2 py-1.5 pr-2 pl-[10px] text-sm transition-colors',
-    active
-      ? 'border-primary font-medium text-foreground'
-      : 'border-transparent text-sidebar-foreground hover:text-sidebar-accent-foreground',
-    item.soon && 'cursor-not-allowed select-none hover:text-sidebar-foreground',
+    // spec .rail a — 22px icon column, --r-chip radius, 13px label
+    'grid w-full items-center gap-1 px-[9px] py-[6px] text-[13px] transition-colors',
+    'grid-cols-[22px_1fr] rounded-[var(--r-chip)]',
+    active ? 'font-medium' : '',
+    item.soon && 'cursor-not-allowed select-none',
   )
+
+  const rowStyle = active
+    ? { background: 'var(--iris-dim)', color: 'var(--ink)' }
+    : { color: item.soon ? 'var(--ink-4)' : 'var(--ink-2)' }
 
   if (item.soon) {
     return (
-      <div className={rowClass} aria-disabled="true">
+      <div className={rowClass} style={rowStyle} aria-disabled="true">
         {content}
       </div>
     )
   }
 
   return (
-    <Link href={item.href} className={rowClass}>
+    <Link href={item.href} className={cn(rowClass, 'hover:bg-[var(--hover)]')} style={rowStyle}>
       {content}
     </Link>
   )
@@ -137,9 +133,9 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="flex h-full w-[220px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
+    <aside className="flex h-full w-[236px] shrink-0 flex-col" style={{ borderRight: "1px solid var(--line)", background: "var(--rail)" }}>
       {/* Workspace / brand */}
-      <div className="flex items-center gap-2.5 px-3 py-3">
+      <div className="flex items-center gap-2.5 px-4 pt-5 pb-1">
         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/15 ring-1 ring-primary/30">
           <svg width="14" height="14" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path
@@ -154,8 +150,8 @@ export default function Sidebar() {
           </svg>
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold tracking-tight text-foreground">ARGUS</p>
-          <p className="truncate text-[11px] text-muted-foreground">Production</p>
+          <p className="truncate text-[14px] font-semibold text-foreground" style={{ letterSpacing: "0.02em" }}>ARGUS</p>
+          <p className="truncate text-[11.5px]" style={{ color: "var(--ink-3)" }}>Local</p>
         </div>
         <ChevronsUpDown className="h-4 w-4 shrink-0 text-muted-foreground" />
       </div>
@@ -178,7 +174,7 @@ export default function Sidebar() {
       <nav className="flex-1 overflow-y-auto px-2 py-2">
         {navSections.map((section) => (
           <div key={section.label} className="mb-4">
-            <p className="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-text-tertiary">
+            <p className="px-2 pb-1.5 text-[11px] font-semibold uppercase" style={{ letterSpacing: "0.09em", color: "var(--ink-4)" }}>
               {section.label}
             </p>
             <ul className="flex flex-col gap-0.5">
@@ -204,12 +200,12 @@ export default function Sidebar() {
       </div>
 
       {/* Theme */}
-      <div className="border-t border-sidebar-border px-3 py-2.5">
+      <div className="px-3 py-2.5" style={{ borderTop: "1px solid var(--line)" }}>
         <ThemeToggle />
       </div>
 
       {/* Local mode indicator — this dashboard reads .argus/runs via `argus ui`. */}
-      <div className="border-t border-sidebar-border px-3 py-2.5">
+      <div className="px-3 py-2.5" style={{ borderTop: "1px solid var(--line)" }}>
         <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--ok)' }} />
           Local

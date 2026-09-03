@@ -187,22 +187,17 @@ export default function RunDetailPanel({
         )}
       </div>
 
-      {/* Tabs */}
-      <div className="shrink-0 px-5 flex items-center gap-0 overflow-x-auto border-b border-border bg-background">
+      {/* Tabs — spec .tabs primitive */}
+      <div className="tabs shrink-0 overflow-x-auto px-5" role="tablist" aria-label="Run detail sections">
         {TABS.map((tab) => (
           <button
             key={tab}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab}
             onClick={() => setActiveTab(tab)}
-            className={`text-[13px] px-4 py-3 transition-colors relative whitespace-nowrap ${
-              activeTab === tab
-                ? 'text-foreground font-medium'
-                : 'text-muted-foreground hover:text-[var(--ink-2)]'
-            }`}
           >
             {tab}
-            {activeTab === tab && (
-              <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-full bg-primary" />
-            )}
           </button>
         ))}
       </div>
