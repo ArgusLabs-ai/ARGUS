@@ -14,7 +14,7 @@ export function useRunList() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/runs')
+    fetch('/api/runs', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('unavailable'))))
       .then((data: RunSummary[]) => {
         setRuns(data)
@@ -43,7 +43,7 @@ export function useRunDetail(runId: string | null) {
     setLoading(true)
     setError(null)
 
-    fetch(`/api/runs/${runId}`)
+    fetch(`/api/runs/${runId}`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((data) => {
         if (data.error) {
@@ -87,7 +87,7 @@ export function useServingInfo(): ServingInfo | null {
   const [serving, setServing] = useState<ServingInfo | null>(null)
 
   useEffect(() => {
-    fetch('/api/serving')
+    fetch('/api/serving', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
       .then((data: ServingInfo | null) => {
         if (data && data.runs_dir) setServing(data)

@@ -245,26 +245,26 @@ with one command.
 
 #### US-4.1: Remove or gate `soon` navigation
 **Acceptance:**
-- [ ] `Sidebar.tsx`: Traces, Evaluation, Graphs, Alerts, Datasets removed from nav
-- [ ] `EvaluationBuilder.tsx` "(soon)" panel removed from run detail
-- [ ] `?preview=1` query param restores them for maintainers (documented in `website/README.md`)
-- [ ] CONTRIBUTING "Web UI — Planned Pages" reworded: pages are planned, not stubbed
+- [x] `Sidebar.tsx`: Traces, Evaluation, Graphs, Alerts, Datasets removed from nav
+- [x] `EvaluationBuilder.tsx` "(soon)" panel removed from run detail
+- [x] `?preview=1` query param restores them for maintainers (documented in `website/README.md`)
+- [x] CONTRIBUTING "Web UI — Planned Pages" reworded: pages are planned, not stubbed
 - [ ] Verify in browser using dev-browser skill
 
 #### US-4.2: Findings panel on run detail `[E-1]`
 **Acceptance:**
-- [ ] New `components/run-detail/FindingsPanel.tsx` renders `RunRecord.findings` **grouped by severity** with a coloured left rule and header count ("Critical (2) / Warning (4)"), node order within a group `[E-10a]`
-- [ ] Suppressed findings in a greyed "Suppressed (n)" group at the bottom
-- [ ] Right-aligned per-row action "Fix prompt" → `argus fix` output for that node
-- [ ] Each row: severity chip (existing `StatusBadge` colours), node, `reason` full sentence, `origin_node` link, `source` tag, suppressed rows greyed
-- [ ] Click → scrolls to that step in `StepInspector`
-- [ ] `RootCauseBanner` reads from `findings[0]` when present
+- [x] New `components/run-detail/FindingsPanel.tsx` renders `RunRecord.findings` **grouped by severity** with a coloured left rule and header count ("Critical (2) / Warning (4)"), node order within a group `[E-10a]`
+- [x] Suppressed findings in a greyed "Suppressed (n)" group at the bottom
+- [x] Right-aligned per-row action "Fix prompt" → `argus fix` output for that node
+- [x] Each row: severity chip (existing `StatusBadge` colours), node, `reason` full sentence, `origin_node` link, `source` tag, suppressed rows greyed
+- [x] Click → scrolls to that step in `StepInspector`
+- [x] `RootCauseBanner` reads from `findings[0]` when present
 - [ ] Verify in browser using dev-browser skill
 
 #### US-4.3: Tag filter on run list `[E-3]`
 **Acceptance:**
-- [ ] `RunTable.tsx` gains a filter-chip row above the table: `tag: value ×` per active filter + "+ Add filter" opening a per-key multi-select `[E-10c]`; state in URL params
-- [ ] Empty state text when no runs match filter
+- [x] Filter-chip row above the run list: `key: value ×` + "+ Add filter" (`status` / `node` / `origin` until US-2.2 run tags ship); state in URL params
+- [x] Empty state text when no runs match filter
 - [ ] Verify in browser using dev-browser skill
 
 #### US-4.4: Failure hotspot matrix `[E-2]`
@@ -272,14 +272,14 @@ with one command.
 pairs fail most often.
 **Acceptance:**
 - [ ] API `GET /api/hotspots?tag=…` in `cmd_open_ui.py` aggregates `findings[].origin_node × node` counts across runs
-- [ ] `components/HotspotMatrix.tsx`: rows = origin, cols = failing node, cell = raw count on a **single-hue amber ramp**, zero cells blank, "Low → High" legend, one-line explainer under title `[E-10b]`; click → run list filtered to those runs
-- [ ] Lives on the Runs page above the table, collapsed by default when < 5 runs
-- [ ] No LLM call involved
+- [x] `components/HotspotMatrix.tsx`: rows = origin, cols = failing node, cell = raw count on a **single-hue amber ramp**, zero cells blank, "Low → High" legend, one-line explainer under title `[E-10b]`; click → run list filtered to those runs
+- [x] Lives on the Runs page above the table, collapsed by default when < 5 runs
+- [x] No LLM call involved
 - [ ] Verify in browser using dev-browser skill
 
 #### US-4.5: Empty state points to `argus demo` `[E-6]`
 **Acceptance:**
-- [ ] `EmptyRunsState.tsx`: primary = copyable `argus demo --open` command block; secondary = "Attach to my graph" → Guide; existing "reading from `<path>`" line kept under both; no illustration `[E-10d]`
+- [x] `EmptyRunsState.tsx`: primary = copyable `argus demo --open` command block; secondary = "Attach to my graph" → Guide; existing "reading from `<path>`" line kept under both; no illustration `[E-10d]`
 - [ ] Verify in browser using dev-browser skill
 
 #### US-4.6: Design tokens audit

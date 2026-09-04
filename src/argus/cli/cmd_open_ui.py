@@ -752,6 +752,45 @@ def _make_handler(
                         pass
             self._send_json({"error": "not found"}, 404)
 
+        def _get_fix(
+            self, run_id: str, *, node: str | None, sanitized: bool
+        ) -> None:
+            """Same markdown `argus fix` prints — for the dashboard Copy action."""
+            from argus.fix_prompt import (  # noqa: PLC0415
+                FixPromptError,
+                build_fix_prompt_for_record,
+            )
+            from argus.storage import _deserialize_run  # noqa: PLC0415
+
+            for f in _all_run_files(_project_dir):
+                if f.stem != run_id and not f.stem.startswith(run_id):
+                    continue
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    record = _deserialize_run(data)
+                except Exception:
+                    continue
+                try:
+                    result = build_fix_prompt_for_record(
+                        record, node=node, sanitized=sanitized
+                    )
+                except FixPromptError as exc:
+                    self._send_json({"error": str(exc)}, 400)
+                    return
+                except Exception as exc:
+                    self._send_json({"error": str(exc)}, 500)
+                    return
+                self._send_json(
+                    {
+                        "run_id": record.run_id,
+                        "node": result.node,
+                        "source_path": result.source_path,
+                        "prompt": result.prompt,
+                    }
+                )
+                return
+            self._send_json({"error": "not found"}, 404)
+
         def _get_run_children(self, run_id: str) -> None:
             from argus.storage import list_replay_children  # noqa: PLC0415
 
@@ -873,6 +912,16 @@ def _make_handler(
             elif path.startswith("/api/runs/") and path.endswith("/tree"):
                 rid = path[len("/api/runs/") : -len("/tree")]
                 self._get_run_tree(rid)
+            elif path.startswith("/api/runs/") and path.endswith("/fix"):
+                rid = unquote(path[len("/api/runs/") : -len("/fix")])
+                qs = parse_qs(parsed.query)
+                node = (qs.get("node", [None])[0] or None) or None
+                sanitized = (qs.get("sanitized", [""])[0] or "").lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                self._get_fix(rid, node=node, sanitized=sanitized)
             elif path.startswith("/api/runs/"):
                 self._get_run(path[len("/api/runs/") :])
             elif path.startswith("/api/logs/"):

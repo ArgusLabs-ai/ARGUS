@@ -1,137 +1,198 @@
 'use client'
 
-import { useState } from 'react'
+/* Overview — one focal point. The verdict is a sentence set two sizes up
+   with the culprit node the only red thing on the screen; the chain, the
+   graph, the facts and the findings descend from it. No boxed regions. */
+
+import { useEffect, useState } from 'react'
 import type { RunRecord, RunSummary } from '@/lib/types'
-import { ChevronRight } from 'lucide-react'
+import { useWorkspace, formatDuration } from '@/lib/workspace'
+import {
+  culpritNode, failureChain, headlineFinding,
+  fmtCost, fmtTokens, totalCalls,
+} from '@/lib/run-detail'
+import Prose from './Prose'
 import ExecutionGraph from './ExecutionGraph'
-import RunMetricsBar from './RunMetricsBar'
+import FindingsPanel from './FindingsPanel'
 import StepInspector from './StepInspector'
 import ReplayBranches from './ReplayBranches'
+import { FixPromptBody, useFixPrompt } from './FixPrompt'
 
-function AIAnalysisSummaryCard({ run, onViewFull }: { run: RunRecord; onViewFull: () => void }) {
+type Tab = 'Overview' | 'Pipeline' | 'AI Analysis' | 'Correlations' | 'State' | 'Logs'
+type FixHandle = ReturnType<typeof useFixPrompt>
+
+function Verdict({ run, onFix, fixLabel }: { run: RunRecord; onFix?: () => void; fixLabel?: string }) {
+  const steps = run.steps ?? []
+  const head = headlineFinding(run)
+  const who = culpritNode(run)
+  const chain = failureChain(run)
   const inv = run.llm_investigation
-  if (!inv || !inv.triggered) {
+
+  if (!head) {
+    const reached = steps.filter((s) => s.status !== 'skipped').length
+    if (run.overall_status === 'interrupted') {
+      return (
+        <div>
+          <p className="finding">
+            Paused at <span className="who" style={{ color: 'var(--quality)' }}>{run.interrupt_node ?? 'a node'}</span> awaiting
+            approval. {reached} of {steps.length} steps have run.
+          </p>
+        </div>
+      )
+    }
     return (
-      <div className="rounded-xl border border-border bg-card p-4">
-        <h3 style={{ fontSize: 14, fontWeight: 700, letterSpacing: '-0.02em', marginBottom: 6 }} className="text-foreground">AI Analysis</h3>
-        <p className="text-[12px] text-muted-foreground">No AI analysis available for this run.</p>
+      <div>
+        <p className="finding">
+          <span className="who ok">{steps.length} steps</span> passed and nothing was flagged.
+          {run.duration_ms != null && <> The run took {formatDuration(run.duration_ms)}.</>}
+        </p>
       </div>
     )
   }
 
-  const confPct = Math.round(inv.confidence * 100)
-  const confColor = inv.confidence >= 0.75
-    ? { color: 'var(--ok)', bg: 'var(--ok-dim)', border: 'color-mix(in srgb, var(--ok) 34%, transparent)' }
-    : inv.confidence >= 0.45
-      ? { color: 'var(--quality)', bg: 'var(--quality-dim)', border: 'color-mix(in srgb, var(--quality) 34%, transparent)' }
-      : { color: 'var(--ink-3)', bg: 'var(--fill-subtle)', border: 'var(--line-2)' }
-  const rootCauseNode = run.first_failure_step ?? run.root_cause_chain?.[0]
-  const rootCauseStep = run.steps?.findIndex((s) => s.node_name === rootCauseNode)
+  const surfaced = chain.length > 1 ? chain[chain.length - 1] : null
+  const conf = head.confidence ?? inv?.confidence ?? null
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <div className="mb-2.5 flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M8 1l1.5 3.5L13 6l-3 2 .5 4L8 10.5 5.5 12l.5-4-3-2 3.5-1.5L8 1Z" fill="color-mix(in srgb, var(--primary) 10%, transparent)" stroke="var(--primary)" strokeWidth="1" />
-          </svg>
-          <span className="text-[14px] font-bold text-primary" style={{ letterSpacing: '-0.02em' }}>AI Analysis</span>
-        </div>
-        <span
-          style={{
-            fontSize: 11,
-            fontWeight: 600,
-            color: confColor.color,
-            background: confColor.bg,
-            border: `1px solid ${confColor.border}`,
-            padding: '2px 10px',
-            borderRadius: 999,
-          }}
-        >
-          {confPct}%
-        </span>
-      </div>
-
-      <div className="flex flex-col gap-1">
-        {rootCauseNode && (
-          <p className="text-[13px] text-foreground" style={{ lineHeight: 1.4 }}>
-            <span style={{ fontWeight: 600 }}>Root cause: </span>
-            <span className="font-mono font-semibold" style={{ color: 'var(--tool)' }}>{rootCauseNode}</span>
-            {rootCauseStep !== undefined && rootCauseStep >= 0 && (
-              <span className="text-muted-foreground"> (step {rootCauseStep + 1})</span>
-            )}
-          </p>
+    <div>
+      <p className="finding">
+        <Prose text={head.reason} who={who ?? head.node} />
+        {surfaced && surfaced !== (who ?? head.node) && (
+          <> The failure surfaced {chain.length > 2 ? `${chain.length - 1} nodes later` : 'downstream'} in <code>{surfaced}</code>.</>
         )}
-        {inv.root_cause_explanation && (
-          <p className="text-[12px] text-muted-foreground" style={{ lineHeight: 1.5, maxWidth: 500 }}>
-            {inv.root_cause_explanation.length > 120
-              ? inv.root_cause_explanation.slice(0, 120) + '...'
-              : inv.root_cause_explanation}
-          </p>
+      </p>
+      <p className="finding-sub">
+        <span>Root cause{typeof conf === 'number' ? ` · confidence ${conf.toFixed(2)}` : ''}</span>
+        {chain.length > 0 && (
+          <>
+            <span className="arrow">·</span>
+            {chain.map((n, i) => (
+              <span key={n} style={{ display: 'contents' }}>
+                {i > 0 && <span className="arrow">→</span>}
+                <span className="n">{n}</span>
+              </span>
+            ))}
+          </>
         )}
-      </div>
-
-      <button
-        onClick={onViewFull}
-        className="mt-2.5 flex items-center gap-1 border-none bg-transparent p-0 text-[12px] font-semibold text-primary cursor-pointer"
-      >
-        View Full Analysis
-        <ChevronRight size={12} />
-      </button>
+        {onFix && (
+          <>
+            <span className="arrow">·</span>
+            <a href="#" onClick={(e) => { e.preventDefault(); onFix() }}>{fixLabel ?? 'Copy fix prompt'}</a>
+          </>
+        )}
+      </p>
     </div>
   )
 }
 
-type Tab = 'Overview' | 'Pipeline' | 'AI Analysis' | 'Correlations' | 'State' | 'Logs'
-
-function UnannotatedBanner({ run }: { run: RunRecord }) {
+function Facts({ run }: { run: RunRecord }) {
   const steps = run.steps ?? []
-  const unannotatedSteps = steps.filter(
-    (s) => (s.inspection?.unannotated_successors?.length ?? 0) > 0
-  )
-  if (unannotatedSteps.length === 0) return null
-
-  // Only show if most/all steps have this issue
-  const ratio = unannotatedSteps.length / steps.length
-  if (ratio < 0.5) return null
-
+  const reached = steps.filter((s) => s.status !== 'skipped').length
+  const calls = totalCalls(run)
   return (
-    <div
-      className="rounded-xl border px-4 py-3 flex items-start gap-3"
-      style={{
-        background: 'var(--iris-dim)',
-        borderColor: 'color-mix(in srgb, var(--iris) 34%, transparent)',
-      }}
-    >
-      <span className="text-[18px] leading-none mt-0.5">💡</span>
-      <div className="min-w-0">
-        <p className="text-[13px] font-semibold text-foreground" style={{ lineHeight: 1.4 }}>
-          Add type annotations to unlock full silent-failure detection
-        </p>
-        <p className="text-[12px] text-muted-foreground mt-1" style={{ lineHeight: 1.5 }}>
-          {unannotatedSteps.length} of {steps.length} steps have unannotated successors — ARGUS can&apos;t check
-          if the right fields are being passed between nodes. Add a <code className="font-mono text-[11px] px-1 py-0.5 rounded" style={{ background: 'var(--iris-dim)', color: 'var(--iris-bright)' }}>TypedDict</code> annotation
-          to your node functions&apos; <code className="font-mono text-[11px] px-1 py-0.5 rounded" style={{ background: 'var(--iris-dim)', color: 'var(--iris-bright)' }}>state</code> parameter to enable this.
-        </p>
-      </div>
+    <p className="facts">
+      <span>Duration<b>{formatDuration(run.duration_ms)}</b></span>
+      <span>Steps<b>{reached} / {steps.length}</b></span>
+      {run.total_tokens != null && <span>Tokens<b>{fmtTokens(run.total_tokens)}</b></span>}
+      {run.total_cost_usd != null && <span>Cost<b>{fmtCost(run.total_cost_usd)}</b></span>}
+      {calls > 0 && <span>LLM calls<b>{calls}</b></span>}
+      <span>Argus<b>v{run.argus_version}</b></span>
+    </p>
+  )
+}
+
+function Analysis({ run, onViewFull }: { run: RunRecord; onViewFull: () => void }) {
+  const inv = run.llm_investigation
+  if (!inv || !inv.triggered || !inv.root_cause_explanation) return null
+  return (
+    <div>
+      <p className="cap">
+        <span>AI analysis · {inv.model_used}{typeof inv.confidence === 'number' ? ` · confidence ${inv.confidence.toFixed(2)}` : ''}</span>
+        <a href="#" onClick={(e) => { e.preventDefault(); onViewFull() }}>Full analysis</a>
+      </p>
+      <p style={{ margin: 0, fontSize: 13, lineHeight: 1.65, color: 'var(--ink-2)', maxWidth: '78ch' }}>
+        {inv.root_cause_explanation}
+      </p>
     </div>
   )
 }
 
-export default function OverviewTab({ run, allRuns, onSwitchTab }: { run: RunRecord; allRuns: RunSummary[]; onSwitchTab: (tab: Tab) => void }) {
+export default function OverviewTab({
+  run, allRuns, onSwitchTab, fix,
+}: {
+  run: RunRecord
+  allRuns: RunSummary[]
+  onSwitchTab: (tab: Tab) => void
+  fix?: FixHandle
+}) {
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
+  const { setNote } = useWorkspace()
+  const findings = run.findings ?? []
+  const who = culpritNode(run)
+  const nodes = (run.graph_node_names ?? []).length
+  const canFix = findings.some((f) => !f.suppressed) || run.overall_status !== 'clean'
+
+  useEffect(() => {
+    if (fix?.open) document.querySelector('.fix-panel')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [fix?.open, fix?.payload])
+
+  /* The type-annotation hint lives in the workspace top bar, as in the spec. */
+  useEffect(() => {
+    const steps = run.steps ?? []
+    const un = steps.filter((s) => (s.inspection?.unannotated_successors?.length ?? 0) > 0).length
+    if (steps.length && un / steps.length >= 0.5) {
+      setNote({ key: `unannotated:${run.run_id}`, text: `${un} node${un === 1 ? '' : 's'} lack type annotations` })
+    } else {
+      setNote(null)
+    }
+    return () => setNote(null)
+  }, [run, setNote])
 
   return (
-    <div className="flex flex-col gap-6 p-5">
-      <UnannotatedBanner run={run} />
+    <div className="wc">
+      <Verdict
+        run={run}
+        onFix={canFix && fix ? () => { void fix.copy() } : undefined}
+        fixLabel={fix?.label}
+      />
 
-      <ExecutionGraph run={run} onViewFull={() => onSwitchTab('Pipeline')} onSelectNode={setSelectedNode} />
+      {canFix && fix && (fix.open || (fix.busy && !fix.payload)) && (
+        <FixPromptBody
+          node={fix?.payload?.node ?? who}
+          sourcePath={fix?.payload?.source_path}
+          prompt={fix?.payload?.prompt}
+          error={fix?.error}
+          copied={fix?.copied}
+          busy={fix?.busy}
+          onCopy={fix ? () => { void fix.copy() } : undefined}
+          onHide={fix ? () => fix.setOpen(false) : undefined}
+        />
+      )}
 
-      <AIAnalysisSummaryCard run={run} onViewFull={() => onSwitchTab('AI Analysis')} />
+      {nodes > 0 && (
+        <div>
+          <p className="cap">
+            <span>Execution graph · {nodes} nodes</span>
+            <a href="#" onClick={(e) => { e.preventDefault(); onSwitchTab('Pipeline') }}>Expand</a>
+          </p>
+          <ExecutionGraph run={run} flush selectedNode={selectedNode} onSelectNode={setSelectedNode} />
+        </div>
+      )}
 
-      <RunMetricsBar run={run} />
+      <Facts run={run} />
 
-      <StepInspector run={run} selectedNodeName={selectedNode} onDismiss={() => setSelectedNode(null)} />
+      <FindingsPanel
+        findings={findings}
+        runId={run.run_id}
+        culprit={who}
+        onSelectNode={setSelectedNode}
+      />
+
+      <Analysis run={run} onViewFull={() => onSwitchTab('AI Analysis')} />
+
+      <div id="step-inspector">
+        <StepInspector run={run} selectedNodeName={selectedNode} onDismiss={() => setSelectedNode(null)} />
+      </div>
 
       <ReplayBranches run={run} allRuns={allRuns} onSwitchTab={onSwitchTab} />
     </div>

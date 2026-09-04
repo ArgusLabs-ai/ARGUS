@@ -156,11 +156,15 @@ interface GNode {
 /* ── component ───────────────────────────────────────────────── */
 
 export default function ExecutionGraph({
-  run, onViewFull, onSelectNode,
+  run, onViewFull, onSelectNode, flush = false, selectedNode = null,
 }: {
   run: RunRecord
   onViewFull?: () => void
   onSelectNode?: (n: string) => void
+  /** Flush mode: no toolbar, hairline top/bottom, sized to its content —
+      the overview idiom. The default is the full canvas with controls. */
+  flush?: boolean
+  selectedNode?: string | null
 }) {
   const names = useMemo(() => run.graph_node_names ?? [], [run])
   const edgeMap = useMemo(() => run.graph_edge_map ?? {}, [run])
@@ -168,7 +172,10 @@ export default function ExecutionGraph({
 
   const initial = useMemo<GNode[]>(() => {
     const layers = dagLayers(names, edgeMap)
-    const rootSet = new Set(run.root_cause_chain ?? [])
+    const widest = Math.max(1, ...layers.map((l) => l.length))
+    const yCentre = ((widest - 1) * GAP_Y) / 2
+    /* One crown: the origin. The rest of the chain reads from the red edge. */
+    const rootSet = new Set((run.root_cause_chain ?? []).slice(0, 1))
     const stepFor = (n: string) => (run.steps ?? []).find((s) => s.node_name === n)
     const out: GNode[] = []
     layers.forEach((layer, col) => {
@@ -180,14 +187,14 @@ export default function ExecutionGraph({
           status: mapStatus(st?.status),
           ms: st ? Math.round(st.duration_ms) : null,
           x: PAD + col * (W + GAP_X),
-          y: PAD + row * GAP_Y - ((layer.length - 1) * GAP_Y) / 2 + 150,
+          y: PAD + row * GAP_Y - ((layer.length - 1) * GAP_Y) / 2 + (flush ? yCentre : 150),
           isRoot: rootSet.has(id),
           tools: toolsFor(run, id),
         })
       })
     })
     return out
-  }, [run, names, edgeMap])
+  }, [run, names, edgeMap, flush])
 
   const [nodes, setNodes] = useState<GNode[]>(initial)
   useEffect(() => setNodes(initial), [initial])
@@ -195,6 +202,7 @@ export default function ExecutionGraph({
   const [scale, setScale] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [selected, setSelected] = useState<string | null>(null)
+  useEffect(() => { if (flush) setSelected(selectedNode) }, [flush, selectedNode])
   const [panning, setPanning] = useState(false)
   const canvasRef = useRef<HTMLDivElement>(null)
   const drag = useRef<{ id: string | null; ox: number; oy: number } | null>(null)
@@ -243,12 +251,14 @@ export default function ExecutionGraph({
     const el = canvasRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
+      /* In the flush overview the page owns scroll; zoom needs a modifier. */
+      if (flush && !(e.ctrlKey || e.metaKey)) return
       e.preventDefault()
       setScale((s) => Math.min(2, Math.max(0.35, s - e.deltaY * 0.0015)))
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [])
+  }, [flush])
 
   function nudge(e: React.KeyboardEvent, id: string) {
     const d = e.shiftKey ? 24 : 8
@@ -306,48 +316,46 @@ export default function ExecutionGraph({
     w: Math.max(900, ...nodes.map((n) => n.x + W + 80)),
     h: Math.max(470, ...nodes.map((n) => n.y + NODE_H + TOOL_GAP_Y + 90)),
   }), [nodes])
+  const flushNatural = useMemo(() => {
+    const anyTools = initial.some((n) => n.tools.length > 0)
+    const bottom = Math.max(0, ...initial.map((n) => n.y + NODE_H + (n.tools.length ? TOOL_GAP_Y + 26 : 0)))
+    const right = Math.max(0, ...initial.map((n) => n.x + W)) + PAD
+    return { h: Math.max(190, bottom + (anyTools ? 28 : 40)), w: right }
+  }, [initial])
+
+  /* Flush graphs fit the workspace width: wide pipelines scale down rather
+     than run off the right edge, and the canvas height follows the scale. */
+  const [fit, setFit] = useState(1)
+  useEffect(() => {
+    if (!flush) return
+    const el = canvasRef.current
+    if (!el) return
+    const measure = () => {
+      const avail = el.clientWidth
+      if (!avail) return
+      const s = Math.min(1, Math.max(0.45, avail / flushNatural.w))
+      setFit(s)
+      setScale(s)
+      setPan({ x: Math.max(0, (avail - flushNatural.w * s) / 2), y: 0 })
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [flush, flushNatural])
+  const flushH = Math.max(150, Math.round(flushNatural.h * fit))
 
   const sel = selected ? byId[selected] : null
 
-  return (
-    <div className="gwrap">
-      <div className="gbar">
-        <h2 className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>Execution Graph</h2>
-        <span className="chip chip-idle !h-[20px] !px-[7px] font-mono !text-[11px]">{nodes.length} nodes</span>
-        <span className="gbar-sp" />
-        <div className="glegend">
-          {(['pass', 'crashed', 'fail', 'semantic', 'degraded', 'skipped'] as S[]).map((s) => (
-            <span key={s} className="glegend-i">
-              <i style={{ background: STATUS_META[s].color }} />
-              {STATUS_META[s].label}
-            </span>
-          ))}
-        </div>
-        <div className="gzoom">
-          <button type="button" aria-label="Zoom out" onClick={() => setScale((s) => Math.max(0.35, s - 0.15))}>−</button>
-          <span className="gzoom-val">{Math.round(scale * 100)}%</span>
-          <button type="button" aria-label="Zoom in" onClick={() => setScale((s) => Math.min(2, s + 0.15))}>+</button>
-        </div>
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm btn-icon"
-          aria-label="Reset view"
-          onClick={() => { setScale(1); setPan({ x: 0, y: 0 }); setNodes(initial) }}
-        >
-          <Maximize2 />
-        </button>
-        {onViewFull && (
-          <button type="button" className="btn btn-sm btn-ghost" onClick={onViewFull}>Full view</button>
-        )}
-      </div>
-
+  const canvas = (
       <div
         ref={canvasRef}
-        className={`gcanvas${panning ? ' panning' : ''}`}
+        className={`gcanvas${panning ? ' panning' : ''}${flush ? ' flush' : ''}`}
         onPointerDown={onCanvasDown}
+        style={flush ? { height: flushH } : undefined}
       >
-        <span className="gtick tl" /><span className="gtick tr" />
-        <span className="gtick bl" /><span className="gtick br" />
+        {!flush && (<><span className="gtick tl" /><span className="gtick tr" />
+        <span className="gtick bl" /><span className="gtick br" /></>)}
 
         <div
           style={{
@@ -429,7 +437,7 @@ export default function ExecutionGraph({
           })}
         </div>
 
-        {sel && (
+        {sel && !flush && (
           <div className="ginsp">
             <div className="ginsp-h">
               <span className="gnode-name">{sel.id}</span>
@@ -454,6 +462,43 @@ export default function ExecutionGraph({
           </div>
         )}
       </div>
+  )
+
+  if (flush) return <div className="flushcanvas graph">{canvas}</div>
+
+  return (
+    <div className="gwrap">
+      <div className="gbar">
+        <h2 className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>Execution Graph</h2>
+        <span className="chip chip-idle !h-[20px] !px-[7px] font-mono !text-[11px]">{nodes.length} nodes</span>
+        <span className="gbar-sp" />
+        <div className="glegend">
+          {(['pass', 'crashed', 'fail', 'semantic', 'degraded', 'skipped'] as S[]).map((s) => (
+            <span key={s} className="glegend-i">
+              <i style={{ background: STATUS_META[s].color }} />
+              {STATUS_META[s].label}
+            </span>
+          ))}
+        </div>
+        <div className="gzoom">
+          <button type="button" aria-label="Zoom out" onClick={() => setScale((s) => Math.max(0.35, s - 0.15))}>−</button>
+          <span className="gzoom-val">{Math.round(scale * 100)}%</span>
+          <button type="button" aria-label="Zoom in" onClick={() => setScale((s) => Math.min(2, s + 0.15))}>+</button>
+        </div>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm btn-icon"
+          aria-label="Reset view"
+          onClick={() => { setScale(1); setPan({ x: 0, y: 0 }); setNodes(initial) }}
+        >
+          <Maximize2 />
+        </button>
+        {onViewFull && (
+          <button type="button" className="btn btn-sm btn-ghost" onClick={onViewFull}>Full view</button>
+        )}
+      </div>
+
+      {canvas}
     </div>
   )
 }

@@ -1281,3 +1281,58 @@ def test_cli_node_and_sanitized_flags(project: Path) -> None:
 def test_cli_unknown_run_exits_nonzero(project: Path) -> None:
     result = CliRunner().invoke(app, ["fix", "doesnotexist"])
     assert result.exit_code == 1
+
+
+# ── Dashboard route ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.integration
+def test_api_fix_returns_the_argus_fix_prompt(project: Path) -> None:
+    """GET /api/runs/<id>/fix is the same markdown `argus fix` prints."""
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    from argus.cli.cmd_open_ui import _make_handler
+
+    save_run(_cascade_record())
+    runs_dir = project / ".argus" / "runs"
+    logs_dir = project / ".argus" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    handler = _make_handler(runs_dir, logs_dir, None, project)
+    server = ThreadingHTTPServer(("localhost", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+
+    def get(path: str):
+        try:
+            with urllib.request.urlopen(f"http://localhost:{port}{path}", timeout=10) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read() or b"{}")
+
+    try:
+        status, body = get("/api/runs/a1b2c3d4e5f6/fix")
+        assert status == 200, body
+        assert body["node"] == "retrieve"
+        assert body["prompt"].startswith("# Fix: ")
+        assert "src/nodes/retrieval.py:1" in body["prompt"]
+
+        status, targeted = get("/api/runs/a1b2c3d4e5f6/fix?node=classify")
+        assert status == 200, targeted
+        assert targeted["node"] == "classify"
+        assert targeted["prompt"] != body["prompt"]
+
+        status, scrubbed = get("/api/runs/a1b2c3d4e5f6/fix?sanitized=1")
+        assert status == 200, scrubbed
+        assert "Q3 revenue breakdown" not in scrubbed["prompt"]
+
+        status, missing = get("/api/runs/does-not-exist/fix")
+        assert status == 404
+        assert "error" in missing
+    finally:
+        server.shutdown()
+        server.server_close()
