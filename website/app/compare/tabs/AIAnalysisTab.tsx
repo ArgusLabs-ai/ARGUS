@@ -404,7 +404,7 @@ function CompareAnalysisCard({ analysis }: { analysis: CompareAnalysisResult }) 
   )
 }
 
-export default function AIAnalysisTab({ runA, runB, isLocal = false }: { runA: RunRecord; runB: RunRecord; isLocal?: boolean }) {
+export default function AIAnalysisTab({ runA, runB }: { runA: RunRecord; runB: RunRecord }) {
   const invA = runA.llm_investigation
   const invB = runB.llm_investigation
   const bLabel = runBLabel(runA, runB)
@@ -414,7 +414,6 @@ export default function AIAnalysisTab({ runA, runB, isLocal = false }: { runA: R
   const [compareError, setCompareError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!isLocal) return
     setCompareLoading(true)
     setCompareError(null)
     fetch('/api/compare-analysis', {
@@ -432,7 +431,7 @@ export default function AIAnalysisTab({ runA, runB, isLocal = false }: { runA: R
       })
       .catch((e) => setCompareError(e.message))
       .finally(() => setCompareLoading(false))
-  }, [runA.run_id, runB.run_id, isLocal])
+  }, [runA.run_id, runB.run_id])
 
   const bothTriggered = invA?.triggered && invB?.triggered
   const noPerRunAnalysis = !invA?.triggered && !invB?.triggered

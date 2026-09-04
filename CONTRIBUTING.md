@@ -50,14 +50,15 @@ ARGUS currently has no export integrations. These would be high-impact contribut
 
 ### Web UI — Planned Pages
 
-Several pages in the dashboard are stubbed but not yet implemented (marked "soon" in the sidebar):
+These pages are **planned**, not stubbed in the sidebar. The shipped dashboard shows
+Runs, Compare, Approvals, Guide, Changelog, and Settings. Maintainers can restore
+the planned list with `?preview=1` (documented in `website/README.md`).
 
 - **Traces** — distributed tracing view across pipeline runs
 - **Evaluation** — benchmark pipelines against golden datasets
 - **Graphs** — visualize pipeline topology and evolution over time
 - **Alerts** — configurable alert rules (failure rate thresholds, latency spikes)
 - **Datasets** — manage test datasets for regression testing
-- **Settings** — UI for configuration (currently CLI-only)
 - **Logs Comparison** — side-by-side log diff in the Compare view
 
 ### Unit Tests

@@ -351,4 +351,6 @@ export interface RunSummary {
   parent_run_id: string | null
   replay_from_step?: string | null
   alias?: string | null
+  origins?: string[]
+  finding_nodes?: string[]
 }

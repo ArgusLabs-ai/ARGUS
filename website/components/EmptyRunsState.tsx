@@ -1,5 +1,11 @@
 'use client'
 
+/* Empty state — spec `.empty`: dashed frame, a glyph, one sentence, one
+   primary action. The demo command is the primary action; attaching to a
+   real graph is the secondary. */
+
+import { useState } from 'react'
+import Link from 'next/link'
 import type { ServingInfo } from '@/lib/hooks'
 
 function pathsDiffer(a?: string, b?: string): boolean {
@@ -8,53 +14,49 @@ function pathsDiffer(a?: string, b?: string): boolean {
   return norm(a) !== norm(b)
 }
 
+const DEMO_CMD = 'argus demo --open'
+
 export default function EmptyRunsState({ serving }: { serving: ServingInfo | null }) {
   const wrongDir = pathsDiffer(serving?.cwd, serving?.project_root)
+  const [copied, setCopied] = useState(false)
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(DEMO_CMD)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1200)
+    } catch {
+      setCopied(false)
+    }
+  }
 
   return (
-    <div className="px-6 py-16 text-center" style={{ color: 'var(--text-muted)' }}>
-      <div
-        className="mx-auto mb-5 w-12 h-12 rounded-xl flex items-center justify-center"
-        style={{ background: 'var(--bg-elevated, var(--muted))' }}
-      >
-        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-          <path
-            d="M9 1.5L16.5 5.5V12.5L9 16.5L1.5 12.5V5.5L9 1.5Z"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <circle cx="9" cy="9" r="2" stroke="currentColor" strokeWidth="1" />
-        </svg>
-      </div>
-      <div className="text-sm font-medium" style={{ color: 'var(--text-secondary, var(--foreground))' }}>
-        {wrongDir ? 'No runs in the directory this UI is serving' : 'No runs yet'}
-      </div>
-      <p className="mx-auto mt-2 max-w-md text-[13px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-        ARGUS writes runs under the project root (git / pyproject.toml / $ARGUS_DIR),
-        not necessarily the folder you launched <code className="font-mono">argus ui</code> from.
+    <div className="empty" style={{ maxWidth: 560, margin: '40px auto 0', width: '100%' }}>
+      <svg className="empty-glyph" width="34" height="34" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+        <path d="M9 1.5 16.5 5.5v7L9 16.5 1.5 12.5v-7L9 1.5Z" stroke="var(--ink-3)" strokeWidth="1.2" />
+        <circle cx="9" cy="9" r="2.2" stroke="var(--ink-3)" strokeWidth="1.1" />
+        <circle cx="9" cy="9" r=".9" fill="var(--ink-3)" />
+      </svg>
+      <h4>{wrongDir ? 'No runs in the directory this UI is serving' : 'No runs recorded yet'}</h4>
+      <p>
+        Wrap your graph with <code>ArgusWatcher(graph)</code> and run it once. Findings appear here within a
+        second of the run finishing.
       </p>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-primary" onClick={copy} title="Copy to clipboard">
+          <code style={{ background: 'transparent', color: 'inherit', padding: 0, fontSize: 12.5 }}>{DEMO_CMD}</code>
+          <span style={{ opacity: 0.8, fontWeight: 500 }}>{copied ? '· copied' : '· copy'}</span>
+        </button>
+        <Link href="/guide" className="btn">Attach to my graph</Link>
+      </div>
       {serving?.runs_dir && (
-        <p className="mt-3 font-mono text-[12px] break-all" style={{ color: 'var(--text-secondary, var(--foreground))' }}>
-          looking in {serving.runs_dir}
+        <p style={{ marginTop: 22, marginBottom: 0, fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--ink-4)', wordBreak: 'break-all' }}>
+          reading from {serving.runs_dir}
+          {wrongDir && serving.cwd && serving.project_root && (
+            <><br />started from {serving.cwd} · project root {serving.project_root}</>
+          )}
         </p>
       )}
-      {wrongDir && serving?.cwd && serving?.project_root && (
-        <p className="mt-1 font-mono text-[11px] break-all" style={{ color: 'var(--text-muted)' }}>
-          started from {serving.cwd} · project root {serving.project_root}
-        </p>
-      )}
-      <ul className="mx-auto mt-6 max-w-sm space-y-2 text-left text-[13px] leading-relaxed" style={{ color: 'var(--text-secondary, var(--foreground))' }}>
-        <li>1. Run the graph with ARGUS attached (same project).</li>
-        <li>
-          2. Confirm the run exists:{' '}
-          <code className="font-mono">argus show last</code>
-        </li>
-        <li>
-          3. If that works but this table is empty, start{' '}
-          <code className="font-mono">argus ui</code> from the project root — not a nested cwd.
-        </li>
-      </ul>
     </div>
   )
 }

@@ -120,7 +120,7 @@ export default function EvaluationBuilder({ onEval, currentEval }: Props) {
             className="text-[10px] font-semibold uppercase tracking-widest"
             style={{ color: 'var(--text-muted)' }}
           >
-            Evaluation <span style={{ opacity: 0.5, fontWeight: 400, textTransform: 'none', letterSpacing: 'normal' }}>(soon)</span>
+            Evaluation
           </span>
           <div className="flex items-center gap-2">
             <button
