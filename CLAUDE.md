@@ -38,6 +38,8 @@ argus diff <run-a> <run-b>
 argus replay <run-id> <node>
 argus ui
 pytest --argus                       # fail tests whose ARGUS run was not clean
+# CI eat-own-cooking gate (#56):
+# pytest tests/test_argus_ci_gate.py --argus
 ```
 
 ## Architecture
@@ -85,6 +87,7 @@ Every wrapped node executes through this pipeline:
 | `src/argus/check.py` | CI gate: evaluate a `RunRecord` as clean vs crash / silent_failure / semantic_fail |
 | `src/argus/cli/cmd_check.py` | `argus check <id>` / `ARGUS_RUN_ID=<id> argus check` / `argus check last` — grade one run, print its file, and exit 1 when it was not clean |
 | `src/argus/pytest_plugin.py` | pytest `--argus` plugin: fail tests whose instrumented run was not clean |
+| `tests/test_argus_ci_gate.py` | Narrow sync-invoke graph run under CI `pytest --argus` (eat-own-cooking; #56) |
 | `src/argus/cli/main.py` | `argus` CLI entry point (Typer) |
 | `src/argus/cli/cmd_doctor.py` | `argus doctor` diagnostic command |
 | `src/argus/findings.py` | `collect_findings()` — builds `RunRecord.findings`; also the one-line terminal summary after invoke |
