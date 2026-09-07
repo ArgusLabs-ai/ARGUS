@@ -13,6 +13,21 @@ interface Release {
 
 const RELEASES: Release[] = [
   {
+    version: '0.11.0',
+    title: 'Findings, check JSON, replay patches',
+    date: '2026-09-07',
+    tag: 'minor',
+    highlights: [
+      'RunRecord.findings: one normalized failure list per run (older records back-filled on load)',
+      'argus check --format json and --fail-on; check grades the requested run',
+      'argus replay --set / --delete / --patch / --dry-run',
+      'pytest --argus watches ainvoke / stream / astream',
+      'chat_response and code_generation behavior profiles',
+      'Truncation, stale-context, and trailing etc. signatures; warning-severity matches no longer fail a node on their own',
+      'Dashboard /runs/<id> deep links',
+    ],
+  },
+  {
     version: '0.10.5',
     title: 'Double-encoded JSON detection',
     date: '2026-08-25',
