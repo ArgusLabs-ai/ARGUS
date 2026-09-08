@@ -3,8 +3,9 @@ const isDev = process.env.NODE_ENV === 'development'
 
 const nextConfig = {
   reactStrictMode: true,
-  // Static export for local bundled UI; on Vercel, use standard SSR
-  ...(process.env.VERCEL ? {} : { output: 'export', trailingSlash: true }),
+  // Static export for the bundled `argus ui` dist. Skip it in `next dev`
+  // so /api rewrites to the Python server actually run.
+  ...(process.env.VERCEL || isDev ? {} : { output: 'export', trailingSlash: true }),
   images: {
     unoptimized: true,
     remotePatterns: [

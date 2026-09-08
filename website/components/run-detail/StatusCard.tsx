@@ -4,7 +4,7 @@ import type { RunRecord } from '@/lib/types'
 import { STATUS_DOT } from '@/lib/run-utils'
 
 export default function StatusCard({ run }: { run: RunRecord }) {
-  const statusInfo = STATUS_DOT[run.overall_status] ?? { dot: '\u25CF', color: '#5d6370' }
+  const statusInfo = STATUS_DOT[run.overall_status] ?? { dot: '\u25CF', color: 'var(--ink-4)' }
   const rootCause = run.first_failure_step ?? run.root_cause_chain?.[0]
   const confidence = run.llm_investigation?.confidence ?? null
   const confPct = confidence !== null ? Math.round(confidence * 100) : null

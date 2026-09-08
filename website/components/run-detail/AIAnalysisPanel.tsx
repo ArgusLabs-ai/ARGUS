@@ -19,9 +19,9 @@ function renderWithCode(text: string): (string | JSX.Element)[] {
         key={m.index}
         className="text-[12px] font-mono px-1.5 py-0.5 rounded"
         style={{
-          background: 'rgba(91,106,240,0.06)',
+          background: 'var(--iris-dim)',
           color: 'var(--primary)',
-          border: '1px solid rgba(91,106,240,0.12)',
+          border: '1px solid var(--iris-dim)',
         }}
       >
         {code}
@@ -157,7 +157,7 @@ export default function AIAnalysisPanel({ run }: { run: RunRecord }) {
                 Pipeline healthy
               </span>
             </div>
-            <p className="text-[14px] leading-relaxed" style={{ color: '#aaaaaa', maxWidth: '680px' }}>
+            <p className="text-[14px] leading-relaxed" style={{ color: 'var(--ink-2)', maxWidth: '680px' }}>
               {inv?.root_cause_explanation}
             </p>
           </div>
@@ -188,7 +188,7 @@ export default function AIAnalysisPanel({ run }: { run: RunRecord }) {
                 <p className="text-[13px] text-text-tertiary">
                   Root Cause Reason:
                 </p>
-                <p className="mt-1.5 text-sm leading-relaxed text-[#aaaaaa]" style={{ maxWidth: '680px' }}>
+                <p className="mt-1.5 text-sm leading-relaxed text-[var(--ink-2)]" style={{ maxWidth: '680px' }}>
                   {inv?.root_cause_explanation}
                 </p>
               </div>
@@ -200,7 +200,7 @@ export default function AIAnalysisPanel({ run }: { run: RunRecord }) {
                 <p className="text-[13px] text-text-tertiary">
                   What Happened:
                 </p>
-                <p className="mt-1.5 text-sm leading-relaxed text-[#aaaaaa]" style={{ maxWidth: '680px' }}>
+                <p className="mt-1.5 text-sm leading-relaxed text-[var(--ink-2)]" style={{ maxWidth: '680px' }}>
                   {inv?.degradation_narrative}
                 </p>
               </div>
@@ -267,7 +267,7 @@ export default function AIAnalysisPanel({ run }: { run: RunRecord }) {
                                 <span
                                   className="inline-flex items-center shrink-0 text-[11px] font-mono font-bold px-2 py-0.5 rounded mt-0.5 text-muted-foreground"
                                   style={{
-                                    background: 'rgba(255,255,255,0.06)',
+                                    background: 'var(--hover)',
                                   }}
                                 >
                                   {nodeName}
@@ -285,7 +285,7 @@ export default function AIAnalysisPanel({ run }: { run: RunRecord }) {
                             {codePart && (
                               <div className="mt-3 overflow-hidden rounded-[8px] border border-border bg-code">
                                 <pre className="scrollbar-thin overflow-x-auto px-4 py-3 font-mono text-[12.5px] leading-relaxed">
-                                  <code className="text-[#c8c8c8]">{codePart}</code>
+                                  <code className="text-[var(--ink-2)]">{codePart}</code>
                                 </pre>
                               </div>
                             )}
@@ -338,7 +338,7 @@ export default function AIAnalysisPanel({ run }: { run: RunRecord }) {
                         </span>
                         <span
                           className="px-2 py-0.5 rounded-full text-[10px] font-medium"
-                          style={{ background: 'rgba(91,106,240,0.06)', color: 'var(--primary)' }}
+                          style={{ background: 'var(--iris-dim)', color: 'var(--primary)' }}
                         >
                           {h.category}
                         </span>

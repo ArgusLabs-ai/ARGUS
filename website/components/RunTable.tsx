@@ -9,14 +9,14 @@ import { useServingInfo } from '@/lib/hooks'
 
 function getRunShape(run: RunSummary): { label: string; color: string } | null {
   if (run.overall_status === 'clean' && !run.first_failure_step) {
-    return { label: 'clean', color: '#3d9e7d' }
+    return { label: 'clean', color: 'var(--ok)' }
   }
   if (!run.first_failure_step) return null
   const firstNode = run.graph_node_names.find((n) => !n.startsWith('__'))
   if (run.first_failure_step === firstNode) {
-    return { label: 'early fail', color: '#d65c5c' }
+    return { label: 'early fail', color: 'var(--tool)' }
   }
-  return { label: 'partial', color: '#d49a2e' }
+  return { label: 'partial', color: 'var(--quality)' }
 }
 
 function relativeTime(iso: string): string {
@@ -98,7 +98,7 @@ export default function RunTable({ runs, evalState }: RunTableProps) {
                 }}
                 onMouseEnter={(e) => {
                   const el = e.currentTarget as HTMLTableRowElement
-                  el.style.background = isFailed ? 'rgba(214,92,92,0.03)' : 'rgba(124,127,199,0.03)'
+                  el.style.background = isFailed ? 'var(--tool-dim)' : 'var(--iris-dim)'
                 }}
                 onMouseLeave={(e) => {
                   const el = e.currentTarget as HTMLTableRowElement
@@ -169,7 +169,7 @@ export default function RunTable({ runs, evalState }: RunTableProps) {
                     {run.first_failure_step ? (
                       <span
                         className="text-[12px] font-mono font-medium"
-                        style={{ color: '#d65c5c' }}
+                        style={{ color: 'var(--tool)' }}
                       >
                         {run.first_failure_step}
                       </span>

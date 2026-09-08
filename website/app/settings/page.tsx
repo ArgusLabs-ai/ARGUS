@@ -158,7 +158,7 @@ export default function SettingsPage() {
           <div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
             <div className="flex items-center gap-3">
               {/* Linear logo */}
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: '#5e6ad2' }}>
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'var(--iris)' }}>
                 <svg width="16" height="16" viewBox="0 0 100 100" fill="none">
                   <path d="M1.22541 61.5228C0.444112 60.5535 0.444112 59.1375 1.22541 58.1682L41.8316 7.17174C42.613 6.20254 44.029 6.20254 44.8103 7.17174C53.7553 18.2449 53.7553 33.1119 44.8103 44.1852L4.20414 95.1816C3.42284 96.1508 2.00684 96.1508 1.22541 95.1816V61.5228Z" fill="white"/>
                   <path d="M55.1897 44.1852C64.1347 33.1119 64.1347 18.2449 55.1897 7.17174C54.4083 6.20254 55.0769 4.78654 56.3052 4.78654H98.4633C99.5808 4.78654 100.486 5.69207 100.486 6.80947V95.1905C100.486 96.3079 99.5808 97.2135 98.4633 97.2135H56.3052C55.0769 97.2135 54.4083 95.7975 55.1897 94.8282L55.1897 44.1852Z" fill="white"/>
@@ -174,8 +174,8 @@ export default function SettingsPage() {
             <div className="flex items-center gap-2">
               {isConnected ? (
                 <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium"
-                  style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#22c55e' }} />
+                  style={{ background: 'var(--ok-dim)', color: 'var(--ok)' }}>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--ok)' }} />
                   Connected
                 </span>
               ) : (
@@ -231,8 +231,8 @@ export default function SettingsPage() {
                     disabled={testing || (!apiKey.trim() && !settings?.linear_api_key_set)}
                     className="px-3 py-2.5 rounded-lg text-[12px] font-semibold transition-all whitespace-nowrap"
                     style={{
-                      background: '#5e6ad2',
-                      color: '#fff',
+                      background: 'var(--iris)',
+                      color: 'var(--on-accent)',
                       opacity: (testing || (!apiKey.trim() && !settings?.linear_api_key_set)) ? 0.5 : 1,
                     }}
                   >
@@ -285,8 +285,8 @@ export default function SettingsPage() {
                       disabled={!selectedTeamId || saving}
                       className="px-3 py-2.5 rounded-lg text-[12px] font-semibold transition-all"
                       style={{
-                        background: '#7c7fc7',
-                        color: '#fff',
+                        background: 'var(--iris)',
+                        color: 'var(--on-accent)',
                         opacity: (!selectedTeamId || saving) ? 0.5 : 1,
                       }}
                     >
@@ -305,9 +305,9 @@ export default function SettingsPage() {
               <div
                 className="rounded-lg px-3.5 py-2.5 text-[12px] font-medium"
                 style={{
-                  background: status.type === 'success' ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-                  color: status.type === 'success' ? '#22c55e' : '#ef4444',
-                  border: `1px solid ${status.type === 'success' ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
+                  background: status.type === 'success' ? 'var(--ok-dim)' : 'var(--tool-dim)',
+                  color: status.type === 'success' ? 'var(--ok)' : 'var(--tool)',
+                  border: `1px solid ${status.type === 'success' ? 'color-mix(in srgb, var(--ok) 34%, transparent)' : 'color-mix(in srgb, var(--tool) 34%, transparent)'}`,
                 }}
               >
                 {status.message}
@@ -324,8 +324,8 @@ export default function SettingsPage() {
                   className="px-3 py-2 rounded-lg text-[12px] font-medium transition-all"
                   style={{
                     background: 'transparent',
-                    border: '1px solid rgba(239,68,68,0.3)',
-                    color: '#ef4444',
+                    border: '1px solid color-mix(in srgb, var(--tool) 45%, transparent)',
+                    color: 'var(--tool)',
                     opacity: saving ? 0.5 : 1,
                   }}
                 >

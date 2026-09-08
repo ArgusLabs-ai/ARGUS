@@ -3,9 +3,9 @@
 import type { KeyChange } from '../lib/compare-utils'
 
 const ICONS: Record<string, { icon: string; color: string }> = {
-  improved:  { icon: '\u2713', color: '#22c55e' },
-  degraded:  { icon: '\u2717', color: '#ef4444' },
-  unchanged: { icon: '\u2014', color: '#6b6b6b' },
+  improved:  { icon: '\u2713', color: 'var(--ok)' },
+  degraded:  { icon: '\u2717', color: 'var(--tool)' },
+  unchanged: { icon: '\u2014', color: 'var(--ink-3)' },
 }
 
 export default function KeyChangesSummary({ changes, compact = false }: { changes: KeyChange[]; compact?: boolean }) {

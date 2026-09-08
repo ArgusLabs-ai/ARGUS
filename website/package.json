@@ -6,11 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "check:literals": "node scripts/check-no-literals.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
-    "@supabase/supabase-js": "^2.49.0",
     "@xyflow/react": "^12.11.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

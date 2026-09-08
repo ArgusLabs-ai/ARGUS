@@ -123,6 +123,7 @@ export default function SendReportDialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
+      /* ponytail: a black scrim reads correctly in both themes; not tokenised. */
       style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
@@ -161,7 +162,7 @@ export default function SendReportDialog({
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-[13px] font-medium hover:underline"
-                  style={{ color: '#7c7fc7' }}
+                  style={{ color: 'var(--iris)' }}
                 >
                   {linearIssue.identifier} — {linearIssue.title?.slice(0, 60)}
                 </a>
@@ -196,9 +197,9 @@ export default function SendReportDialog({
                       onClick={() => setCategory(active ? null : cat.value)}
                       className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all flex items-center gap-1.5"
                       style={{
-                        background: active ? 'rgba(124,127,199,0.1)' : 'transparent',
-                        border: `1px solid ${active ? '#7c7fc7' : 'var(--border-subtle)'}`,
-                        color: active ? '#7c7fc7' : 'var(--text-muted)',
+                        background: active ? 'var(--iris-dim)' : 'transparent',
+                        border: `1px solid ${active ? 'var(--iris)' : 'var(--border-subtle)'}`,
+                        color: active ? 'var(--iris)' : 'var(--text-muted)',
                       }}
                     >
                       <span>{cat.icon}</span>
@@ -238,7 +239,7 @@ export default function SendReportDialog({
                   checked={includeRun}
                   onChange={e => setIncludeRun(e.target.checked)}
                   className="rounded"
-                  style={{ accentColor: '#7c7fc7' }}
+                  style={{ accentColor: 'var(--iris)' }}
                 />
                 <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
                   Include run diagnostics for{' '}
@@ -257,7 +258,7 @@ export default function SendReportDialog({
                   checked={sendToLinear}
                   onChange={e => setSendToLinear(e.target.checked)}
                   className="rounded"
-                  style={{ accentColor: '#7c7fc7' }}
+                  style={{ accentColor: 'var(--iris)' }}
                 />
                 <span className="text-[12px] flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
                   Create Linear issue
@@ -277,23 +278,23 @@ export default function SendReportDialog({
               </p>
               <div className="flex flex-col gap-1 text-[11.5px]" style={{ color: 'var(--text-secondary)' }}>
                 <div className="flex items-center gap-1.5">
-                  <span style={{ color: '#22c55e' }}>&#x2713;</span> System info (Python, LangGraph, ARGUS version)
+                  <span style={{ color: 'var(--ok)' }}>&#x2713;</span> System info (Python, LangGraph, ARGUS version)
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span style={{ color: '#22c55e' }}>&#x2713;</span> Storage health &amp; optional deps status
+                  <span style={{ color: 'var(--ok)' }}>&#x2713;</span> Storage health &amp; optional deps status
                 </div>
                 {runId && includeRun && (
                   <div className="flex items-center gap-1.5">
-                    <span style={{ color: '#22c55e' }}>&#x2713;</span> Run topology, node statuses, errors (no input/output data)
+                    <span style={{ color: 'var(--ok)' }}>&#x2713;</span> Run topology, node statuses, errors (no input/output data)
                   </div>
                 )}
                 {sendToLinear && linearConfigured && (
                   <div className="flex items-center gap-1.5">
-                    <span style={{ color: '#5e6ad2' }}>&#x2713;</span> Linear issue with label &quot;{category ? CATEGORIES.find(c => c.value === category)?.label || category : '...'}&quot;
+                    <span style={{ color: 'var(--iris)' }}>&#x2713;</span> Linear issue with label &quot;{category ? CATEGORIES.find(c => c.value === category)?.label || category : '...'}&quot;
                   </div>
                 )}
                 <div className="flex items-center gap-1.5">
-                  <span style={{ color: '#ef4444' }}>&#x2717;</span>
+                  <span style={{ color: 'var(--tool)' }}>&#x2717;</span>
                   <span style={{ color: 'var(--text-muted)' }}>No pipeline data, API keys, or credentials</span>
                 </div>
               </div>
@@ -307,7 +308,7 @@ export default function SendReportDialog({
             </div>
 
             {error && (
-              <p className="text-[12px]" style={{ color: '#ef4444' }}>{error}</p>
+              <p className="text-[12px]" style={{ color: 'var(--tool)' }}>{error}</p>
             )}
 
             {/* Actions */}
@@ -317,8 +318,8 @@ export default function SendReportDialog({
                 disabled={!category || !description.trim() || submitting}
                 className="px-4 py-2 rounded-lg text-[13px] font-semibold transition-all"
                 style={{
-                  background: '#7c7fc7',
-                  color: '#fff',
+                  background: 'var(--iris)',
+                  color: 'var(--on-accent)',
                   opacity: (!category || !description.trim() || submitting) ? 0.5 : 1,
                 }}
               >

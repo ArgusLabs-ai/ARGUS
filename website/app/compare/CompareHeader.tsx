@@ -12,7 +12,7 @@ const STATUS_DISPLAY: Record<string, string> = {
 }
 
 function statusColor(s: string) {
-  return STATUS_DOT_COLOR[s] ?? '#6b6b6b'
+  return STATUS_DOT_COLOR[s] ?? 'var(--ink-3)'
 }
 
 function selectorLabel(run: RunRecord | null, fallback: string): string {

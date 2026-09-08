@@ -18,10 +18,10 @@ export default function ChangeImpactChart({ impact, compact = false }: { impact:
   const strLen = (structural / 100) * circumference
 
   const segments = [
-    { len: posLen, offset: 0, color: '#22c55e' },
-    { len: negLen, offset: posLen, color: '#ef4444' },
-    { len: uncLen, offset: posLen + negLen, color: '#3a3f4c' },
-    { len: strLen, offset: posLen + negLen + uncLen, color: '#5b6af0' },
+    { len: posLen, offset: 0, color: 'var(--ok)' },
+    { len: negLen, offset: posLen, color: 'var(--tool)' },
+    { len: uncLen, offset: posLen + negLen, color: 'var(--line-3)' },
+    { len: strLen, offset: posLen + negLen + uncLen, color: 'var(--iris)' },
   ].filter((s) => s.len > 0)
 
   const values = [
@@ -71,10 +71,10 @@ export default function ChangeImpactChart({ impact, compact = false }: { impact:
       {/* Legend */}
       <div className={compact ? 'flex flex-col gap-1.5' : 'flex flex-col gap-2'}>
         {[
-          { color: '#22c55e', label: 'Positive', pct: impact.positive },
-          { color: '#3a3f4c', label: 'No Change', pct: impact.unchanged },
-          { color: '#ef4444', label: 'Negative', pct: impact.negative },
-          ...(structural > 0 ? [{ color: '#5b6af0', label: 'Structural', pct: structural }] : []),
+          { color: 'var(--ok)', label: 'Positive', pct: impact.positive },
+          { color: 'var(--line-3)', label: 'No Change', pct: impact.unchanged },
+          { color: 'var(--tool)', label: 'Negative', pct: impact.negative },
+          ...(structural > 0 ? [{ color: 'var(--iris)', label: 'Structural', pct: structural }] : []),
         ].map((entry) => (
           <div key={entry.label} className="flex items-center gap-2">
             <span className={`${compact ? 'w-2 h-2' : 'w-3 h-3'} rounded-full shrink-0`} style={{ background: entry.color }} />

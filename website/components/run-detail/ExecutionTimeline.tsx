@@ -91,7 +91,7 @@ export default function ExecutionTimeline({
           <div className="border-b border-border px-4 py-2" style={{ background: 'var(--code-header)' }}>
             <span className="font-mono text-[11px] text-muted-foreground">execution tree</span>
           </div>
-          <pre className="overflow-x-auto px-5 py-4 font-mono text-[13px] leading-relaxed text-[#bcbcbc]">
+          <pre className="overflow-x-auto px-5 py-4 font-mono text-[13px] leading-relaxed text-[var(--ink-2)]">
             {topo.map((line, i) => {
               const hasFail = line.includes('✗') || line.includes('✘')
               return (

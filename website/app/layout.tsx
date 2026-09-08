@@ -1,15 +1,13 @@
 import type { Metadata } from 'next'
 import { GeistSans } from 'geist/font/sans'
-import { JetBrains_Mono } from 'next/font/google'
-import Sidebar from '@/components/Sidebar'
-import { AuthProvider } from '@/lib/auth'
+import { GeistMono } from 'geist/font/mono'
+import AppShell from '@/components/shell/AppShell'
 import './globals.css'
+import './app.css'
 
-const jetbrainsMono = JetBrains_Mono({
-  variable: '--font-jetbrains-mono',
-  subsets: ['latin'],
-  display: 'swap',
-})
+// Geist Sans carries the interface; Geist Mono appears only on machine values.
+// Both are self-hosted by next/font and exposed as CSS variables that the
+// --sans / --mono tokens in globals.css read first.
 
 const SITE_URL = 'https://arguslabs.in'
 const SITE_TITLE = 'ARGUS — Production Readiness for AI Agent Pipelines'
@@ -68,8 +66,15 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`dark ${GeistSans.variable} ${jetbrainsMono.variable}`}>
+    <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable}`}>
       <head>
+        {/* Applies a stored theme before first paint so there is no flash of the
+            OS theme on reload. Must be inline and synchronous. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('argus-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}})()`,
+          }}
+        />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
@@ -103,13 +108,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           }}
         />
       </head>
-      <body className="h-screen overflow-hidden bg-background font-sans text-foreground antialiased flex">
-        <AuthProvider>
-          <Sidebar />
-          <main className="flex-1 flex flex-col h-full overflow-hidden min-w-0">
-            {children}
-          </main>
-        </AuthProvider>
+      <body>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   )
