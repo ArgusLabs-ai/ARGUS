@@ -9,8 +9,6 @@ import type { RunSummary, RunStatus } from '@/lib/types'
 import {
   ChevronRight,
   RefreshCw,
-  SlidersHorizontal,
-  ChevronDown,
   Search,
   Pencil,
   Trash2,
@@ -209,8 +207,20 @@ export default function RunListPanel({
           <h1 className="text-xl font-semibold tracking-tight text-foreground">Runs</h1>
           <p className="mt-0.5 text-[13px] text-muted-foreground">
             {counts.total} runs{' \u00b7 '}
-            <span className="text-success">{counts.clean} clean</span>{' \u00b7 '}
-            <span className="text-destructive">{counts.failed} failed</span>
+            <button
+              onClick={() => setFilter('clean')}
+              className="text-success hover:underline"
+              title="Show only clean runs"
+            >
+              {counts.clean} clean
+            </button>{' \u00b7 '}
+            <button
+              onClick={() => setFilter('crashed')}
+              className="text-destructive hover:underline"
+              title="Show only failed runs (crashed + silent failures)"
+            >
+              {counts.failed} failed
+            </button>
           </p>
           {serving?.runs_dir && (
             <p className="mt-0.5 font-mono text-[11px] text-muted-foreground/70 break-all">
@@ -219,14 +229,6 @@ export default function RunListPanel({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted">
-            <SlidersHorizontal className="h-3.5 w-3.5" />
-            Filters
-          </button>
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted">
-            Last 1h
-            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-          </button>
           <button
             onClick={() => window.location.reload()}
             className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"

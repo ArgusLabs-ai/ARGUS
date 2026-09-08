@@ -58,6 +58,18 @@ BEHAVIOR_PROFILES: dict[str, dict[str, Any]] = {
         "length_range": (200, 100_000),
         "expects_steps": True,
     },
+    "chat_response": {
+        "min_keys": 1,
+        "expects_nested": False,
+        "min_info_density": 0.30,
+        "length_range": (50, 5_000),
+    },
+    "code_generation": {
+        "min_keys": 1,
+        "expects_nested": False,
+        "min_info_density": 0.10,
+        "length_range": (10, 100_000),
+    },
 }
 
 _RETRIEVAL_KEYS = re.compile(

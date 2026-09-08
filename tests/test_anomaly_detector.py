@@ -284,3 +284,51 @@ class TestDetectAnomalies:
             "c": "",
         })
         assert len(signals) >= 1
+
+# ── chat_response / code_generation profiles ─────────────────────────────────
+
+@pytest.mark.unit
+class TestChatResponseProfile:
+    def test_clean_chat_reply_no_anomalies(self):
+        config = BehaviorConfig(default_behavior_type="chat_response")
+        reply = (
+            "Sure, I can help with that. The quarterly report shows revenue "
+            "grew 12% year over year, driven mostly by the new enterprise tier. "
+            "Support tickets dropped 8% after the onboarding flow update."
+        )
+        bt, signals = detect_anomalies("chat_node", {"message": reply}, config)
+        assert bt == "chat_response"
+        assert signals == []
+
+@pytest.mark.unit
+class TestCodeGenerationProfile:
+    def test_clean_code_snippet_no_anomalies(self):
+        config = BehaviorConfig(default_behavior_type="code_generation")
+        snippet = (
+            "def fibonacci(n):\n"
+            "    if n <= 1:\n"
+            "        return n\n"
+            "    a, b = 0, 1\n"
+            "    for _ in range(n - 1):\n"
+            "        a, b = b, a + b\n"
+            "    return b\n"
+        )
+        bt, signals = detect_anomalies("code_node", {"code": snippet}, config)
+        assert bt == "code_generation"
+        assert signals == []
+
+    def test_indented_class_no_repetition_false_positive(self):
+        config = BehaviorConfig(default_behavior_type="code_generation")
+        snippet = (
+            "class Point:\n"
+            "    def __init__(self, x, y):\n"
+            "        self.x = x\n"
+            "        self.y = y\n\n"
+            "    def __repr__(self):\n"
+            "        return f'Point({self.x}, {self.y})'\n\n"
+            "    def __eq__(self, other):\n"
+            "        return self.x == other.x and self.y == other.y\n"
+        )
+        bt, signals = detect_anomalies("code_node", {"code": snippet}, config)
+        assert bt == "code_generation"
+        assert signals == []

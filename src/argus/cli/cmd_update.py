@@ -10,7 +10,7 @@ from rich.console import Console
 
 _console = Console()
 
-_REPO = "VaradDurge/ARGUS"
+_REPO = "ArgusLabs-ai/ARGUS"
 _PACKAGE = "argus-agents"
 _API_URL = f"https://api.github.com/repos/{_REPO}/releases/latest"
 

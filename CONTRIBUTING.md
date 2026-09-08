@@ -2,6 +2,12 @@
 
 Thanks for your interest in contributing. ARGUS is a production readiness platform for AI agent pipelines — there's a lot of surface area and we welcome help across the board.
 
+## Discord
+
+**Join the [ARGUS Discord](https://discord.gg/67XTFTDSgd) before opening a PR.**
+
+That is where we post updates, answer questions, and talk through PRs. GitHub is still the place issues and pull requests land — Discord is how you stay in the loop so you are not coding against a stale plan.
+
 ## Areas Where Contribution Is Needed
 
 ### Framework Adapters — Planned (Not Yet Open for PRs)
@@ -153,6 +159,7 @@ entire roadmap in one pass. If you're using one on this repo, hold it to the sam
 
 ## Pull Requests
 
+- Join the [Discord](https://discord.gg/67XTFTDSgd) before you open the PR
 - Keep PRs focused — one fix or feature per PR
 - For new detection logic, include a fixture run that the old code misses and the new code catches
 - Don't add co-author attribution in commits
@@ -181,7 +188,8 @@ contributions**. PRs that modify them will be closed.
 ## Review & Merge Process
 
 - `master` is protected: **all changes land via pull request** — no direct pushes.
-- CI (ruff + pytest on Python 3.9/3.11/3.12) must pass.
+- CI (ruff + pytest on Python 3.9/3.11/3.12) must pass, including the
+  eat-own-cooking gate: `pytest tests/test_argus_ci_gate.py --argus`.
 - At least one **code owner** approval is required (see [CODEOWNERS](.github/CODEOWNERS)).
 - Only maintainers merge to `master`.
 

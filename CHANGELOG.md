@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.0 — 2026-09-07
+
+- `RunRecord.findings` — one Finding per inspection, validator, anomaly, judge, crash, and tool-chain signal (stable id, full-sentence reason, source). Older records are back-filled on load (#60)
+- `argus check --format json` and `--fail-on crashed,silent_failure,interrupted` (#61)
+- `argus check` grades the requested run instead of the newest one (#64)
+- `argus replay` accepts `--set`, `--delete`, `--patch`, and `--dry-run` to patch recorded state before rerunning
+- `pytest --argus` watches `ainvoke` / `stream` / `astream` (#66)
+- CI runs `pytest tests/test_argus_ci_gate.py --argus` on every PR (#68)
+- Behavior profiles `chat_response` and `code_generation` (#65)
+- Truncation, stale-context, and trailing `etc.` signatures (#43, #45)
+- Warning-severity semantic signals no longer fail a node on their own (#47)
+- Dashboard `/runs/<id>` deep links (#63)
+
 ## 0.10.5 — 2026-08-25
 
 - Rule 17 — double-encoded JSON detection: a string field that parses as a JSON object/array is flagged `json_in_string` (warning). Advisory only; fields where stringified payloads are expected (`raw_response`, `log`, `payload`, …) are skipped (#26)

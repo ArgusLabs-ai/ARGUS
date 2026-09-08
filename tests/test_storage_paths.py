@@ -14,6 +14,7 @@ from argus.storage import (
     argus_dir,
     load_run,
     resolve_project_root,
+    resolve_run_path,
     save_run,
 )
 
@@ -74,6 +75,16 @@ def test_save_and_load_run_agree_when_cwd_is_nested(tmp_path, monkeypatch):
     assert path.parent == root / ".argus" / "runs"
     loaded = load_run("nested-cwd-run")
     assert loaded.run_id == "nested-cwd-run"
+
+
+@pytest.mark.unit
+def test_resolve_run_path_returns_the_exact_loaded_file(tmp_path, monkeypatch):
+    root = _git_project(tmp_path, monkeypatch)
+    record = make_run_record(events=[make_event()], run_id="resolvable-run-id")
+    saved = save_run(record)
+
+    assert resolve_run_path("resolvab") == saved
+    assert saved == root / ".argus" / "runs" / "resolvable-run-id.json"
 
 
 @pytest.mark.unit

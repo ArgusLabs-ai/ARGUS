@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import sys
 from typing import Any
 
@@ -15,7 +16,7 @@ from argus.check import evaluate_run
 from argus.cli import print_footer
 from argus.findings import format_run_finding
 from argus.models import RunRecord
-from argus.storage import last_run_id, load_run
+from argus.storage import last_run_id, load_run, resolve_run_path
 
 console = Console()
 
@@ -95,14 +96,15 @@ def check_run(
         _emit_error(str(e), as_json=as_json)
         raise typer.Exit(2) from e
 
-    target = run_id
-    if target is None or target in ("last", "run"):
-        target = last_run_id()
+    target = run_id if run_id not in (None, "last", "run") else None
+    if target is None:
+        target = os.environ.get("ARGUS_RUN_ID", "").strip() or last_run_id()
         if target is None:
             _emit_error("No runs found in .argus/runs/.", as_json=as_json)
             raise typer.Exit(1)
 
     try:
+        path = resolve_run_path(target)
         record = load_run(target)
     except (FileNotFoundError, ValueError) as e:
         _emit_error(str(e), as_json=as_json)
@@ -122,6 +124,7 @@ def check_run(
     header.append("argus check", style="bold italic")
     header.append(f"  {record.run_id}", style="italic dim")
     console.print(f"  {header}")
+    console.print(f"  [dim]checked[/dim]  {path}", soft_wrap=True)
 
     status_line = Text()
     status_line.append("  status  ", style="dim")

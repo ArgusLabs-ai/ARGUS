@@ -30,3 +30,9 @@ jobs:
 
       - name: Test
         run: pytest --tb=short
+
+      # Eat our own cooking (#56): if pytest --argus regresses, this job goes red.
+      # Narrow gate only — do not dump --argus on the full suite (intentional
+      # silent-failure tests would fail the outer gate until #54 hardens binding).
+      - name: Test pytest --argus gate
+        run: pytest tests/test_argus_ci_gate.py --argus --tb=short
