@@ -158,6 +158,7 @@ class InspectionResult:
     suspicious_empty_keys: list[str] = field(default_factory=list)
     tool_failures: list[ToolFailure] = field(default_factory=list)
     has_tool_failure: bool = False  # True if any tool_failures with severity="critical"
+    has_tool_warnings: bool = False  # True if any tool_failures with severity="warning"
     semantic_signals: list[SemanticSignal] = field(default_factory=list)
     # Upstream propagation: fields missing from input because an upstream node failed
     degraded_fields: list[str] = field(default_factory=list)
