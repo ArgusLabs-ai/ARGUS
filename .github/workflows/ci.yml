@@ -2,9 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, "pivot/**"]
   pull_request:
-    branches: [main, master]
+    # Contributors base pivot work on `pivot/fat-traces`, not master, until the
+    # recorder path replaces the wrap path. Without this those PRs get no CI.
+    branches: [main, master, "pivot/**"]
 
 jobs:
   test:
