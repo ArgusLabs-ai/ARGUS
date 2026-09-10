@@ -5,6 +5,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## NOTE: ALWAYS REMEMBER
 Never add a "co-authored by claude" while pushing or in CI/CD operation. It should always look like no AI assisted coding was used.
 
+## Implementation pivot (active)
+
+The **idea** is unchanged: catch silent failures, blame the origin node, fail CI before deploy (`argus check` / `pytest --argus`). Contributor brief: `docs/ARGUS-PIVOT.pdf`.
+
+The **implementation** is pivoting. Do not extend Pregel wrapping as the default path.
+
+- **Stop (as default):** patching `StateGraph.compile`, wrapping node functions in `patcher.py`, wrapping `invoke` / `stream` / `batch`, reading live successor `__annotations__` as the only contract, re-importing callables + urllib3 HTTP cassettes for replay.
+- **Do instead:** ingest a **fat trace** (node name, input, **`output_update`** = the dict the node returned — not only merged LangGraph state — plus tools and errors). Grade with the existing inspector. Capture is a callback / OTel / SDK; the product is the verdict.
+- **Layer 2 (new sub-branch):** traces do not include successor type hints. Adjacent “node N output vs node N+1 input” is not enough — node D may still need field `b` written by A. Build a **consumer map + ledger** (who wrote, who reads later, who dropped).
+- **Layer 3:** ledger of running state **and** HTTP / tool I/O. Replay/record become ledger-based.
+- **LLM judge last**, never first. Same role as today (`semantic_checker.py`). Cannot override validator failures or critical anomalies.
+- **Unchanged:** tool-failure scan, signatures, `json_in_string`, anomalies, findings, `argus check`, `argus fix`, origin blame (if the ledger is complete).
+- **Not this milestone:** GitHub App / auto-PRs, production Slack, cloud UI polish, new framework adapters. Those are later.
+
+**Build order:** (1) fat recorder → existing inspector, no `patch_graph`; (2) ledger; (3) consumer-map contract; (4) judge → `argus check`. Spike 1 is done only when a demo graph fails `empty_output` / empty tools without `patcher.py`. Skinny traces (sampled, LLM-only, payloads stripped) are not enough — refuse to grade or require the fat recorder.
+
+The Architecture section below describes **current** code (wrap path). New work follows this pivot unless a ticket explicitly says to patch the old path.
+
 ## Commands
 
 ```bash
