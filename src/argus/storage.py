@@ -604,6 +604,10 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
             suspicious_empty_keys=insp_data.get("suspicious_empty_keys", []),
             tool_failures=tool_failures,
             has_tool_failure=insp_data.get("has_tool_failure", False),
+            has_tool_warnings=insp_data.get(
+                "has_tool_warnings",
+                any(tf.severity == "warning" for tf in tool_failures),
+            ),
             semantic_signals=semantic_signals,
             degraded_fields=insp_data.get("degraded_fields", []),
             degraded_upstream_node=insp_data.get("degraded_upstream_node"),

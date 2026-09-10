@@ -12,7 +12,7 @@ import typer
 from rich.console import Console
 from rich.text import Text
 
-from argus.check import evaluate_run
+from argus.check import STRICT_CHOICES, StrictMode, evaluate_run
 from argus.cli import print_footer
 from argus.findings import format_run_finding
 from argus.models import RunRecord
@@ -45,21 +45,36 @@ def parse_fail_on(raw: str | None) -> frozenset[str] | None:
     return values
 
 
+def parse_strict(raw: str | None) -> StrictMode:
+    """Parse ``--strict``. Default ``critical_only`` matches recorded run status."""
+    value = (raw or "critical_only").strip()
+    if value not in STRICT_CHOICES:
+        choices = ", ".join(STRICT_CHOICES)
+        raise ValueError(f"unknown --strict {value!r}; choose from {choices}")
+    return value  # type: ignore[return-value]
+
+
 def _passed(record: RunRecord, result_passed: bool, fail_on: frozenset[str] | None) -> bool:
     if fail_on is None:
         return result_passed
     return record.overall_status not in fail_on
 
 
-def check_payload(record: RunRecord, fail_on: frozenset[str] | None = None) -> dict[str, Any]:
+def check_payload(
+    record: RunRecord,
+    fail_on: frozenset[str] | None = None,
+    *,
+    strict: StrictMode = "critical_only",
+) -> dict[str, Any]:
     """Machine-readable verdict for ``--format json``. Stable keys; additive only."""
-    result = evaluate_run(record)
+    result = evaluate_run(record, strict=strict)
     return {
         "run_id": record.run_id,
         "schema_version": record.schema_version,
         "overall_status": record.overall_status,
         "passed": _passed(record, result.passed, fail_on),
         "fail_on": sorted(fail_on) if fail_on is not None else None,
+        "strict": strict,
         "first_failure_step": record.first_failure_step,
         "root_cause_chain": list(record.root_cause_chain),
         "failing_nodes": list(result.failing_nodes),
@@ -80,6 +95,7 @@ def check_run(
     *,
     output_format: str = "text",
     fail_on: str | None = None,
+    strict: str | None = None,
 ) -> None:
     """Load ``run_id`` (or the most recent run) and exit 1 if it is not clean.
 
@@ -92,6 +108,7 @@ def check_run(
         raise typer.Exit(2)
     try:
         fail_on_set = parse_fail_on(fail_on)
+        strict_mode = parse_strict(strict)
     except ValueError as e:
         _emit_error(str(e), as_json=as_json)
         raise typer.Exit(2) from e
@@ -111,11 +128,11 @@ def check_run(
         raise typer.Exit(1) from e
 
     if as_json:
-        payload = check_payload(record, fail_on_set)
+        payload = check_payload(record, fail_on_set, strict=strict_mode)
         sys.stdout.write(json.dumps(payload, indent=2, default=str) + "\n")
         raise typer.Exit(0 if payload["passed"] else 1)
 
-    result = evaluate_run(record)
+    result = evaluate_run(record, strict=strict_mode)
     passed = _passed(record, result.passed, fail_on_set)
     style = _STATUS_STYLE.get(record.overall_status, "dim")
 
@@ -133,6 +150,8 @@ def check_run(
 
     if fail_on_set is not None:
         console.print(f"  [dim]fail-on {', '.join(sorted(fail_on_set))}[/dim]")
+    if strict_mode != "critical_only":
+        console.print(f"  [dim]strict {strict_mode}[/dim]")
 
     if passed:
         console.print("  [bold green]✓[/bold green]  pass")

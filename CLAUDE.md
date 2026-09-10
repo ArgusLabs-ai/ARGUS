@@ -34,7 +34,7 @@ argus --help
 argus show <run-id>
 argus check last
 ARGUS_RUN_ID=<run-id> argus check
-argus diff <run-a> <run-b>
+argus check last --strict warn_as_fail   # fail CI on warning tool failures (429, …)argus diff <run-a> <run-b>
 argus replay <run-id> <node>
 argus ui
 pytest --argus                       # fail tests whose ARGUS run was not clean
@@ -84,8 +84,8 @@ Every wrapped node executes through this pipeline:
 | `src/argus/llm_proxy.py` | Shared LLM transport — all chat completion calls go through here. Resolves BYOK (OpenAI/Anthropic/Google) first, falls back to hosted Supabase proxy |
 | `src/argus/providers.py` | Per-provider request/response translation for BYOK (message format, model remapping, response normalization) |
 | `src/argus/signature_generalizer.py` | Generalizes failure signatures via LLM + heuristic fallback. Uses `llm_proxy` for the LLM path |
-| `src/argus/check.py` | CI gate: evaluate a `RunRecord` as clean vs crash / silent_failure / semantic_fail |
-| `src/argus/cli/cmd_check.py` | `argus check <id>` / `ARGUS_RUN_ID=<id> argus check` / `argus check last` — grade one run, print its file, and exit 1 when it was not clean |
+| `src/argus/check.py` | CI gate: evaluate a `RunRecord` as clean vs crash / silent_failure / semantic_fail; optional `strict=warn_as_fail` for warning tool failures |
+| `src/argus/cli/cmd_check.py` | `argus check <id>` / `ARGUS_RUN_ID=<id> argus check` / `argus check last` — grade one run, print its file, and exit 1 when it was not clean (`--strict warn_as_fail` escalates warnings) |
 | `src/argus/pytest_plugin.py` | pytest `--argus` plugin: fail tests whose instrumented run was not clean |
 | `tests/test_argus_ci_gate.py` | Narrow sync-invoke graph run under CI `pytest --argus` (eat-own-cooking; #56) |
 | `src/argus/cli/main.py` | `argus` CLI entry point (Typer) |

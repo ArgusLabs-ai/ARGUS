@@ -1123,6 +1123,9 @@ class ArgusSession:
                 inspection.has_tool_failure = any(
                     tf.severity == "critical" for tf in inspection.tool_failures
                 )
+                inspection.has_tool_warnings = any(
+                    tf.severity == "warning" for tf in inspection.tool_failures
+                )
                 inspection.is_silent_failure = bool(
                     inspection.missing_fields or inspection.has_tool_failure
                 )

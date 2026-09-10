@@ -387,6 +387,14 @@ def cmd_check(
             "(crashed, interrupted, silent_failure). Default: any non-clean run."
         ),
     ),
+    strict: str = typer.Option(
+        "critical_only",
+        "--strict",
+        help=(
+            "Warning escalation: critical_only (default) or warn_as_fail "
+            "(fail on warning-severity tool failures such as HTTP 429)."
+        ),
+    ),
 ) -> None:
     """Fail (exit 1) if the last or given run was not clean.
 
@@ -396,8 +404,9 @@ def cmd_check(
         argus check <run-id>
         argus check last --format json
         argus check last --fail-on crashed,silent_failure
+        argus check last --strict warn_as_fail
     """
-    check_run(run_id, output_format=output_format, fail_on=fail_on)
+    check_run(run_id, output_format=output_format, fail_on=fail_on, strict=strict)
 
 
 @app.command("list")
