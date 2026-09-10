@@ -39,6 +39,21 @@ def pytest_configure(config: pytest.Config) -> None:
     _maybe_install_auto_instrumentation()
 
 
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Undo the LangGraph patch when the session ends.
+
+    Without this, a `--argus` session run in-process (as `pytester` does) leaves
+    `Pregel.invoke` and friends patched in the host interpreter for good.
+    """
+    if not _argus_enabled(config):
+        return
+    try:
+        from argus.pytest_instrument import uninstall_auto_instrumentation
+    except ImportError:
+        return
+    uninstall_auto_instrumentation()
+
+
 def _argus_enabled(config: pytest.Config) -> bool:
     return bool(config.stash.get(_ARGUS_ENABLED, False))
 

@@ -62,6 +62,19 @@ def uninstall_auto_instrumentation() -> None:
     _installed = False
 
 
+def _recover_original(key: str, wrapper: Any) -> None:
+    """Remember the pre-patch callable hiding under an existing wrapper.
+
+    ``install`` is idempotent per method, but ``uninstall`` clears ``_originals``.
+    An install → uninstall → install sequence therefore used to leave the class
+    patched with nothing left to restore it from. Every wrapper here is built
+    with ``functools.wraps``, so the original is on ``__wrapped__``.
+    """
+    unwrapped = getattr(wrapper, "__wrapped__", None)
+    if unwrapped is not None:
+        _originals.setdefault(key, unwrapped)
+
+
 def _in_attach() -> bool:
     return bool(getattr(_tls, "in_attach", False))
 
@@ -84,6 +97,7 @@ def _attach(compiled: Any) -> Any:
 def _wrap_compile(state_graph_cls: Any) -> None:
     original: Any = state_graph_cls.compile
     if getattr(original, "_argus_pytest_wrapped", False):
+        _recover_original("compile", original)
         return
     _originals["compile"] = original
 
@@ -123,6 +137,10 @@ def _wrap_pregel_method(pregel_cls: Any, name: str) -> None:
     if not callable(original):
         return
     if getattr(original, "_argus_pytest_wrapped", False):
+        # Already patched from an earlier install whose originals were cleared by
+        # uninstall. Recover the pre-patch method from the wrapper so the next
+        # uninstall can restore it — otherwise the class stays patched forever.
+        _recover_original(name, original)
         return
     _originals[name] = original
 

@@ -175,6 +175,32 @@ def test_auto_wrap_missing_fields_are_recorded(auto_wrap):
 
 
 @pytest.mark.unit
+def test_reinstall_then_uninstall_leaves_nothing_patched():
+    """install → uninstall → install → uninstall must fully restore LangGraph.
+
+    The second install found the methods already wrapped and returned without
+    recording the originals, which uninstall had just cleared — so the class
+    stayed patched in the host interpreter for good.
+    """
+    from langgraph.graph.state import StateGraph
+    from langgraph.pregel import Pregel
+
+    from argus.watcher import _RUNTIME_METHODS
+
+    for _ in range(2):
+        install_auto_instrumentation()
+        uninstall_auto_instrumentation()
+
+    still_patched = [
+        name
+        for name in (*_RUNTIME_METHODS, "compile")
+        for cls in (StateGraph if name == "compile" else Pregel,)
+        if getattr(getattr(cls, name), "_argus_pytest_wrapped", False)
+    ]
+    assert not still_patched
+
+
+@pytest.mark.unit
 def test_uninstall_restores_uninstrumented_compile(auto_wrap):
     uninstall_auto_instrumentation()
     app = _clean_graph().compile()
