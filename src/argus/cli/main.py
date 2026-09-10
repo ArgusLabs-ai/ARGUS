@@ -20,6 +20,7 @@ from argus.cli.cmd_check import check_run
 from argus.cli.cmd_diff import diff_runs
 from argus.cli.cmd_doctor import doctor
 from argus.cli.cmd_fix import fix_run
+from argus.cli.cmd_ignore import ignore_add, ignore_list, ignore_remove
 from argus.cli.cmd_init import init_skills_cmd
 from argus.cli.cmd_key import key_clear, key_set, key_show, key_use
 from argus.cli.cmd_locate import locate_sources
@@ -126,6 +127,8 @@ _COMMANDS = [
     ("logout", "clear stored credentials"),
     ("whoami", "show current login status"),
     ("key set", "save your OpenAI API key locally for BYOK mode"),
+    ("ignore <SIG-ID> [--node N]", "silence a signature project-wide or on one node"),
+    ("ignore --list", "show active suppressions (.argus/config.json)"),
     ("update", "check GitHub for a newer release and upgrade"),
     ("doctor", "diagnose integration issues (LangGraph, storage)"),
 ]
@@ -332,6 +335,37 @@ def _show_run_strict(run_id: str) -> None:
         _console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
     show_run(run_id)
+
+
+@app.command("ignore")
+def cmd_ignore(
+    sig_id: Optional[str] = typer.Argument(
+        None, help="Signature or anomaly id to silence, e.g. NL-002, BA-005, PH-007."
+    ),
+    node: Optional[str] = typer.Option(
+        None, "--node", "-n", help="Only on this node (default: every node)."
+    ),
+    list_: bool = typer.Option(False, "--list", "-l", help="Show active suppressions."),
+    remove: bool = typer.Option(False, "--remove", "-r", help="Remove the suppression instead."),
+) -> None:
+    """Silence a noisy signature without rewriting your output.
+
+    Suppressed hits stop affecting node status and the CI gate, but stay
+    recorded on the run for `argus stats`. Shared via .argus/config.json::
+
+        argus ignore NL-002                 # everywhere in this project
+        argus ignore RF-001 --node draft    # only on one node
+        argus ignore --list
+        argus ignore NL-002 --remove
+    """
+    if list_ or sig_id is None:
+        ignore_list()
+        if sig_id is None and not list_:
+            raise typer.Exit(2)
+        return
+    ok = ignore_remove(sig_id, node) if remove else ignore_add(sig_id, node)
+    if not ok:
+        raise typer.Exit(1)
 
 
 @app.command("check")
