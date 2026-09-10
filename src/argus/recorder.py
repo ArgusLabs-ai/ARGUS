@@ -17,9 +17,9 @@ Usage is the entire public API::
     app.invoke({"query": "..."})
 
 Grading is unchanged: rows go to :mod:`argus.ledger`, then contextual
-(:mod:`argus.contextual`, stubbed), then the existing structure / tool /
-semantic checks and the LLM judge last, inside ``ArgusSession``. The verdict is
-``argus check``.
+(:mod:`argus.contextual` — pass ``consumers={"field": ["reader"]}``), then the
+existing structure / tool / semantic checks and the LLM judge last, inside
+``ArgusSession``. The verdict is ``argus check``.
 
 ``ArgusWatcher`` still works and is untouched.
 """
@@ -32,9 +32,9 @@ import time
 from typing import Any, Callable
 from uuid import UUID
 
-from argus.contextual import contextual_findings
+from argus.contextual import ConsumerMap, contextual_findings
 from argus.ledger import build_ledger
-from argus.models import LLMInvestigationConfig
+from argus.models import Finding, LLMInvestigationConfig
 from argus.session import ArgusSession
 
 try:  # pragma: no cover - exercised only when langchain-core is absent
@@ -92,6 +92,7 @@ class ArgusRecorder(BaseCallbackHandler):
         strict: bool = False,
         semantic_judge: bool = False,
         max_field_size: int = 50_000,
+        consumers: ConsumerMap | None = None,
     ) -> None:
         if not _HAS_LANGCHAIN:
             raise ImportError(
@@ -101,6 +102,8 @@ class ArgusRecorder(BaseCallbackHandler):
         self._strict = strict
         self._semantic_judge = semantic_judge
         self._max_field_size = max_field_size
+        # Declared `field -> [reader nodes]`; a trace cannot tell us who reads what.
+        self._consumers = consumers
 
         self.session: ArgusSession | None = None
         self._lock = threading.Lock()
@@ -111,7 +114,6 @@ class ArgusRecorder(BaseCallbackHandler):
         # tool run_id -> that tool's own record, so concurrent tools don't cross
         self._tool_owner: dict[UUID, dict[str, Any]] = {}
         self._root_run_id: UUID | None = None
-        self._step_tools: dict[int, list[dict[str, Any]]] = {}
 
     # ── attach ──────────────────────────────────────────────────────────────
 
@@ -232,9 +234,6 @@ class ArgusRecorder(BaseCallbackHandler):
             # than a fake empty one.
             output_snap = session.capture_output(outputs) if isinstance(outputs, dict) else None
 
-            if tools:
-                self._step_tools[session._step_index] = tools
-
             session.on_node_end(
                 node,
                 input_snap,
@@ -242,6 +241,11 @@ class ArgusRecorder(BaseCallbackHandler):
                 duration_ms,
                 exc=exc if isinstance(exc, Exception) else None,
             )
+            # Tools go on the event so they survive the run file's asdict
+            # round-trip. Only recorder callbacks append events, and this lock
+            # is held across on_node_end, so [-1] is the step just recorded.
+            if tools and session._events:
+                session._events[-1].tool_calls = tools
         return True
 
     # ── tool callbacks ──────────────────────────────────────────────────────
@@ -299,8 +303,14 @@ class ArgusRecorder(BaseCallbackHandler):
         if not session._events:
             self._refuse(session, "no steps were recorded — the trace is empty")
 
-        ledger = build_ledger(session._events, session._initial_state, self._step_tools)
-        contextual_findings(ledger)  # layer 3, stubbed — see argus.contextual
+        ledger = build_ledger(session._events, session._initial_state)
+        self._blame_origins(session, contextual_findings(ledger, self._consumers))
+
+        # The per-step judge already fired (its futures don't re-check this
+        # flag); disabling it here only stops finalize from also running the
+        # investigate() essay — a second LLM call that is not the verdict.
+        if session._llm_investigation_config is not None:
+            session._llm_investigation_config.enabled = False
 
         # Everything after this is the existing ARGUS brain: per-step structure,
         # tool and semantic checks already ran inside on_node_end; finalize rolls
@@ -309,6 +319,28 @@ class ArgusRecorder(BaseCallbackHandler):
 
         # So a bare `argus check` grades this run (cli/cmd_check.py reads it).
         os.environ["ARGUS_RUN_ID"] = session.run_id
+
+    @staticmethod
+    def _blame_origins(session: ArgusSession, findings: list[Finding]) -> None:
+        """Record a contextual miss on the step that caused it.
+
+        No second gate: a step carrying `missing_fields` already fails the
+        roll-up in `session._finalize` and `check.evaluate_run`, and
+        `findings.collect_findings` already turns it into a `missing_field`
+        finding naming the origin. Must run before finalize.
+        """
+        by_node = {event.node_name: event for event in session._events}
+        for finding in findings:
+            event = by_node.get(finding.node)
+            if event is None or event.inspection is None or finding.field_path is None:
+                continue
+            insp = event.inspection
+            if finding.field_path not in insp.missing_fields:
+                insp.missing_fields.append(finding.field_path)
+            insp.is_silent_failure = True
+            insp.severity = "critical"
+            insp.message = finding.reason
+            event.status = "fail"
 
     @staticmethod
     def _refuse(session: ArgusSession, why: str) -> None:

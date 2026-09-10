@@ -638,4 +638,5 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
         anomaly_signals=anomaly_signals,
         semantic_check=semantic_check,
         total_iterations=data.get("total_iterations"),
+        tool_calls=data.get("tool_calls", []),
     )

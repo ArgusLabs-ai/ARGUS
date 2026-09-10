@@ -6,11 +6,14 @@ error. Origin blame needs the update: a node that searches, throws the result
 away and returns ``{}`` still leaves a full-looking merged state behind, so
 "state after" alone hides the silent no-op.
 
-Layer 2 of the pivot (``docs/ARGUS-PIVOT-CONTRIBUTORS.pdf`` §5) is a stub here:
-the notebook is *derived* from ``RunRecord.steps`` rather than stored beside
-them, so there is no second database and no schema bump. What layer 2 proper
-adds: persisted tool / HTTP columns and replay that reloads this file instead of
-re-importing live callables.
+Layer 2 of the pivot (``docs/ARGUS-PIVOT-CONTRIBUTORS.pdf`` §5). The notebook is
+*derived* from ``RunRecord.steps``, not stored beside them: no second database,
+no second file. Every column survives the existing run file, so re-score is just
+``build_ledger(load_run(id).steps, ...)`` — open the file and grade it, no live
+graph and no second invoke.
+
+What is not here yet: HTTP I/O (tool callbacks are the I/O we can see today) and
+replaying a step by re-executing the node.
 """
 
 from __future__ import annotations
@@ -37,12 +40,13 @@ class LedgerRow:
 def build_ledger(
     steps: list[Any],
     initial_state: dict[str, Any] | None = None,
-    tools_by_step: dict[int, list[dict[str, Any]]] | None = None,
 ) -> list[LedgerRow]:
     """Fold recorded steps into the notebook.
 
-    ``steps`` are ``NodeEvent``s (live from the recorder, or reloaded from a
-    saved run — both work, which is what makes re-scoring possible offline).
+    ``steps`` are ``NodeEvent``s — live from the recorder, or reloaded from
+    ``.argus/runs/<id>.json``. Both give the same notebook, which is what makes
+    re-scoring an old run possible with no live graph.
+
     Retried and skipped events are kept: later rows are the evidence that a
     downstream node was the victim rather than the origin.
     """
@@ -62,7 +66,7 @@ def build_ledger(
                 input_state=event.input_state,
                 update=update,
                 state_after=dict(running),
-                tools=list((tools_by_step or {}).get(event.step_index, ())),
+                tools=list(getattr(event, "tool_calls", ()) or ()),
                 error=event.exception,
             )
         )

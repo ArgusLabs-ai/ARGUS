@@ -219,6 +219,9 @@ class NodeEvent:
     semantic_check: SemanticCheckResult | None = None
     disambiguation_results: list[DisambiguationResult] = field(default_factory=list)
     total_iterations: int | None = None  # set on finalize for looped nodes
+    # Tool I/O recorded for this step: {name, input, output, error}. Set by
+    # ArgusRecorder from LangGraph's tool callbacks; the ledger's tool column.
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ── Replay comparison dataclasses ─────────────────────────────────────────────
