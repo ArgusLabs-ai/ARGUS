@@ -222,6 +222,24 @@ def test_reducers_are_read_off_the_graph(monkeypatch):
     assert load_run(recorder.session.run_id).overall_status == "clean"
 
 
+@pytest.mark.integration
+def test_replay_refuses_a_trace_run_loudly(monkeypatch):
+    """A recorder run has no node refs. Saying nothing and exiting 0 is worse than failing."""
+    _no_patching(monkeypatch)
+
+    from typer.testing import CliRunner
+
+    from argus.cli.main import app as cli
+
+    recorder = ArgusRecorder()
+    recorder.attach(_build_app({})).invoke({"query": "q"})
+
+    result = CliRunner().invoke(cli, ["replay", recorder.session.run_id, "summarize"])
+
+    assert result.exit_code == 1
+    assert "argus check" in result.stdout, "it must point at the path that does work"
+
+
 @pytest.mark.unit
 def test_an_empty_trace_refuses_to_grade():
     """Brief §4: an incomplete recording is never 'no findings, so it passed'."""

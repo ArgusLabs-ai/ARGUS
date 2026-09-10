@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+import typer
 from rich.console import Console
 from rich.rule import Rule
 from rich.text import Text
@@ -57,16 +58,14 @@ def build_patch(
             raise PatchError(f"patch file {patch_file} is not valid JSON: {exc}") from exc
         if not isinstance(loaded, dict):
             raise PatchError(
-                f"patch file {patch_file} must contain a JSON object, "
-                f"got {type(loaded).__name__}"
+                f"patch file {patch_file} must contain a JSON object, got {type(loaded).__name__}"
             )
         patch = loaded
 
     for pair in set_pairs or []:
         if "=" not in pair:
             raise PatchError(
-                f"invalid --set {pair!r} — expected 'path=value' "
-                "(e.g. --set meta.retries=0)"
+                f"invalid --set {pair!r} — expected 'path=value' (e.g. --set meta.retries=0)"
             )
         raw_path, _, raw_value = pair.partition("=")
         raw_path = raw_path.strip()
@@ -86,9 +85,7 @@ def build_patch(
         elif isinstance(existing, list):
             existing.append(raw_path)
         else:
-            raise PatchError(
-                "patch file's 'delete' op must be a list to combine with --delete"
-            )
+            raise PatchError("patch file's 'delete' op must be a list to combine with --delete")
 
     return patch or None
 
@@ -161,15 +158,27 @@ def replay_run(
         effective_app = app_module_str or record.app_factory_ref
         if effective_app is None:
             console.print()
-            hint = Text()
-            hint.append("  argus replay ", style="dim")
-            hint.append(run_id, style="italic dim")
-            hint.append(f" {from_step}", style="bold")
-            hint.append(" --app ", style="dim")
-            hint.append("module:factory_fn", style="italic dim")
-            console.print(hint)
-            console.print()
-            return
+            console.print(
+                "[red]Error:[/red] this run cannot be replayed by re-executing nodes — "
+                "it has no stored node references."
+            )
+            if record.schema_version >= "2" and not record.node_fn_paths:
+                # Trace-recorded run (ArgusRecorder): re-execution was never the
+                # plan for these. Re-scoring the saved run is, and already ships.
+                console.print(
+                    f"\n  It was recorded as a trace. Grade it from the run file instead:"
+                    f"\n    [bold]argus check {run_id}[/bold]\n"
+                )
+            else:
+                hint = Text()
+                hint.append("  argus replay ", style="dim")
+                hint.append(run_id, style="italic dim")
+                hint.append(f" {from_step}", style="bold")
+                hint.append(" --app ", style="dim")
+                hint.append("module:factory_fn", style="italic dim")
+                console.print(hint)
+                console.print()
+            raise typer.Exit(1)
         factory = _import_factory(effective_app)
         if factory is None:
             return

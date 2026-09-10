@@ -50,8 +50,18 @@ def build_ledger(
     Retried and skipped events are kept: later rows are the evidence that a
     downstream node was the victim rather than the origin.
     """
-    # ponytail: plain dict overlay for the running state. Reducer-aware merging
-    # already lives in session.py; wire it in when the ledger drives replay.
+    # ponytail: plain dict overlay for the running state — last write wins.
+    # Measured limitation: for a field declared `Annotated[list, operator.add]`,
+    # a node returning `{"docs": []}` leaves `state_after["docs"] == []` here
+    # while LangGraph really keeps the accumulated list. Grading is unaffected
+    # (session.py merges with the real reducers, and `_lacks` in contextual.py
+    # only treats None as missing), but the notebook's running state is wrong
+    # for reduced fields.
+    # Not fixed live-only on purpose: reducers are callables and do not survive
+    # the run file, so a live-only fix would make the reloaded notebook differ
+    # from the live one and break re-score. Fixing it properly means persisting
+    # reducer identity, or rebuilding state_after from each successor's recorded
+    # input_state (needs the edge map for fan-out).
     running: dict[str, Any] = dict(initial_state or {})
     rows: list[LedgerRow] = []
 
