@@ -4,7 +4,13 @@ Detects silent failures, semantic degradation, and handoff contract
 violations before deployment. Framework-agnostic core with a
 first-class LangGraph adapter.
 
-LangGraph usage:
+LangGraph usage (fat-trace recorder — no engine wrap):
+    from argus import ArgusRecorder
+
+    app = ArgusRecorder().attach(app)   # compiled graph
+    app.invoke(state)                   # persisted automatically
+
+LangGraph usage (legacy wrap path):
     from argus import ArgusWatcher
 
     watcher = ArgusWatcher(validators={
@@ -43,11 +49,13 @@ except Exception:
     pass
 
 from argus.models import ArgusConfig, LLMInvestigationConfig
+from argus.recorder import ArgusRecorder
 from argus.session import ArgusSession
 from argus.watcher import ArgusWatcher
 
 __all__ = [
     "ArgusConfig",
+    "ArgusRecorder",
     "ArgusWatcher",
     "ArgusSession",
     "LLMInvestigationConfig",

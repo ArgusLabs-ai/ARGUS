@@ -23,6 +23,9 @@ dependencies = [
     "typer>=0.12.0",
     "rich>=13.0.0",
     "langgraph>=0.2.0",
+    # The fat-trace recorder rides langchain's callback stream directly, so it is
+    # a declared dependency rather than something we borrow from langgraph.
+    "langchain-core>=0.3.0",
 ]
 
 [project.optional-dependencies]

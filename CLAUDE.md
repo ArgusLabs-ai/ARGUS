@@ -87,8 +87,11 @@ Every wrapped node executes through this pipeline:
 
 | File | Role |
 |------|------|
+| `src/argus/recorder.py` | **Pivot path.** `ArgusRecorder` — fat-trace ingest via LangChain callbacks. `attach(app)` returns `app.with_config(callbacks=[self])`; nothing is patched. Keeps each node's *update*, not the merged state. Refuses to grade a thin trace (`IncompleteTraceError`) |
+| `src/argus/ledger.py` | **Pivot path.** `build_ledger()` — steps folded into the notebook (input, update, running state, tools, error). Derived from `RunRecord.steps`, not a second store |
+| `src/argus/contextual.py` | **Pivot path, stub.** Consumer map: who wrote a field, who reads it *later*, who dropped it. Returns nothing until real reader info exists |
 | `src/argus/session.py` | Core monitoring session, wraps arbitrary callables |
-| `src/argus/watcher.py` | LangGraph adapter (thin wrapper over `ArgusSession`) |
+| `src/argus/watcher.py` | LangGraph adapter (thin wrapper over `ArgusSession`) — legacy wrap path |
 | `src/argus/pytest_instrument.py` | pytest `--argus` auto-wrap of `StateGraph.compile()` / all Pregel runtime methods (`invoke` / `ainvoke` / `stream` / `astream` / `batch` / `abatch`) |
 | `src/argus/inspector.py` | Silent failure detection + root cause chain |
 | `src/argus/registry.py` | Semantic signature registry for LLM output heuristics |
