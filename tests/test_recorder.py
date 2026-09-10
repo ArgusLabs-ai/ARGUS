@@ -6,7 +6,8 @@ empty update fails the build, without `patcher.patch_graph`.
 
 from __future__ import annotations
 
-from typing import TypedDict
+import operator
+from typing import Annotated, TypedDict
 
 import pytest
 
@@ -189,6 +190,36 @@ def test_a_crash_is_recorded_and_fails_the_gate(monkeypatch):
     assert record.overall_status == "crashed"
     assert record.first_failure_step == "boom"
     assert evaluate_run(record).passed is False
+
+
+@pytest.mark.integration
+def test_reducers_are_read_off_the_graph(monkeypatch):
+    """`Annotated[list, operator.add]` must accumulate, not overwrite.
+
+    Without the reducer the state successors are graded against is wrong: the
+    second branch's write looks like it replaced the first branch's.
+    """
+    _no_patching(monkeypatch)
+
+    class _R(TypedDict, total=False):
+        query: str
+        docs: Annotated[list, operator.add]
+
+    g = StateGraph(_R)
+    g.add_node("start", lambda s: {"docs": ["seed"]})
+    g.add_node("left", lambda s: {"docs": ["from-left"]})
+    g.add_node("right", lambda s: {"docs": ["from-right"]})
+    g.add_edge(START, "start")
+    g.add_edge("start", "left")
+    g.add_edge("start", "right")
+    g.add_edge("left", END)
+    g.add_edge("right", END)
+
+    recorder = ArgusRecorder()
+    recorder.attach(g.compile()).invoke({"query": "q"})
+
+    assert recorder.session.reducer_fields == {"docs": operator.add}
+    assert load_run(recorder.session.run_id).overall_status == "clean"
 
 
 @pytest.mark.unit

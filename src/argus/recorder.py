@@ -79,6 +79,25 @@ def _placeholder_node(name: str) -> Callable[..., Any]:
     return _node
 
 
+def _reducer_fields(app: Any) -> dict[str, Any]:
+    """Reducers declared on the state schema, e.g. ``Annotated[list, operator.add]``.
+
+    Without these, a fan-in field looks overwritten instead of accumulated and
+    the state successors are graded against is wrong. `app.builder` is public;
+    reading it is not patching it. Best-effort — an app without one still
+    records, it just grades fan-in with a plain overlay.
+    """
+    builder = getattr(app, "builder", None)
+    if builder is None:
+        return {}
+    try:
+        from argus.utils.type_introspection import extract_reducer_fields
+
+        return extract_reducer_fields(builder)
+    except Exception:
+        return {}
+
+
 class ArgusRecorder(BaseCallbackHandler):
     """Records a fat trace of one LangGraph run and grades it."""
 
@@ -152,6 +171,7 @@ class ArgusRecorder(BaseCallbackHandler):
         session.set_edges(edge_map)
         session.set_conditional_sources(conditional_sources)
         session.node_fn_registry = {name: _placeholder_node(name) for name in node_names}
+        session.reducer_fields = _reducer_fields(app)
         # The recorder owns finalize: the ledger and contextual layers run over
         # the complete trace, before the run is graded and saved.
         session._defer_auto_finalize = True
