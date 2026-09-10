@@ -5,7 +5,8 @@ Invoke once, load the saved run, build the ledger from *that*, and grade it.
 
 from __future__ import annotations
 
-from typing import TypedDict
+import operator
+from typing import Annotated, TypedDict
 
 import pytest
 
@@ -93,3 +94,46 @@ def test_ledger_from_live_steps_matches_the_reloaded_one():
     assert [(r.node, r.update, r.state_after, r.tools) for r in live] == [
         (r.node, r.update, r.state_after, r.tools) for r in reloaded
     ]
+
+
+class _Reduced(TypedDict, total=False):
+    docs: Annotated[list, operator.add]
+
+
+def _reduced_app():
+    def seed(state: _Reduced) -> dict:
+        return {"docs": ["seed"]}
+
+    def empty(state: _Reduced) -> dict:
+        return {"docs": []}
+
+    def tail(state: _Reduced) -> dict:
+        return {}
+
+    g = StateGraph(_Reduced)
+    g.add_node("a", seed)
+    g.add_node("b", empty)
+    g.add_node("c", tail)
+    g.add_edge(START, "a")
+    g.add_edge("a", "b")
+    g.add_edge("b", "c")
+    g.add_edge("c", END)
+    return g.compile()
+
+
+@pytest.mark.integration
+def test_state_after_honours_operator_add_reducer():
+    """state_after for a reduced field must match the graph, not last-write-wins."""
+    recorder = ArgusRecorder()
+    result = recorder.attach(_reduced_app()).invoke({})
+    assert result.get("docs") == ["seed"]
+
+    loaded = load_run(recorder.session.run_id)
+    rows = {r.node: r for r in build_ledger(loaded.steps, loaded.initial_state)}
+
+    assert rows["b"].update == {"docs": []}
+    assert rows["b"].state_after["docs"] == ["seed"]
+
+    live = build_ledger(recorder.session._events, recorder.session._initial_state)
+    reloaded = build_ledger(loaded.steps, loaded.initial_state)
+    assert [r.state_after for r in live] == [r.state_after for r in reloaded]
