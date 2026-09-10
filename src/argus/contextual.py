@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from argus.findings import _mk
+from argus.inspector import _is_empty
 from argus.models import Finding
 
 __all__ = ["contextual_findings"]
@@ -83,6 +84,11 @@ def _first_reader_index(ledger: list[Any], readers: list[str]) -> int | None:
 
 
 def _lacks(state: dict[str, Any], field: str) -> bool:
-    # ponytail: absent or None only. `{"b": ""}` and `{"b": []}` are real
-    # contributions, same narrowness as the empty_output rule in inspector.py.
-    return state.get(field) is None
+    """Absent, None, blank, or an empty collection.
+
+    Reuses the inspector's own rule so a field dropped to `[]` or `""` reads
+    the same here as it does everywhere else in ARGUS. Narrower than that —
+    None-only — silently misses the commonest drop: a filter step that removes
+    every element and returns `{"docs": []}`.
+    """
+    return _is_empty(state.get(field))

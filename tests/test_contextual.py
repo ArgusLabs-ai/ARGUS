@@ -132,3 +132,39 @@ def test_no_consumers_declared_means_no_contextual_findings(monkeypatch):
     recorder.attach(g.compile()).invoke({"seed": "s"})
 
     assert evaluate_run(load_run(recorder.session.run_id)).passed is True
+
+
+@pytest.mark.integration
+def test_a_field_emptied_not_nulled_is_still_a_drop(monkeypatch):
+    """`{"docs": []}` is the commonest real drop: a filter that removed everything.
+
+    The old wrap path caught this via the successor's type hints. A trace has no
+    type hints, so the declared consumer map has to carry it — and `_lacks` has
+    to agree with the inspector on what "empty" means.
+    """
+    _no_patching(monkeypatch)
+
+    def search(state: _S) -> dict:
+        return {"b": "found something"}
+
+    def clean(state: _S) -> dict:
+        return {"b": ""}  # filtered it all away
+
+    def use(state: _S) -> dict:
+        return {"answer": f"used {state.get('b')!r}"}
+
+    g = StateGraph(_S)
+    for name, fn in (("search", search), ("clean", clean), ("use", use)):
+        g.add_node(name, fn)
+    g.add_edge(START, "search")
+    g.add_edge("search", "clean")
+    g.add_edge("clean", "use")
+    g.add_edge("use", END)
+
+    recorder = ArgusRecorder(consumers={"b": ["use"]})
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    verdict = evaluate_run(load_run(recorder.session.run_id))
+    assert verdict.passed is False
+    assert "clean" in verdict.failing_nodes, "the node that emptied it is the origin"
+    assert "search" not in verdict.failing_nodes, "search did its job"
