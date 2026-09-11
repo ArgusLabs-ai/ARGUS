@@ -79,6 +79,11 @@ def _blame(ledger: list[Any], field: str, reader_at: int) -> Finding | None:
     if not before:
         return None  # the reader ran first — nobody upstream to blame
 
+    # The reader produces the field it consumes (accumulator, initialiser). It
+    # is not missing — the reader is where it comes from.
+    if _wrote(reader, field):
+        return None
+
     # Anchor on the reader. Not yet written is not a failure.
     if not _lacks(reader.input_state, field):
         return None

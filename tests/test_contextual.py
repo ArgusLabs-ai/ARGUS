@@ -197,3 +197,68 @@ def test_a_field_filled_in_the_middle_is_clean(monkeypatch):
     assert evaluate_run(record).passed is True
     assert record.overall_status == "clean"
     assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_a_reader_that_writes_the_field_itself_is_clean(monkeypatch):
+    """An accumulator reads and produces the same field. Nothing is missing."""
+    _no_patching(monkeypatch)
+
+    g = StateGraph(_S)
+    g.add_node("A", lambda s: {"noise_a": "setup"})
+    g.add_node("D", lambda s: {"b": "created by the reader itself"})
+    g.add_edge(START, "A")
+    g.add_edge("A", "D")
+    g.add_edge("D", END)
+
+    recorder = ArgusRecorder(consumers={"b": ["D"]})
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    record = load_run(recorder.session.run_id)
+    assert evaluate_run(record).passed is True
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_parallel_branch_writes_the_field_before_the_join_reads_it(monkeypatch):
+    """Only one branch produces `b`; the join consumes it. Siblings are not at fault."""
+    _no_patching(monkeypatch)
+
+    g = StateGraph(_S)
+    g.add_node("start", lambda s: {"noise_a": "go"})
+    g.add_node("left", lambda s: {"b": "from left"})
+    g.add_node("right", lambda s: {"noise_c": "unrelated"})
+    g.add_node("join", lambda s: {"answer": f"read {s.get('b')}"})
+    g.add_edge(START, "start")
+    g.add_edge("start", "left")
+    g.add_edge("start", "right")
+    g.add_edge("left", "join")
+    g.add_edge("right", "join")
+    g.add_edge("join", END)
+
+    recorder = ArgusRecorder(consumers={"b": ["join"]})
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    record = load_run(recorder.session.run_id)
+    assert evaluate_run(record).passed is True
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_a_field_supplied_by_the_caller_is_not_missing(monkeypatch):
+    """`seed` comes in with invoke() and no node writes it. That is not a drop."""
+    _no_patching(monkeypatch)
+
+    g = StateGraph(_S)
+    g.add_node("A", lambda s: {"noise_a": "untouched"})
+    g.add_node("D", lambda s: {"answer": f"read {s.get('seed')}"})
+    g.add_edge(START, "A")
+    g.add_edge("A", "D")
+    g.add_edge("D", END)
+
+    recorder = ArgusRecorder(consumers={"seed": ["D"]})
+    recorder.attach(g.compile()).invoke({"seed": "from the caller"})
+
+    record = load_run(recorder.session.run_id)
+    assert evaluate_run(record).passed is True
+    assert [f for f in record.findings if f.type == "missing_field"] == []
