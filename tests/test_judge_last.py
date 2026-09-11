@@ -107,10 +107,39 @@ def test_rules_fail_the_gate_with_the_judge_off(monkeypatch):
     _no_patching(monkeypatch)
     asked = _stub_judge(monkeypatch, passed=True)
 
-    record = _run(monkeypatch, summarize_returns={})  # semantic_judge defaults to False
+    # No key configured (conftest forces is_available=False), so the default
+    # (semantic_judge=None) resolves to off.
+    record = _run(monkeypatch, summarize_returns={})
 
-    assert asked == [], "the judge must not run unless asked for"
+    assert asked == [], "the judge must not run when no key is available"
     assert evaluate_run(record).passed is False
+    assert all(step.semantic_check is None for step in record.steps)
+
+
+@pytest.mark.integration
+def test_judge_defaults_on_when_a_key_is_available(monkeypatch):
+    """A configured key is intent enough — no second opt-in flag needed."""
+    _no_patching(monkeypatch)
+    monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
+    asked = _stub_judge(monkeypatch, passed=True, confidence=1.0)
+
+    # semantic_judge left at its default (None → auto).
+    record = _run(monkeypatch, summarize_returns={"summary": "a real summary of doc-1"})
+
+    assert "summarize" in asked, "the judge should run automatically once a key exists"
+    assert record.overall_status == "clean"
+
+
+@pytest.mark.integration
+def test_explicit_false_keeps_the_judge_off_even_with_a_key(monkeypatch):
+    """The user can always opt back out."""
+    _no_patching(monkeypatch)
+    monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
+    asked = _stub_judge(monkeypatch, passed=True)
+
+    record = _run(monkeypatch, summarize_returns={"summary": "fine"}, semantic_judge=False)
+
+    assert asked == [], "explicit False must win over a present key"
     assert all(step.semantic_check is None for step in record.steps)
 
 

@@ -21,6 +21,10 @@ Grading is unchanged: rows go to :mod:`argus.ledger`, then contextual
 existing structure / tool / semantic checks and the LLM judge last, inside
 ``ArgusSession``. The verdict is ``argus check``.
 
+The LLM judge is on by default when a key is configured (``argus key set`` or
+``argus login``) and off otherwise — no extra flag. Force it either way with
+``ArgusRecorder(semantic_judge=True|False)``.
+
 ``ArgusWatcher`` still works and is untouched.
 """
 
@@ -109,7 +113,7 @@ class ArgusRecorder(BaseCallbackHandler):
         *,
         validators: dict[str, Callable[[dict[str, Any]], tuple[bool, str]]] | None = None,
         strict: bool = False,
-        semantic_judge: bool = False,
+        semantic_judge: bool | None = None,
         max_field_size: int = 50_000,
         consumers: ConsumerMap | None = None,
     ) -> None:
@@ -119,6 +123,8 @@ class ArgusRecorder(BaseCallbackHandler):
             )
         self._validators = validators or {}
         self._strict = strict
+        # None = auto: on when a key/login is available, off otherwise (resolved
+        # at attach). True/False force it either way regardless of key state.
         self._semantic_judge = semantic_judge
         self._max_field_size = max_field_size
         # Declared `field -> [reader nodes]`; a trace cannot tell us who reads what.
@@ -154,17 +160,17 @@ class ArgusRecorder(BaseCallbackHandler):
             if getattr(edge, "conditional", False):
                 conditional_sources.add(edge.source)
 
+        judge = self._resolve_judge()
         session = ArgusSession(
             max_field_size=self._max_field_size,
             validators=self._validators,
             strict=self._strict,
-            # Explicit config (never None) so the session does not auto-enable the
-            # judge just because a provider key happens to be around. The judge is
-            # last, and opt-in.
+            # Explicit config (never None) so the session does not fall back to
+            # its own auto-enable logic — the recorder owns the decision here.
             llm_investigation=LLMInvestigationConfig(
-                enabled=self._semantic_judge,
-                always_investigate=self._semantic_judge,
-                semantic_check=self._semantic_judge,
+                enabled=judge,
+                always_investigate=judge,
+                semantic_check=judge,
             ),
         )
         session.set_node_names(node_names)
@@ -178,6 +184,22 @@ class ArgusRecorder(BaseCallbackHandler):
 
         self.session = session
         return app.with_config(callbacks=[self])
+
+    def _resolve_judge(self) -> bool:
+        """Decide whether the LLM judge runs for this attach.
+
+        Explicit ``True``/``False`` wins. Left unset (``None``), the judge turns
+        on when an LLM path is usable — a BYOK key (``argus key set``) or a login
+        (``argus login``) — and stays off otherwise. Setting a key is intent
+        enough; a second opt-in flag is friction. With no key the judge would
+        only skip anyway, so defaulting it on there would just report a check
+        that never ran.
+        """
+        if self._semantic_judge is not None:
+            return self._semantic_judge
+        from argus.llm_proxy import is_available
+
+        return is_available()
 
     # ── chain callbacks ─────────────────────────────────────────────────────
 
