@@ -14,13 +14,27 @@ matching under a new name. So the readers are **declared**::
 
     ArgusRecorder(consumers={"b": ["D"]}).attach(app)
 
-Blame walks the notebook forward to the first reader and stops at the first row
-whose running state lacks the field. One rule, both cases:
+Blame is anchored at the **reader**, not at the start of the run. A field that
+does not exist yet is not a failure — most pipelines fill state progressively
+(``ingest`` writes ``query``, ``retrieve`` writes ``sources``, ``draft`` reads
+them). Asking "was it there when the reader started?" is the whole first test;
+walking forward from step 0 and stopping at the first row that lacks the field
+blames ``ingest`` for not having done ``retrieve``'s job.
 
-* nobody ever wrote ``b`` → the very first row already lacks it → origin is A,
-  not C (who had no duty) and not D (who merely crashed on the consequence).
-* A wrote ``b`` and C dropped it → A and B carry it, C's row does not → origin
-  is C, the node that actually lost it.
+Only when the field really is missing at the reader do we walk the field's
+history backward:
+
+* **written then dropped** — it was present, then a later row lost it →
+  origin is the row that lost it (not the reader, not the reader's neighbour).
+* **written empty** — a step wrote the key with ``[]`` / ``""`` / ``None`` →
+  origin is that writer (``retrieve`` returning ``{"sources": []}``).
+* **never written** — the key appears in no update before the reader → origin
+  is the first row, since nothing in a trace says who was supposed to produce
+  it. A producer map would; we do not have one and do not guess.
+
+A node that returned a literal ``{}`` is not this layer's business —
+``inspector.empty_output`` already blames it. When such a row sits between the
+start and the reader, stay quiet rather than add a second, worse-aimed finding.
 """
 
 from __future__ import annotations
@@ -52,35 +66,71 @@ def contextual_findings(ledger: list[Any], consumers: ConsumerMap | None) -> lis
         reader_at = _first_reader_index(ledger, readers)
         if reader_at is None:
             continue  # no declared reader actually ran — nothing to require
+        finding = _blame(ledger, field, reader_at)
+        if finding is not None:
+            out.append(finding)
+    return out
 
-        origin = next(
-            (row for row in ledger[:reader_at] if _lacks(row.state_after, field)),
+
+def _blame(ledger: list[Any], field: str, reader_at: int) -> Finding | None:
+    """Who is answerable for `field` being missing when its reader ran."""
+    before = ledger[:reader_at]
+    reader = ledger[reader_at]
+    if not before:
+        return None  # the reader ran first — nobody upstream to blame
+
+    # Anchor on the reader. Not yet written is not a failure.
+    if not _lacks(reader.input_state, field):
+        return None
+
+    # Index the field's history over the rows that ran before the reader.
+    held = [i for i, row in enumerate(before) if not _lacks(row.state_after, field)]
+    wrote = [i for i, row in enumerate(before) if _wrote(row, field)]
+
+    if held:
+        # Present, then lost: blame the row that lost it.
+        origin_at = next(
+            (i for i in range(held[-1] + 1, len(before)) if _lacks(before[i].state_after, field)),
             None,
         )
-        if origin is None:
-            continue  # the field was there the whole way
+        if origin_at is None:
+            # The notebook says it survived every row yet the reader did not get
+            # it — the overlay and the real reducer merge disagree. Say nothing
+            # rather than blame a row on bad evidence.
+            return None
+        why = f"`{before[origin_at].node}` dropped it"
+    elif wrote:
+        # Written, but written empty.
+        origin_at = wrote[0]
+        why = f"`{before[origin_at].node}` wrote it empty"
+    else:
+        # Never written by anyone. A node that returned `{}` is already blamed
+        # by inspector.empty_output — defer to it instead of adding a second
+        # finding aimed at whoever happened to run first.
+        if any(row.update == {} for row in before):
+            return None
+        origin_at = 0
+        why = "no step wrote it"
 
-        reader = ledger[reader_at].node
-        out.append(
-            _mk(
-                node=origin.node,
-                type_="missing_field",
-                severity="critical",
-                reason=(
-                    f"Field `{field}` is read later by `{reader}` but was not present "
-                    f"after `{origin.node}` ran."
-                ),
-                source="heuristic",
-                field_path=field,
-                origin_node=origin.node,
-            )
-        )
-    return out
+    origin = before[origin_at]
+    return _mk(
+        node=origin.node,
+        type_="missing_field",
+        severity="critical",
+        reason=f"Field `{field}` is read by `{reader.node}` but {why}.",
+        source="heuristic",
+        field_path=field,
+        origin_node=origin.node,
+    )
 
 
 def _first_reader_index(ledger: list[Any], readers: list[str]) -> int | None:
     names = set(readers)
     return next((i for i, row in enumerate(ledger) if row.node in names), None)
+
+
+def _wrote(row: Any, field: str) -> bool:
+    return isinstance(row.update, dict) and field in row.update
 
 
 def _lacks(state: dict[str, Any], field: str) -> bool:

@@ -136,7 +136,7 @@ _STATUS_KEYS = {"status_code", "status", "http_status", "code", "response_code"}
 _SUCCESS_KEYS = {"success", "ok", "succeeded", "is_valid", "is_ok"}
 _FAILURE_KEYS = {"failed", "is_error", "has_error", "errored", "is_failed"}
 _RESULT_NAME_RE = re.compile(
-    r"(results?|items?|documents?|records?|rows?|hits?|entries?|matches?"
+    r"(results?|items?|documents?|docs?|sources?|records?|rows?|hits?|entries?|matches?"
     r"|findings?|output|content|data|response|answer|text|body|payload)$",
     re.IGNORECASE,
 )

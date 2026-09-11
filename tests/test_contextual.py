@@ -168,3 +168,32 @@ def test_a_field_emptied_not_nulled_is_still_a_drop(monkeypatch):
     assert verdict.passed is False
     assert "clean" in verdict.failing_nodes, "the node that emptied it is the origin"
     assert "search" not in verdict.failing_nodes, "search did its job"
+
+
+@pytest.mark.integration
+def test_a_field_filled_in_the_middle_is_clean(monkeypatch):
+    """Progressive fill: A has no `b` yet, B writes it, D reads it.
+
+    Walking forward from step 0 and stopping at the first row that lacks `b`
+    blames A for not having done B's job. Blame is anchored at the reader.
+    """
+    _no_patching(monkeypatch)
+
+    g = StateGraph(_S)
+    g.add_node("A", lambda s: {"seed": "ready"})  # no `b` yet — normal
+    g.add_node("B", lambda s: {"b": "written here"})
+    g.add_node("C", lambda s: {"noise_c": "unrelated"})
+    g.add_node("D", lambda s: {"answer": f"used {s.get('b')}"})
+    g.add_edge(START, "A")
+    g.add_edge("A", "B")
+    g.add_edge("B", "C")
+    g.add_edge("C", "D")
+    g.add_edge("D", END)
+
+    recorder = ArgusRecorder(consumers={"b": ["D"]})
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    record = load_run(recorder.session.run_id)
+    assert evaluate_run(record).passed is True
+    assert record.overall_status == "clean"
+    assert [f for f in record.findings if f.type == "missing_field"] == []
