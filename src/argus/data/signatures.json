@@ -844,7 +844,7 @@
     {
       "id": "SP-027",
       "category": "suspicious_phrases",
-      "pattern": "(?<![/\\\\])\\b(etc|et cetera)[.\u2026]*\\s*$",
+      "pattern": "(?<![/\\\\])\\b(etc|et cetera)[.…]*\\s*$",
       "match_strategy": "regex",
       "severity": "warning",
       "description": "Output ends with 'etc.' — enumeration abandoned mid-list",
@@ -1028,6 +1028,21 @@
       "match_strategy": "regex",
       "severity": "warning",
       "description": "Lorem ipsum repeated — unfilled template text",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "RF-006",
+      "category": "placeholder_outputs",
+      "pattern": "lorem ipsum dolor sit amet",
+      "match_strategy": "regex",
+      "severity": "warning",
+      "description": "Lorem ipsum filler — unfilled template text",
       "source": "builtin",
       "metadata": {
         "confidence": null,

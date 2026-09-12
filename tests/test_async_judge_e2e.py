@@ -143,7 +143,15 @@ class TestAsyncJudgeE2E:
         assert gen_event.inspection.has_tool_failure
 
     def test_placeholder_detected(self, monkeypatch):
-        """'I don't know' is a known placeholder — should be caught when LLM judge runs."""
+        """`answer: "I don't know"` is caught by the rules, before the judge.
+
+        It used to land as `semantic_fail` — the heuristic scored the signature
+        as a warning, so only the LLM's verdict failed the node. A placeholder
+        that is the *entire* value of the answer field is now critical on its
+        own (`inspector._is_the_whole_answer`), so the node fails as `fail`
+        whether or not a model is configured. Judge-authored `semantic_fail` is
+        covered by `test_async_judge_applies_fail_verdict`.
+        """
         monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
         monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _mock_llm_fail)
 
@@ -153,8 +161,10 @@ class TestAsyncJudgeE2E:
             "score": score_answer,
         })
         gen_event = next(e for e in events if e.node_name == "generate")
-        # With LLM saying fail, this should be caught
-        assert gen_event.status == "semantic_fail"
+        assert gen_event.status in ("fail", "semantic_fail")
+        assert gen_event.inspection is not None
+        assert gen_event.inspection.has_tool_failure, "gated by the rules, not only the judge"
+        assert record.overall_status != "clean"
 
     def test_crash_propagates(self):
         def crash_node(state):

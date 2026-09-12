@@ -189,15 +189,27 @@ def _event_findings(event: NodeEvent) -> list[Finding]:
     if insp is not None:
         for f in insp.missing_fields:
             who = f"`{origin}`" if origin else f"`{name}`"
+            # The contextual layer and the crash walk both write a fuller
+            # sentence onto the inspection — it names the *reader* that needed
+            # the field, which is the half of the story this generic line
+            # cannot reconstruct. Prefer it when it is about this field.
+            authored = (insp.message or "").strip()
+            reason = (
+                authored
+                if authored.startswith(f"Field `{f}`")
+                else f"Field `{f}` required downstream was not set by {who}."
+            )
             out.append(
                 _mk(
                     node=name,
                     type_="missing_field",
                     severity="critical",
-                    reason=f"Field `{f}` required downstream was not set by {who}.",
+                    reason=reason,
                     source="heuristic",
                     field_path=f,
-                    origin_node=origin,
+                    # The finding is filed *on* the origin, so when no separate
+                    # upstream node is implicated this node is the origin.
+                    origin_node=origin or name,
                 )
             )
         for m in insp.type_mismatches:

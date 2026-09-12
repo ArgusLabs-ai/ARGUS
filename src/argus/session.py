@@ -41,6 +41,7 @@ from argus import __version__
 from argus.anomaly_detector import detect_anomalies
 from argus.inspector import (
     build_root_cause_chain,
+    crash_origins,
     inspect_transition,
     is_legitimate_field_handoff,
 )
@@ -794,6 +795,10 @@ class ArgusSession:
                     input_state=input_snap,
                     current_node_fn=current_fn,
                     reducer_fields=self.reducer_fields or None,
+                    # Router nodes get no successor_fns (see
+                    # _get_successor_fns) but things still run after them, and
+                    # the empty_output rule only needs that much.
+                    has_successors=bool(self.graph_edge_map.get(node_name)),
                 )
                 # Latency-correlated degradation checks
                 self._check_latency_signals(duration_ms, inspection)
@@ -1243,6 +1248,31 @@ class ArgusSession:
                 return propagated, event.node_name
         return [], None
 
+    def _blame_crash_origins(self, events: list[Any]) -> None:
+        """Fail the node that omitted the field a later node crashed on.
+
+        Without this the only node named is the crash site — the exact
+        "blame whoever fell over" ARGUS exists to replace. The chain already
+        knew the origin (``inspector.crash_origins``); nothing acted on it, so
+        ``evaluate_run`` never saw a failing upstream node.
+
+        Marks the origin the same way a contextual miss is marked, so the
+        existing roll-up and ``findings.collect_findings`` turn it into a
+        ``missing_field`` finding with no new plumbing.
+        """
+        for origin, key, crashed in crash_origins(events, self.graph_edge_map):
+            insp = origin.inspection
+            if insp is None or key in insp.missing_fields:
+                continue
+            insp.missing_fields.append(key)
+            insp.is_silent_failure = True
+            insp.severity = "critical"
+            insp.message = (
+                f"Field `{key}` is read by `{crashed.node_name}`, which crashed on it, "
+                f"but `{origin.node_name}` never wrote it."
+            )
+            origin.status = "fail"
+
     def _get_successor_fns(self, node_name: str) -> list[Any]:
         # ponytail: router nodes fan out to multiple branches but only one runs;
         # validating against all causes false positives — skip them
@@ -1334,6 +1364,12 @@ class ArgusSession:
             overall_status = "silent_failure"
         else:
             overall_status = "clean"
+
+        # After overall_status is decided (a crashed run stays `crashed`) but
+        # before first_failure — the omitter ran *before* the crash site, so it
+        # is the first failing step, and naming the crash site there would put
+        # the victim at the top of every report.
+        self._blame_crash_origins(events_snapshot)
 
         _fail_statuses = ("fail", "crashed", "semantic_fail", "degraded_input")
         first_failure = next(
@@ -1427,9 +1463,16 @@ class ArgusSession:
             # more accurate than the inspector's backward walk which can
             # conflate semantic failures with causal failures.
             # ponytail: only for failed runs — clean/retried runs shouldn't be overridden
-            if (
-                correlation.degradation_origins
-                and record.overall_status not in ("clean", "interrupted")
+            #
+            # `crashed` is excluded too. The correlator diffs input→output, so it
+            # can only nominate nodes that produced output — never the node that
+            # quietly omitted a field and returned a perfectly normal-looking
+            # update. On a crash it therefore replaces the walk's origin with the
+            # crash site, which is the blame ARGUS exists to move.
+            if correlation.degradation_origins and record.overall_status not in (
+                "clean",
+                "interrupted",
+                "crashed",
             ):
                 top = correlation.degradation_origins[0]
                 if top.confidence >= 0.8:

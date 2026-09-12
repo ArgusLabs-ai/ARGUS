@@ -102,6 +102,55 @@ def _reducer_fields(app: Any) -> dict[str, Any]:
         return {}
 
 
+def _bare(node_id: str) -> str:
+    """``child:retrieve`` → ``retrieve``.
+
+    ``get_graph(xray=True)`` qualifies a subgraph's nodes with their parent, but
+    the callback stream reports ``langgraph_node`` as the bare name. The trace
+    is what we have to match against, so the bare name is the key.
+
+    ponytail: two subgraphs that each contain a `retrieve` collapse onto one
+    entry. Not recoverable here — the callbacks report both as `retrieve`, so
+    the ambiguity is in the trace, not in this line. Fix it upstream (qualified
+    names in the trace) if it ever bites.
+    """
+    return node_id.rsplit(":", 1)[-1]
+
+
+def _topology(app: Any) -> tuple[list[str], dict[str, list[str]], set[str]]:
+    """Node names, ``{node: [successors]}`` and conditional sources.
+
+    Read with ``xray=True`` so nodes *inside* a subgraph are known too. Without
+    it a subgraph is one opaque ``child`` node, its inner nodes are absent from
+    ``node_fn_registry``, and every one of them looks like it has no successors
+    — which silently exempts them from the ``empty_output`` rule. A silent
+    no-op nested one level down then graded clean.
+
+    The un-x-rayed names are unioned back in so the subgraph's own parent step
+    (which the callbacks also report) stays a node we recognise.
+    """
+    try:
+        graph = app.get_graph(xray=True)
+    except Exception:  # pragma: no cover - older/patched LangGraph
+        graph = app.get_graph()
+
+    names = [_bare(n) for n in graph.nodes if _bare(n) not in _SENTINELS]
+    for outer in app.get_graph().nodes:
+        if outer not in _SENTINELS and outer not in names:
+            names.append(outer)
+
+    edge_map: dict[str, list[str]] = {}
+    conditional_sources: set[str] = set()
+    for edge in graph.edges:
+        source, target = _bare(edge.source), _bare(edge.target)
+        if source in _SENTINELS or target in _SENTINELS:
+            continue
+        edge_map.setdefault(source, []).append(target)
+        if getattr(edge, "conditional", False):
+            conditional_sources.add(source)
+    return names, edge_map, conditional_sources
+
+
 class ArgusRecorder(BaseCallbackHandler):
     """Records a fat trace of one LangGraph run and grades it."""
 
@@ -145,20 +194,11 @@ class ArgusRecorder(BaseCallbackHandler):
     def attach(self, app: Any) -> Any:
         """Bind the recorder to a compiled graph. Returns the app to invoke.
 
-        Reads topology through the public ``get_graph()`` and returns
+        Reads topology through the public ``get_graph(xray=True)`` (see
+        :func:`_topology`, so subgraph nodes are graded too) and returns
         ``app.with_config(callbacks=[self])``. Nothing is patched or mutated.
         """
-        graph = app.get_graph()
-        node_names = [n for n in graph.nodes if n not in _SENTINELS]
-
-        edge_map: dict[str, list[str]] = {}
-        conditional_sources: set[str] = set()
-        for edge in graph.edges:
-            if edge.source in _SENTINELS or edge.target in _SENTINELS:
-                continue
-            edge_map.setdefault(edge.source, []).append(edge.target)
-            if getattr(edge, "conditional", False):
-                conditional_sources.add(edge.source)
+        node_names, edge_map, conditional_sources = _topology(app)
 
         judge = self._resolve_judge()
         session = ArgusSession(

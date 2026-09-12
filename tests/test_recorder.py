@@ -188,8 +188,17 @@ def test_a_crash_is_recorded_and_fails_the_gate(monkeypatch):
 
     record = load_run(recorder.session.run_id)
     assert record.overall_status == "crashed"
-    assert record.first_failure_step == "boom"
     assert evaluate_run(record).passed is False
+
+    steps = {s.node_name: s for s in record.steps}
+    assert steps["boom"].status == "crashed", "the crash is still recorded where it happened"
+
+    # …but the blame is not. The KeyError names `summary`, and `search` ran
+    # before it without writing that field, so `search` is the origin and the
+    # first failing step. Naming `boom` here would be blaming the victim — see
+    # `inspector.crash_origins` / `session._blame_crash_origins`.
+    assert record.first_failure_step == "search"
+    assert "search" in evaluate_run(record).failing_nodes
 
 
 @pytest.mark.integration

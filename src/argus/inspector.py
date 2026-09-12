@@ -220,6 +220,25 @@ def _leaf_key(field_path: str) -> str:
     return re.sub(r"\[\d+\]$", "", leaf)
 
 
+def _is_the_whole_answer(output_dict: dict[str, Any] | None, field_path: str) -> bool:
+    """Is `field_path` a main output field whose entire value is a short token?
+
+    Distinguishes ``{"answer": "N/A"}`` — the node produced nothing and said so
+    — from a paragraph that happens to contain "n/a" somewhere inside it. Only
+    the first is a silent failure.
+    """
+    if not output_dict or _leaf_key(field_path).lower() not in _MAIN_LLM_OUTPUT_KEYS:
+        return False
+    value = output_dict
+    for part in field_path.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return False
+        value = value[part]
+    # ponytail: length is the proxy for "this is the whole answer, not a mention
+    # inside one". A real answer that fits in 40 characters is not one.
+    return isinstance(value, str) and len(value.strip()) <= 40
+
+
 def _is_retrieval_list_key(field_path: str) -> bool:
     return _leaf_key(field_path).lower() in _RETRIEVAL_LIST_KEYS
 
@@ -545,6 +564,14 @@ def inspect_tool_outputs(
         severity = signal.severity
         if signal.confidence < 0.7:
             severity = "warning"  # ambiguous — force warning regardless of sig severity
+        if severity == "warning" and _is_the_whole_answer(output_dict, signal.dotted_path):
+            # "TODO" / "N/A" *as the entire value of the answer field* is not a
+            # suspicious phrase inside real prose — it is the node having
+            # produced nothing, which is a silent failure and must gate CI.
+            # Most placeholder signatures are warning-severity because they
+            # usually match inside a longer body; that calibration is right
+            # there and wrong here.
+            severity = "critical"
         _add(
             ToolFailure(
                 failure_type=_CATEGORY_TO_FAILURE.get(signal.category, "semantic_degradation"),
@@ -867,6 +894,7 @@ def inspect_transition(
     input_state: dict[str, Any] | None = None,
     current_node_fn: Any = None,
     reducer_fields: dict[str, Any] | None = None,
+    has_successors: bool | None = None,
 ) -> InspectionResult:
     """Check if the output of current_node will cause a silent failure in any successor.
 
@@ -878,7 +906,14 @@ def inspect_transition(
         output_dict: the dict returned by the node (may be None on crash)
         merged_state: the full state after merging the output (what successor sees)
         successor_fns: list of callable node functions that may run next
+        has_successors: whether *anything* runs after this node. Defaults to
+            ``bool(successor_fns)``. These come apart on a router: a conditional
+            source is handed no successor_fns on purpose (validating against
+            every branch's annotations when only one branch runs is a false
+            positive factory) but plenty still runs after it.
     """
+    if has_successors is None:
+        has_successors = bool(successor_fns)
     # Scan heuristic signals ONCE, then pass to both tool failure conversion
     # and semantic_signals storage. Previously _scan_execution_output was
     # called twice (once inside inspect_tool_outputs Rule 7, once here),
@@ -906,9 +941,16 @@ def inspect_transition(
     # drop is invisible and blame falls on the downstream crash site instead.
     # Only literal {} is flagged here: a dict WITH keys (even empty-valued ones,
     # e.g. {"vulnerabilities": []}) is a real state contribution and is judged
-    # by the per-field rules above. Conditional/router nodes reach here with
-    # successor_fns=[] (see ArgusSession._get_successor_fns) and are exempt.
-    if successor_fns and output_dict is not None and not output_dict:
+    # by the per-field rules above.
+    #
+    # Gated on `has_successors`, NOT on `successor_fns`: a conditional source is
+    # handed an empty successor_fns list because its branches' annotations
+    # cannot all be required at once, but a worker that also owns the loop edge
+    # — the standard supervisor / ReAct shape — still has nodes waiting on it.
+    # Keying the rule off the annotation list let such a node return {} on every
+    # round and grade clean. This rule never reads a successor's type hints; it
+    # only needs to know somebody runs next.
+    if has_successors and output_dict is not None and not output_dict:
         tool_failures = [
             *tool_failures,
             ToolFailure(
@@ -1346,57 +1388,24 @@ def _build_predecessor_map(
     return result
 
 
-def build_root_cause_chain(
+def crash_origins(
     steps_so_far: list[Any],
     edge_map: dict[str, list[str]] | None = None,
-) -> list[str]:
-    """Walk backward through NodeEvents to find where a failure first originated.
+) -> list[tuple[Any, str, Any]]:
+    """Who is answerable for each crash: ``[(origin_event, key, crashed_event)]``.
 
-    Deduplication is keyed by (node_name, attempt_index), preserving chronological
-    order of first occurrence. In an acyclic run every node has attempt_index 0, so
-    each node still appears at most once. In a cyclic graph a node that fails on
-    more than one iteration is cited once per failing attempt — losing that
-    distinction hid which iteration actually broke.
+    A ``KeyError`` names the field the crashed node wanted. That is a contract
+    the run states out loud, so origin blame here needs no declared consumer
+    map — unlike :mod:`argus.contextual`, which exists for the fields nobody
+    crashes on.
 
-    Parallel fan-out guard: fields provided by any node in the run are excluded
-    from "missing field" blame. A field flagged missing on analyst_a is not a
-    root cause if analyst_b actually provided it — they ran simultaneously.
-
-    Crash-trace: when a node crashes with a KeyError/AttributeError, the chain
-    traces back to the nearest *graph predecessor* that should have produced the
-    missing field but didn't. Requires edge_map to identify actual predecessors;
-    without it, falls back to step-order heuristic (legacy behavior).
-
-    Args:
-        steps_so_far: list of NodeEvent objects from the run.
-        edge_map: graph topology {node: [successor_nodes]}.
+    Skips self-contained crashes (the key *was* available and the node fell over
+    anyway) and pure passthrough nodes, so a retrieve → rerank → synthesize drop
+    blames retrieve rather than whoever merely forwarded state.
     """
-    # Fields actually produced by any node across the entire run
-    all_provided: set[str] = set()
-    for event in steps_so_far:
-        if event.output_dict:
-            all_provided.update(event.output_dict.keys())
-
-    # Build predecessor map for topology-aware crash tracing
     predecessor_map = _build_predecessor_map(edge_map) if edge_map else {}
+    found: list[tuple[Any, str, Any]] = []
 
-    # Index: which fields each node produced (for crash-trace)
-    fields_by_node: dict[str, set[str]] = {}
-    for event in steps_so_far:
-        if event.output_dict and event.status not in ("crashed", "skipped"):
-            existing = fields_by_node.get(event.node_name, set())
-            existing.update(event.output_dict.keys())
-            fields_by_node[event.node_name] = existing
-
-    chain: list[str] = []
-    # Keyed by (node_name, attempt_index) so a node that fails on a later
-    # retry in a cyclic graph isn't silently deduped away by its earlier,
-    # successful attempt.
-    seen_nodes: set[tuple[str, int]] = set()
-    seen_bad_fields: set[str] = set()
-
-    # Phase 1: trace crash exceptions back to the upstream node that omitted
-    # the required field.
     for event in reversed(steps_so_far):
         if event.status != "crashed" or not event.exception:
             continue
@@ -1451,10 +1460,63 @@ def build_root_cause_chain(
                 origin = prev
 
         if origin is not None:
-            prev_key = (origin.node_name, origin.attempt_index)
-            if prev_key not in seen_nodes:
-                chain.append(origin.node_name)
-                seen_nodes.add(prev_key)
+            found.append((origin, missing_key, event))
+    return found
+
+
+def build_root_cause_chain(
+    steps_so_far: list[Any],
+    edge_map: dict[str, list[str]] | None = None,
+) -> list[str]:
+    """Walk backward through NodeEvents to find where a failure first originated.
+
+    Deduplication is keyed by (node_name, attempt_index), preserving chronological
+    order of first occurrence. In an acyclic run every node has attempt_index 0, so
+    each node still appears at most once. In a cyclic graph a node that fails on
+    more than one iteration is cited once per failing attempt — losing that
+    distinction hid which iteration actually broke.
+
+    Parallel fan-out guard: fields provided by any node in the run are excluded
+    from "missing field" blame. A field flagged missing on analyst_a is not a
+    root cause if analyst_b actually provided it — they ran simultaneously.
+
+    Crash-trace: when a node crashes with a KeyError/AttributeError, the chain
+    traces back to the nearest *graph predecessor* that should have produced the
+    missing field but didn't. Requires edge_map to identify actual predecessors;
+    without it, falls back to step-order heuristic (legacy behavior).
+
+    Args:
+        steps_so_far: list of NodeEvent objects from the run.
+        edge_map: graph topology {node: [successor_nodes]}.
+    """
+    # Fields actually produced by any node across the entire run
+    all_provided: set[str] = set()
+    for event in steps_so_far:
+        if event.output_dict:
+            all_provided.update(event.output_dict.keys())
+
+    # Index: which fields each node produced (for crash-trace)
+    fields_by_node: dict[str, set[str]] = {}
+    for event in steps_so_far:
+        if event.output_dict and event.status not in ("crashed", "skipped"):
+            existing = fields_by_node.get(event.node_name, set())
+            existing.update(event.output_dict.keys())
+            fields_by_node[event.node_name] = existing
+
+    chain: list[str] = []
+    # Keyed by (node_name, attempt_index) so a node that fails on a later
+    # retry in a cyclic graph isn't silently deduped away by its earlier,
+    # successful attempt.
+    seen_nodes: set[tuple[str, int]] = set()
+    seen_bad_fields: set[str] = set()
+
+    # Phase 1: trace crash exceptions back to the upstream node that omitted
+    # the required field.
+    for origin, _missing_key, _crashed in crash_origins(steps_so_far, edge_map):
+        prev_key = (origin.node_name, origin.attempt_index)
+        if prev_key not in seen_nodes:
+            chain.append(origin.node_name)
+            seen_nodes.add(prev_key)
 
     # Phase 2: inspection-based chain (silent failures, missing fields,
     # semantic degradation, tool failures, etc.)

@@ -1,7 +1,7 @@
 # Pivot branch — contributor update
 
 Branch: **`pivot/fat-traces`**  
-Last updated: 12 Sep 2026.
+Last updated: 12 Sep 2026 (second update: silent-failure stress matrix + six detection fixes).
 
 Same product: silent failures, origin blame, CI gate (`argus check`).  
 Different capture: fat traces → ledger (notebook) → rules → judge last. No wrapping the graph engine.
@@ -53,10 +53,85 @@ PYTHONPATH=src pytest tests/test_recorder.py tests/test_ledger.py \
   tests/test_ledger_unit.py tests/test_ledger_fidelity.py \
   tests/test_contextual.py tests/test_judge_last.py \
   tests/test_replay_from_ledger.py tests/test_rerun_e2e.py \
-  tests/test_new_user_pipelines.py tests/test_inspector_unit.py -q
+  tests/test_new_user_pipelines.py tests/test_inspector_unit.py \
+  tests/test_silent_failure_matrix.py -q
 ```
 
 End-to-end story in `tests/test_rerun_e2e.py`: ingest → retrieve → rerank → summarize → answer. Rerank drops every doc; the graph still answers. Check blames rerank. Replay feeds that row’s input (the 3 docs) into the fixed function; old output stays `[]`, new output has docs.
+
+---
+
+## Detection stress matrix (new) — and the six gaps it found
+
+`tests/test_silent_failure_matrix.py` is the answer to "does this architecture
+actually catch what enterprises ship?". 28 tests over seven real LangGraph
+pipelines — supervisor/worker loop (cyclic + conditional), map-reduce fan-out
+with `operator.add`, a four-node CRM triage chain, a tool-calling fetcher, a
+degraded-output generator, a crash handoff, and a subgraph. `patch_graph` is
+monkeypatched to raise in every test, so a slide back to the wrap path fails
+loudly.
+
+Every test asserts **the blamed node**, not just "something was found". A test
+that only checks `passed is False` would also pass on the old behaviour, which
+blamed the crash site.
+
+Six tests started as `xfail(strict=True)`. All six are now fixed:
+
+| # | What was missed | Why | Fix |
+|---|---|---|---|
+| 1 | A worker returning `{}` on **every** round graded **clean** — if it also owned the loop edge | `_get_successor_fns` returns `[]` for any conditional source, and `empty_output` was gated on that list. The exemption is right for the structural field check (you cannot require every branch's annotations at once) and wrong for `empty_output`, which never reads annotations | `inspect_transition(..., has_successors=)`, fed from `graph_edge_map`. A router is still a node |
+| 2 | A silent node **inside a subgraph** graded clean | `attach()` read `get_graph()`, so a subgraph was one opaque `child` node and its inner nodes were absent from `node_fn_registry` — no successors, so exempt from (1) | `recorder._topology()` reads `get_graph(xray=True)` and strips the `parent:` prefix, since callbacks report bare names |
+| 3 | Both of the above **double-missed** | `contextual._blame` stays quiet when any earlier row has `update == {}`, deferring to an `empty_output` that never fired | No code change. With 1 and 2 fixed the deferral is correct — and now tested |
+| 4 | A `KeyError` crash blamed only the crash site | `inspector`'s phase-1 crash walk **already found** the origin; the correlator then overwrote `root_cause_chain` with its own answer. The correlator diffs input→output, so it can only nominate nodes that produced output — never the one that quietly omitted a field | Phase 1 extracted as `inspector.crash_origins()`; `session._blame_crash_origins()` marks the origin so `argus check` names it; the correlator no longer overrides on `crashed` |
+| 5 | `answer: "N/A"` and `answer: "TODO"` raised findings but graded **clean** | Those signatures are `warning` severity — correct when they match inside a longer body, wrong when the placeholder *is* the whole answer | Promote to critical when the field is a main output key and its entire value is a short token (`_is_the_whole_answer`) |
+| 6 | Lorem ipsum undetected | RF-005 requires `(?:lorem ipsum\s*){2,}` — two repeats | Added RF-006 for a single occurrence |
+
+Also fixed (was listed under *Cosmetic*): a `missing_field` finding now keeps
+the sentence contextual/the crash walk authored — the one that names the
+**reader** — instead of `collect_findings` re-deriving a blander line, and
+`origin_node` is set rather than `None`.
+
+```bash
+PYTHONPATH=src pytest tests/test_silent_failure_matrix.py -q   # 28 passed, ~20s
+```
+
+### Behaviour changes — read this before you debug a "broken" test
+
+Two existing tests were updated because the **product** changed, not to make a
+run green. If you have a branch asserting either of these, it will fail:
+
+- **A crash no longer reports the crash site as the first failure.**
+  `first_failure_step` and `root_cause_chain[0]` are now the node that *omitted*
+  the field. `tests/test_recorder.py::test_a_crash_is_recorded_and_fails_the_gate`
+  asserted `first_failure_step == "boom"`; it is now `"search"` — the node that
+  ran before `boom` without writing the key `boom` died on. The crashed step is
+  still recorded as `crashed` where it happened; only the blame moved.
+- **A whole-value placeholder fails on the rules, not on the judge.**
+  `{"answer": "I don't know"}` used to land as `semantic_fail` (only the LLM's
+  verdict failed it) and is now `fail` with `has_tool_failure`, with or without
+  a key configured. That is judge-last working as intended. Judge-authored
+  `semantic_fail` is still covered by `test_async_judge_applies_fail_verdict`.
+
+Ordering matters in `session._finalize`: `_blame_crash_origins()` runs **after**
+`overall_status` is decided (so a crashed run stays `crashed`) and **before**
+`first_failure` is computed (so the origin, not the victim, leads the report).
+
+### What the matrix confirms already works
+
+- Long-range contextual blame: `enrich` nulls `customer_id`, `analyze` runs in
+  between, `respond` reads it three steps later → **`enrich` alone** is blamed.
+- Fan-out isolation: one silent branch is blamed; the healthy sibling and the
+  reducer are not.
+- Swallowed tool failures: an HTTP 500 payload and a caught `RuntimeError` both
+  fail the gate on the fetcher, with tool I/O on the right ledger row.
+- The false-positive line: `vulnerabilities: []` with **no declared reader** is
+  clean (a scan that finds nothing is a real answer); the same `[]` **under a
+  declared consumer** fails. Emptiness alone is not the signal — that is the
+  distinction to preserve in any future change here.
+- Progressive state fill, unchosen conditional branches, read-write accumulator
+  nodes, and `ainvoke` all behave.
+- A skinny trace (node spans sampled away) raises `IncompleteTraceError`
+  instead of "no findings, so clean".
 
 ---
 
@@ -100,9 +175,41 @@ Recorder is LangGraph-specific. Skinny traces (payloads stripped) must refuse, n
 
 Blocked on (1) and (4). First `master` PR keeps the wrap beside the recorder.
 
+### 8. Subgraph node names are bare, so two subgraphs can collide
+
+`get_graph(xray=True)` gives `child:retrieve`, but the callback stream reports
+`langgraph_node` as `retrieve`. We key on the bare name because the trace is
+what we have to match. Two different subgraphs that each contain a `retrieve`
+therefore collapse onto one registry entry.
+
+**Done when:** the trace carries qualified names, or we correlate by
+`parent_run_id` instead of by name. Not urgent — the ambiguity is in the trace,
+not in our mapping.
+
+### 9. `test_1mb_dict_completes` hugs its own budget
+
+Pre-existing, unrelated to the pivot, but it will flake your CI. It asserts
+`inspect_tool_outputs` on a 1MB dict finishes in under 60s and actually takes
+33–55s on a dev machine — and >60s under any parallel load. It was written to
+catch a 1051s pathology, so the threshold has three orders of magnitude of
+slack against its real purpose and almost none against noise.
+
+**Done when:** the budget matches the pathology it guards (say 300s), or the
+test measures work done rather than wall clock.
+
+### 10. Type drift is invisible
+
+A node declaring `items: list[str]` and returning `"a,b,c"` grades clean. A
+trace carries no successor type hints, so the structural check degrades to
+`unannotated_successors` by design. The consumer map declares *who reads what*,
+not *what shape* — a declared type would be the natural extension.
+
+**Done when:** product decides whether `consumers` grows a shape, or this stays
+a known limit of trace-based grading.
+
 ### Cosmetic
 
-`Finding.origin_node` is often `None`; the named origin is on `Finding.node`. Judge auto-on when a key/login exists (`semantic_judge=None`).
+Judge auto-on when a key/login exists (`semantic_judge=None`).
 
 ---
 
@@ -110,10 +217,13 @@ Blocked on (1) and (4). First `master` PR keeps the wrap beside the recorder.
 
 | Area | Change |
 |---|---|
-| Capture | `ArgusRecorder` — callbacks only; `output_update` is the node’s return |
+| Capture | `ArgusRecorder` — callbacks only; `output_update` is the node’s return. Topology via `get_graph(xray=True)`, so subgraph nodes are graded |
 | Notebook | `ledger.py` — rows from the run file; skipped steps omitted; reducer kinds persisted so piled-up lists survive reload |
 | Contextual | Blame at the **reader**. Progressive fill is clean. Drop / never-written / written-empty still origin-blame |
-| Inspector | Empty result: inherited `[]`→`[]` is warning; producer `[]` and drop-from-full stay critical |
+| Inspector | Empty result: inherited `[]`→`[]` is warning; producer `[]` and drop-from-full stay critical. `empty_output` gated on `has_successors`, not on successor annotations. Crash walk extracted as `crash_origins()`. Placeholder-as-whole-answer promoted to critical |
+| Crash blame | `session._blame_crash_origins()` fails the node that omitted the field; the correlator no longer overrides `root_cause_chain` on a crashed run |
+| Signatures | RF-006 — single-occurrence lorem ipsum |
+| Findings | `missing_field` keeps the authored reason (names the reader) and sets `origin_node` |
 | Check | Unchanged verdict: `argus check` / `evaluate_run` |
 | Replay | All replay paths re-feed **ledger** input. `replay_live(..., app=)` for trace runs. CLI: `argus replay <id> <node> --only --app mod:factory` |
 | Judge | Last; cannot override criticals. Default on if a key is configured |
@@ -141,7 +251,9 @@ Demos: `demo/fat_trace/`, `demo/new_user_rag.py`.
 | `f7595a6` | Contextual: blame at the reader, not step 0 |
 | `66f87ba` | A reader that produces the field it reads is not a failure |
 | `781a772` | Ledger: a node that never ran is not a step |
-| *(this push)* | Ledger-sourced replay; inherited-emptiness gate; e2e + contributor status |
+| `8b3fa2f` | Ledger-sourced replay |
+| `1b4f20e` | Green the pipeline |
+| *(this push)* | Silent-failure stress matrix (`tests/test_silent_failure_matrix.py`, 28 tests / 7 pipelines) and the six detection fixes it found: router `empty_output`, subgraph grading, crash origin, placeholder severity, RF-006, finding reason |
 
 ---
 
@@ -150,6 +262,15 @@ Demos: `demo/fat_trace/`, `demo/new_user_rag.py`.
 - Work on **`pivot/fat-traces`**. Do not open a wrap-deletion PR into `master`.
 - Do not rebuild `inspector.py` / signatures as new “layers.” They are the rules. The ledger feeds them.
 - Do not stash function pointers on the recorder to make replay work.
-- Full `pytest tests/` can hang on live embeddings. Use the file list above.
+- **Touching detection? Run `tests/test_silent_failure_matrix.py` first.** It is
+  the false-positive guard as much as the detection one — roughly half its tests
+  assert a pipeline is *clean*. Making a rule fire harder usually reds one of
+  those, which is the signal the rule went too far.
+- Adding a rule that needs "what runs next": ask whether you need the successor's
+  **type hints** (you will not get them from a trace — that is what `consumers`
+  is for) or only that **something runs** (`has_successors`). Conflating the two
+  is what hid gap 1.
+- Full `pytest tests/` takes ~8 minutes on live embeddings. Use the file list
+  above plus the matrix.
 
 Untracked on purpose (not in the implementation): `docs/ARGUS-PIVOT*.pdf`, `docs/generate_pivot_*.py`, `demo/research_agent/`, `website/public/__artifact.html`.

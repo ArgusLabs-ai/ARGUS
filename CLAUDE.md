@@ -68,7 +68,7 @@ ARGUS is a production readiness platform for AI agent pipelines — detects sile
 
 Every wrapped node executes through this pipeline:
 1. Output captured and serialized
-2. **Tool failure scan** (`inspector.py`): error keys, HTTP status codes, empty results, semantic registry. Also `empty_output` (critical): a node returning a literal empty state update (`{}`) while successors wait downstream — the canonical silent no-op, blamed on the origin instead of the downstream crash site. Narrow by design: only literal `{}` is flagged; a dict with keys (even empty-valued, e.g. `{"vulnerabilities": []}`) is a real state contribution left to the per-field rules, and router/conditional nodes (`successor_fns=[]`) are exempt. Also `json_in_string` (warning, Rule 17): a string field that parses as a JSON object/array — double-encoded JSON returned instead of a parsed structure. Advisory only (warning, not critical, so it never flips run status); fields where stringified payloads are expected (`raw_response`, `log`, `logs`, `raw`, `history`, `raw_output`, `payload`) are skipped case-insensitively.
+2. **Tool failure scan** (`inspector.py`): error keys, HTTP status codes, empty results, semantic registry. Also `empty_output` (critical): a node returning a literal empty state update (`{}`) while successors wait downstream — the canonical silent no-op, blamed on the origin instead of the downstream crash site. Narrow by design: only literal `{}` is flagged; a dict with keys (even empty-valued, e.g. `{"vulnerabilities": []}`) is a real state contribution left to the per-field rules. Gated on `has_successors` (does any edge leave this node), **not** on `successor_fns` — a conditional source is handed no successor fns because its branches' annotations cannot all be required at once, but a worker that also owns the loop edge still has nodes waiting on it, and this rule never reads a successor's type hints. Also `json_in_string` (warning, Rule 17): a string field that parses as a JSON object/array — double-encoded JSON returned instead of a parsed structure. Advisory only (warning, not critical, so it never flips run status); fields where stringified payloads are expected (`raw_response`, `log`, `logs`, `raw`, `history`, `raw_output`, `payload`) are skipped case-insensitively.
 3. **Structural inspection** (`inspector.py`): missing required fields vs successor type hints, type mismatches
 4. **Semantic validators**: custom per-node or wildcard validators
 5. **Anomaly detection**: behavioral anomaly signals (output size, timing, structure)
@@ -87,7 +87,7 @@ Every wrapped node executes through this pipeline:
 
 | File | Role |
 |------|------|
-| `src/argus/recorder.py` | **Pivot path.** `ArgusRecorder` — fat-trace ingest via LangChain callbacks. `attach(app)` returns `app.with_config(callbacks=[self])`; nothing is patched. Keeps each node's *update*, not the merged state. Refuses to grade a thin trace (`IncompleteTraceError`) |
+| `src/argus/recorder.py` | **Pivot path.** `ArgusRecorder` — fat-trace ingest via LangChain callbacks. `attach(app)` returns `app.with_config(callbacks=[self])`; nothing is patched. Keeps each node's *update*, not the merged state. Refuses to grade a thin trace (`IncompleteTraceError`). Topology via `_topology()` → `get_graph(xray=True)`, so nodes **inside a subgraph** are registered (bare names, matching what the callbacks report) instead of hiding behind one opaque parent node |
 | `src/argus/ledger.py` | **Pivot path.** `build_ledger()` — steps folded into the notebook (input, update, running state, tools, error, status). Derived from `RunRecord.steps`, not a second store. Steps marked `skipped` (the unchosen branch of a conditional) are not rows — they never ran. Reduced fields accumulate via `RunRecord.reducer_kinds`, strings because reducer callables do not survive the run file |
 | `src/argus/contextual.py` | **Pivot path.** Declared consumer map (`consumers={"field": ["reader"]}`) → blames the first step whose running state lacked a field a later node reads. Never written → the earliest step; written then dropped → the dropper. Never the reader, never the node merely adjacent to it |
 | `src/argus/session.py` | Core monitoring session, wraps arbitrary callables |
@@ -137,7 +137,7 @@ An attached `ArgusWatcher` reuses one `ArgusSession` across calls (its node wrap
 ### Root Cause Analysis
 
 `build_root_cause_chain(steps_so_far)` in `inspector.py`:
-- Phase 1 (crash): Traces `KeyError` crash back to node that omitted the missing field
+- Phase 1 (crash): Traces `KeyError` crash back to node that omitted the missing field. Extracted as `crash_origins(steps, edge_map)` so blame can act on it, not just report it — `ArgusSession._blame_crash_origins` marks that node's inspection so `argus check` names it. A `KeyError` states its own field, so this needs no declared consumer map. The correlator's `root_cause_chain` override is skipped on crashed runs: it diffs input→output and so can only ever nominate the crash site
 - Phase 2 (silent): Walks backward through `InspectionResult.missing_fields`
 - Handles parallel fan-out (doesn't blame a field if any sibling provided it)
 - Returns deduplicated ordered list of culprit node names
@@ -151,3 +151,5 @@ An attached `ArgusWatcher` reuses one `ArgusSession` across calls (its node wrap
 ### Testing
 
 Tests live in `tests/test_smoke.py`. Marks used: `@pytest.mark.unit`, `@pytest.mark.integration`. Run all or target single tests by function name.
+
+`tests/test_silent_failure_matrix.py` is the pivot path's detection + false-positive matrix: 28 tests over seven real LangGraph pipelines (supervisor loop, map-reduce fan-out, CRM triage, tool fetcher, degraded output, crash handoff, subgraph), each asserting *which node* is blamed. `patch_graph` is monkeypatched to raise throughout. Run it before and after any change to `inspector.py` / `contextual.py` / `recorder.py` — roughly half its tests assert a pipeline is **clean**, so it catches a rule that started over-firing as readily as one that stopped firing.
