@@ -61,6 +61,7 @@ def make_inspection(
     signals=None,
     is_silent=False,
     has_tool_failure=False,
+    has_tool_warnings=False,
     severity="ok",
     message="All checks passed",
 ):
@@ -73,6 +74,7 @@ def make_inspection(
         message=message,
         tool_failures=tool_failures or [],
         has_tool_failure=has_tool_failure,
+        has_tool_warnings=has_tool_warnings,
         semantic_signals=signals or [],
     )
 
