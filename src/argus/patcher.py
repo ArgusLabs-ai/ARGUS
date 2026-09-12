@@ -44,9 +44,12 @@ def patch_graph(graph: Any, session: ArgusSession) -> None:
             afunc = node_value.runnable.afunc
             if afunc is not None and afunc is not original_fn:
                 node_value.runnable.afunc = session.wrap(node_name, afunc)
-        else:
+        elif not hasattr(node_value, "runnable"):
             # Legacy: nodes are plain callables
             graph.nodes[node_name] = session.wrap(node_name, node_value)
+        # StateNodeSpec whose .runnable is a compiled graph (subgraph nodes,
+        # e.g. langgraph-swarm agents, langgraph-reflection) has no .func to
+        # wrap — leave it unmonitored rather than corrupting graph.nodes.
 
 
 def extract_edge_map(graph: Any) -> dict[str, list[str]]:
