@@ -235,7 +235,18 @@ def replay_run(
     # ── Run replay ────────────────────────────────────────────────────────
     engine = ReplayEngine()
     try:
-        if only:
+        if only and not has_node_refs:
+            # A trace run: the notebook holds the input, the user's graph holds
+            # the code. `factory` is non-None here — the no-app case already
+            # exited above, pointing at `argus check`.
+            new_run_id = engine.replay_live(
+                run_id=run_id,
+                node_name=from_step,
+                app=factory(),
+                patch=patch,
+                create_missing=create_missing,
+            )
+        elif only:
             new_run_id = engine.replay_node(
                 run_id=run_id,
                 node_name=from_step,

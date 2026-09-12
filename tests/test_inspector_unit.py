@@ -992,3 +992,40 @@ class TestTypedDictIntrospection:
             expected, actual, node_provided_keys={"summary"},
         )
         assert "score" not in missing
+
+
+@pytest.mark.unit
+class TestEmptyResultIsGatedOnTheTransition:
+    """An empty list means three different things depending on what came in."""
+
+    @staticmethod
+    def _empty(result):
+        return next(tf for tf in result.tool_failures if tf.failure_type == "empty_result")
+
+    def test_a_node_that_produced_nothing_still_fails(self):
+        """No `documents` in, `[]` out — a retriever that found nothing. The case
+        this product exists to catch; it must not be softened."""
+        result = inspect_tool_outputs({"documents": []}, input_state={"query": "refund"})
+        assert self._empty(result).severity == "critical"
+
+    def test_a_node_that_dropped_what_it_held_fails(self):
+        """Three documents in, none out — the node emptied it. It is the origin."""
+        result = inspect_tool_outputs(
+            {"documents": []}, input_state={"documents": [{"a": 1}, {"b": 2}, {"c": 3}]}
+        )
+        assert self._empty(result).severity == "critical"
+
+    def test_a_node_that_inherited_the_emptiness_only_warns(self):
+        """Empty in, empty out — nothing here to drop. Blaming it buries the origin."""
+        result = inspect_tool_outputs({"documents": []}, input_state={"documents": []})
+        failure = self._empty(result)
+        assert failure.severity == "warning"
+        assert "nothing here to drop" in failure.evidence
+
+    def test_without_an_input_state_the_severity_is_unchanged(self):
+        """No evidence either way — never weaken a finding on a guess."""
+        assert self._empty(inspect_tool_outputs({"documents": []})).severity == "critical"
+
+    def test_a_non_empty_result_is_not_a_finding_at_all(self):
+        result = inspect_tool_outputs({"documents": [{"a": 1}]}, input_state={"documents": []})
+        assert not [tf for tf in result.tool_failures if tf.failure_type == "empty_result"]
