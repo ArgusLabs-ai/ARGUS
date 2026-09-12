@@ -308,4 +308,5 @@ def test_new_user_cli_argus_check_fails_the_silent_graph(monkeypatch):
 
     result = CliRunner().invoke(cli, ["check", "last"])
     assert result.exit_code == 1, result.output
-    assert "silent_failure" in result.output or "empty_output" in result.output or "fail" in result.output.lower()
+    output = result.output.lower()
+    assert "silent_failure" in output or "empty_output" in output or "fail" in output

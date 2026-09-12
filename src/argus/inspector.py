@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import replace
 from difflib import SequenceMatcher
 from statistics import median
 from typing import Any
@@ -528,34 +527,6 @@ def inspect_tool_outputs(
     # Rules 1–6 — recursive tool-failure shapes (error keys, HTTP status,
     # success/failure booleans, empty retrieval, nested dict/list payloads)
     _scan_payload_for_tool_failures(output_dict, "", 0, _add)
-
-    # Rule 3 gate — don't fail a node for passing on an emptiness it inherited.
-    # Three shapes look identical in an output dict and only the transition tells
-    # them apart:
-    #   absent in  → `[]` out : the node produced nothing. A retriever that finds
-    #                           nothing is the failure this product exists to
-    #                           catch, so this stays critical.
-    #   full in    → `[]` out : the node dropped what it held. Critical, and it
-    #                           is the origin.
-    #   empty in   → `[]` out : it never had anything to drop. Someone upstream
-    #                           is the origin; blaming here too just buries them.
-    # No input state means no evidence, so the finding keeps its severity rather
-    # than being weakened on a guess.
-    if input_state is not None:
-        for field, tf in list(by_field.items()):
-            if tf.failure_type != "empty_result" or tf.severity != "critical":
-                continue
-            # ponytail: top-level fields only. A nested path has no matching key
-            # in the input state to compare against, so it keeps today's severity.
-            if "." in field or "[" in field:
-                continue
-            if field not in input_state or not _is_empty(input_state[field]):
-                continue
-            by_field[field] = replace(
-                tf,
-                severity="warning",
-                evidence=f"{tf.evidence} (arrived empty — nothing here to drop)",
-            )
 
     # Rule 17 — Double-Encoded JSON Detection
     _scan_double_encoded(output_dict, "", 0, _add)
