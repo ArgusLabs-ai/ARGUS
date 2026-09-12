@@ -13,7 +13,14 @@ Six of these started life as ``xfail(strict=True)`` — reproducible gaps this
 file found in the pivot path (routers hiding ``empty_output``, subgraph nodes
 never graded, crash origin lost without a declared contract, ``answer: "N/A"``
 grading clean, lorem ipsum unmatched, contextual's reason discarded). All six
-are fixed; the tests stay as the regression guard. See ``docs/PIVOT-BRANCH.md``.
+are fixed; the tests stay as the regression guard.
+
+**Scope.** This file covers the detection *core* over seven topologies. It does
+not cover ``.stream()`` / ``.batch()``, real LLM nodes, ``MessagesState`` /
+``add_messages``, ``create_react_agent``, interrupts, custom reducers, or
+subgraphs nested more than one level. Those are unverified, not known-good —
+see "What the matrix does NOT cover" in ``docs/PIVOT-BRANCH.md`` before citing
+this file as evidence the architecture is validated.
 """
 
 from __future__ import annotations

@@ -75,6 +75,10 @@ Every test asserts **the blamed node**, not just "something was found". A test
 that only checks `passed is False` would also pass on the old behaviour, which
 blamed the crash site.
 
+> **Read "What the matrix does NOT cover" below before treating this as
+> validation of the whole architecture.** It covers the detection core, not
+> streaming, not `create_react_agent`, not real model calls.
+
 Six tests started as `xfail(strict=True)`. All six are now fixed:
 
 | # | What was missed | Why | Fix |
@@ -132,6 +136,30 @@ Ordering matters in `session._finalize`: `_blame_crash_origins()` runs **after**
   nodes, and `ainvoke` all behave.
 - A skinny trace (node spans sampled away) raises `IncompleteTraceError`
   instead of "no findings, so clean".
+
+### What the matrix does NOT cover
+
+Read this before quoting the matrix as evidence the architecture is validated.
+It stress-tests the **detection core** over seven topologies. It is not
+exhaustive, and the holes are in exactly the places production LangGraph code
+lives. Nothing below is known-broken — it is **unverified**, which is a
+different and more dangerous thing to leave undocumented.
+
+| Not covered | Why it matters |
+|---|---|
+| **`.stream()` / `.astream()` / `.batch()`** | Only `invoke` and `ainvoke` are exercised. The recorder's callback bookkeeping (`_pending`, root-run detection, deferred finalize) differs across these, and repeat invokes on one recorder (`begin_new_run`) are untested here |
+| **Real LLM nodes** | Every node in the matrix is a deterministic stub. No live model call anywhere. Token accounting, latency signals and judge behaviour under real outputs are untested by this file |
+| **`MessagesState` / `add_messages`** | The matrix uses `operator.add` on plain lists. `add_messages` de-duplicates by message id, which `ledger.py` already flags as an approximation (`_ADD_REDUCERS` treats it as plain concatenation). That ceiling is unverified |
+| **`create_react_agent` and real tool-calling loops** | The prebuilt agent is what most teams actually ship. The matrix hand-builds its graphs, so the prebuilt's node naming and tool-call shape are unexercised |
+| **Interrupts / human-in-the-loop** | Checkpointer, `interrupt()`, resume. The `interrupted` status exists in the vocabulary (`docs/STATUS.md`) and no test in the matrix produces it |
+| **Custom reducers** | Documented to round-trip as `"overwrite"` (see `ledger.reducer_kinds`). The consequence — fan-in reading as "last branch wins" — is asserted nowhere |
+| **Nested subgraphs deeper than one level** | `_topology()` strips one `parent:` prefix. Two levels is untried |
+| **Concurrency under real parallel load** | Fan-out is tested, but with trivial fast nodes. The recorder's locking is not load-tested |
+| **Oversized / truncated payloads** | `max_field_size` markers are handled in `ledger.py` but not driven through the recorder here |
+
+Highest-value additions, in order: **streaming**, **`create_react_agent`**, and
+**`add_messages`**. Those three are the difference between "the detection core
+is sound" and "the architecture is validated for what people ship."
 
 ---
 
