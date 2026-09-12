@@ -298,6 +298,10 @@ class RunRecord:
     graph_node_names: list[str]
     graph_edge_map: dict[str, list[str]]
     initial_state: dict[str, Any]
+    # {field: "add"|"overwrite"} — how the state schema combines a field, as a
+    # string, so the ledger folds a reloaded run the same way it folds a live
+    # one. Reducer callables cannot be persisted. See ledger.reducer_kinds.
+    reducer_kinds: dict[str, str] = field(default_factory=dict)
     steps: list[NodeEvent] = field(default_factory=list)
     schema_version: str = "0"  # ponytail: "0"=pre-VAR-71, "1"=current; migrate on load
     parent_run_id: str | None = None

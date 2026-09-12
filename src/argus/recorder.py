@@ -224,6 +224,19 @@ class ArgusRecorder(BaseCallbackHandler):
                 session.capture_state(inputs if isinstance(inputs, dict) else {})
             return
 
+        with self._lock:
+            parent = self._pending.get(parent_run_id) if parent_run_id else None
+        if parent is not None and parent[0] == node:
+            # A chain nested inside the step we are already recording, carrying
+            # that same node's name: LangGraph's own inner runnable, not a
+            # second visit. The conditional-edge branch is the one that shows up
+            # — it runs *after* the node function, so recording it filed a
+            # duplicate row whose "input" already held what the real row wrote,
+            # and made the node look `retried`. Verified against langgraph
+            # 0.6.11. Matching on the name rather than the `seq:step:N` tag
+            # keeps a real subgraph's inner nodes (different names) recorded.
+            return
+
         input_snap = session.capture_state(inputs if isinstance(inputs, dict) else {})
         with self._lock:
             self._pending[run_id] = (node, input_snap, time.perf_counter())
@@ -345,7 +358,7 @@ class ArgusRecorder(BaseCallbackHandler):
         if not session._events:
             self._refuse(session, "no steps were recorded — the trace is empty")
 
-        ledger = build_ledger(session._events, session._initial_state)
+        ledger = build_ledger(session._events, session._initial_state, session.reducer_kinds)
         self._blame_origins(session, contextual_findings(ledger, self._consumers))
 
         # The per-step judge already fired (its futures don't re-check this

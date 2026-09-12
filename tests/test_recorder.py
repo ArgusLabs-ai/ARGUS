@@ -257,3 +257,37 @@ def test_an_empty_trace_refuses_to_grade():
 def test_invoking_before_attach_is_an_error():
     with pytest.raises(RuntimeError, match="attach"):
         ArgusRecorder()._require_session()
+
+
+@pytest.mark.integration
+def test_a_conditional_node_is_recorded_once(tmp_path, monkeypatch):
+    """LangGraph runs the branch condition as a child chain of the node itself.
+
+    It carries the same `langgraph_node`, so it used to be recorded as a second
+    step for that node — a duplicate row labelled `retried`, filed *before* the
+    real one, whose input_state is the state the real row had not written yet.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    class _S(TypedDict, total=False):
+        route: str
+        picked: str
+
+    g = StateGraph(_S)
+    g.add_node("router", lambda s: {"route": "left"})
+    g.add_node("left", lambda s: {"picked": "L"})
+    g.add_node("right", lambda s: {"picked": "R"})
+    g.add_edge(START, "router")
+    g.add_conditional_edges("router", lambda s: s["route"], {"left": "left", "right": "right"})
+    g.add_edge("left", END)
+    g.add_edge("right", END)
+
+    recorder = ArgusRecorder(semantic_judge=False)
+    recorder.attach(g.compile()).invoke({})
+
+    ran = [e for e in recorder.session._events if e.status != "skipped"]
+    assert [e.node_name for e in ran] == ["router", "left"]
+    router = ran[0]
+    assert router.status == "pass", "the node never retried"
+    assert router.output_dict == {"route": "left"}
+    assert "route" not in router.input_state, "input must predate the node's own update"

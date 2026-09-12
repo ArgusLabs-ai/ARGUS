@@ -44,6 +44,7 @@ from argus.inspector import (
     inspect_transition,
     is_legitimate_field_handoff,
 )
+from argus.ledger import reducer_kinds as _reducer_kinds
 from argus.llm_tracker import create_tracker, extract_usage, install_handler, remove_handler
 from argus.models import (
     AnomalySignal,
@@ -658,6 +659,15 @@ class ArgusSession:
         return _redact_dict(
             snap, self._redact_keys, self._redact_functions or None, self._redact_patterns
         )
+
+    @property
+    def reducer_kinds(self) -> dict[str, str]:
+        """The declared reducers as strings the run file can hold.
+
+        The ledger folds by these, live and reloaded alike, so both notebooks
+        agree on the running state of a fan-in field.
+        """
+        return _reducer_kinds(self.reducer_fields)
 
     def capture_state(self, state: Any) -> dict[str, Any]:
         snap = safe_serialize(state, self.max_field_size)
@@ -1370,6 +1380,7 @@ class ArgusSession:
             graph_node_names=self.graph_node_names,
             graph_edge_map=self.graph_edge_map,
             initial_state=self._initial_state,
+            reducer_kinds=self.reducer_kinds,
             steps=events_snapshot,
             schema_version=SCHEMA_VERSION,
             is_cyclic=self._is_cyclic,

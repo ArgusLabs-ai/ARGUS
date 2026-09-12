@@ -10,6 +10,8 @@ from typing import TypedDict
 import pytest
 
 from argus.check import evaluate_run
+from argus.contextual import contextual_findings
+from argus.ledger import build_ledger
 from argus.recorder import ArgusRecorder
 from argus.storage import load_run
 
@@ -262,3 +264,41 @@ def test_a_field_supplied_by_the_caller_is_not_missing(monkeypatch):
     record = load_run(recorder.session.run_id)
     assert evaluate_run(record).passed is True
     assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_a_reader_on_an_untaken_branch_never_read_anything(monkeypatch):
+    """`right` is declared a reader but its branch never ran — nobody read `b`.
+
+    The live ledger was always quiet here; the reloaded one was not. Skipped
+    steps are synthesized at finalize, so only the re-score path saw a node that
+    never executed sitting in the notebook looking like a reader.
+    """
+    _no_patching(monkeypatch)
+
+    class _R(TypedDict, total=False):
+        seed: str
+        route: str
+        b: str
+        out: str
+
+    g = StateGraph(_R)
+    g.add_node("A", lambda s: {"b": "ok", "route": "left"})
+    g.add_node("drop", lambda s: {"b": ""})
+    g.add_node("left", lambda s: {"out": "L"})
+    g.add_node("right", lambda s: {"out": str(s["b"])})
+    g.add_edge(START, "A")
+    g.add_edge("A", "drop")
+    g.add_conditional_edges("drop", lambda s: s["route"], {"left": "left", "right": "right"})
+    g.add_edge("left", END)
+    g.add_edge("right", END)
+
+    recorder = ArgusRecorder(consumers={"b": ["right"]})
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    record = load_run(recorder.session.run_id)
+    rows = build_ledger(record.steps, record.initial_state)
+
+    assert "right" not in [r.node for r in rows], "a node that never ran is not a step"
+    assert contextual_findings(rows, {"b": ["right"]}) == []
+    assert [f.node for f in record.findings if f.type == "missing_field"] == []

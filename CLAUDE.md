@@ -88,7 +88,7 @@ Every wrapped node executes through this pipeline:
 | File | Role |
 |------|------|
 | `src/argus/recorder.py` | **Pivot path.** `ArgusRecorder` — fat-trace ingest via LangChain callbacks. `attach(app)` returns `app.with_config(callbacks=[self])`; nothing is patched. Keeps each node's *update*, not the merged state. Refuses to grade a thin trace (`IncompleteTraceError`) |
-| `src/argus/ledger.py` | **Pivot path.** `build_ledger()` — steps folded into the notebook (input, update, running state, tools, error). Derived from `RunRecord.steps`, not a second store |
+| `src/argus/ledger.py` | **Pivot path.** `build_ledger()` — steps folded into the notebook (input, update, running state, tools, error, status). Derived from `RunRecord.steps`, not a second store. Steps marked `skipped` (the unchosen branch of a conditional) are not rows — they never ran. Reduced fields accumulate via `RunRecord.reducer_kinds`, strings because reducer callables do not survive the run file |
 | `src/argus/contextual.py` | **Pivot path.** Declared consumer map (`consumers={"field": ["reader"]}`) → blames the first step whose running state lacked a field a later node reads. Never written → the earliest step; written then dropped → the dropper. Never the reader, never the node merely adjacent to it |
 | `src/argus/session.py` | Core monitoring session, wraps arbitrary callables |
 | `src/argus/watcher.py` | LangGraph adapter (thin wrapper over `ArgusSession`) — legacy wrap path |
