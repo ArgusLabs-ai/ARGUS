@@ -226,17 +226,46 @@ class TestAsyncJudgeWithMockedLLM:
                 assert e.semantic_check.passed is True
 
     def test_async_judge_applies_fail_verdict(self, monkeypatch):
+        """A judge fail gates the run when a deterministic layer also flagged it.
+
+        `generate_answer_placeholder` trips the rules, so the judge is ruling on
+        evidence rather than inventing a verdict — that is the case it may fail.
+        """
         self._enable_llm(monkeypatch)
         monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _mock_llm_fail)
 
         _, events, record = _build_and_run({
             "fetch": fetch_context,
-            "generate": generate_answer,
+            "generate": generate_answer_placeholder,
             "score": score_answer,
         })
         assert record.overall_status != "clean"
-        semantic_fails = [e for e in events if e.status == "semantic_fail"]
-        assert len(semantic_fails) >= 1
+        assert [e for e in events if e.status in ("fail", "semantic_fail")]
+
+    def test_an_uncorroborated_judge_fail_does_not_gate_the_run(self, monkeypatch):
+        """The judge may not fail a step no deterministic layer flagged.
+
+        BEHAVIOUR CHANGE — this previously produced `semantic_fail`. Left free
+        to originate failures, the judge made the gate nondeterministic: the
+        same healthy `create_react_agent` failed two runs in three at
+        confidence 1.0, with contradictory reasons. "Judge last, never first"
+        means it rules on evidence; with no evidence it annotates and nothing
+        more. The verdict is still recorded on the event and shown by
+        `argus show` — it just does not move the status.
+        """
+        self._enable_llm(monkeypatch)
+        monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _mock_llm_fail)
+
+        _, events, record = _build_and_run({
+            "fetch": fetch_context,
+            "generate": generate_answer,  # healthy — the rules find nothing
+            "score": score_answer,
+        })
+        assert record.overall_status == "clean", record.overall_status
+        assert not [e for e in events if e.status == "semantic_fail"]
+        judged = [e for e in events if e.semantic_check is not None]
+        assert judged, "the verdict must still be recorded, just not gating"
+        assert any(not e.semantic_check.passed for e in judged)
 
     def test_async_judge_concurrent_calls(self, monkeypatch):
         """Verify multiple LLM calls fire and complete."""

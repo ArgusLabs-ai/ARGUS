@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import operator
 from typing import Annotated, TypedDict
+from uuid import uuid4
 
 import pytest
 
@@ -256,7 +257,7 @@ def test_an_empty_trace_refuses_to_grade():
     recorder.attach(_build_app({}))
 
     with pytest.raises(IncompleteTraceError):
-        recorder._finish()
+        recorder._finish(recorder._new_session(), uuid4())
 
     # and it must not leave a "clean" run behind for the gate to pass on
     assert not list_runs()
@@ -265,7 +266,7 @@ def test_an_empty_trace_refuses_to_grade():
 @pytest.mark.unit
 def test_invoking_before_attach_is_an_error():
     with pytest.raises(RuntimeError, match="attach"):
-        ArgusRecorder()._require_session()
+        ArgusRecorder()._require_attached()
 
 
 @pytest.mark.integration
