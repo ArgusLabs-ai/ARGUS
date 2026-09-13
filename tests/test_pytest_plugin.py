@@ -145,6 +145,20 @@ def test_auto_wrap_silent_failure_astream(auto_wrap):
 
 
 @pytest.mark.unit
+def test_auto_wrap_silent_failure_batch(auto_wrap):
+    app = _silent_graph().compile()
+    app.batch([{"n": 0}])
+    _assert_silent_failure_recorded()
+
+
+@pytest.mark.unit
+def test_auto_wrap_silent_failure_abatch(auto_wrap):
+    app = _silent_graph().compile()
+    asyncio.run(app.abatch([{"n": 0}]))
+    _assert_silent_failure_recorded()
+
+
+@pytest.mark.unit
 def test_auto_wrap_clean_ainvoke_is_clean(auto_wrap):
     app = _clean_graph().compile()
     assert asyncio.run(app.ainvoke({"n": 0}))["n"] == 1
@@ -220,6 +234,30 @@ def test_pregel_fallback_attaches_on_astream():
                 pass
 
         asyncio.run(_drain())
+        _assert_silent_failure_recorded()
+    finally:
+        uninstall_auto_instrumentation()
+
+
+@pytest.mark.unit
+def test_pregel_fallback_attaches_on_batch():
+    uninstall_auto_instrumentation()
+    app = _silent_graph().compile()
+    install_auto_instrumentation()
+    try:
+        app.batch([{"n": 0}])
+        _assert_silent_failure_recorded()
+    finally:
+        uninstall_auto_instrumentation()
+
+
+@pytest.mark.unit
+def test_pregel_fallback_attaches_on_abatch():
+    uninstall_auto_instrumentation()
+    app = _silent_graph().compile()
+    install_auto_instrumentation()
+    try:
+        asyncio.run(app.abatch([{"n": 0}]))
         _assert_silent_failure_recorded()
     finally:
         uninstall_auto_instrumentation()
@@ -358,6 +396,61 @@ def test_silent():
 """
 
 
+_SILENT_BATCH = """
+from typing import TypedDict
+from langgraph.graph import END, StateGraph
+
+class S(TypedDict, total=False):
+    n: int
+    results: list
+    error: str
+    status_code: int
+
+def test_silent():
+    def api_call(state):
+        return {"results": [], "error": "Connection refused", "status_code": 503}
+
+    def process(state):
+        return {"n": 1}
+
+    g = StateGraph(S)
+    g.add_node("api_call", api_call)
+    g.add_node("process", process)
+    g.set_entry_point("api_call")
+    g.add_edge("api_call", "process")
+    g.add_edge("process", END)
+    g.compile().batch([{"n": 0}])
+"""
+
+
+_SILENT_ABATCH = """
+import asyncio
+from typing import TypedDict
+from langgraph.graph import END, StateGraph
+
+class S(TypedDict, total=False):
+    n: int
+    results: list
+    error: str
+    status_code: int
+
+def test_silent():
+    def api_call(state):
+        return {"results": [], "error": "Connection refused", "status_code": 503}
+
+    def process(state):
+        return {"n": 1}
+
+    g = StateGraph(S)
+    g.add_node("api_call", api_call)
+    g.add_node("process", process)
+    g.set_entry_point("api_call")
+    g.add_edge("api_call", "process")
+    g.add_edge("process", END)
+    asyncio.run(g.compile().abatch([{"n": 0}]))
+"""
+
+
 @pytest.mark.unit
 def test_pytest_argus_auto_wraps_clean_invoke(pytester: pytest.Pytester):
     pytest.importorskip("argus.pytest_plugin")
@@ -405,6 +498,28 @@ def test_pytest_argus_silent_astream_fails_test(pytester: pytest.Pytester):
     pytest.importorskip("argus.pytest_plugin")
     _prepare_plugin_project(pytester)
     pytester.makepyfile(_SILENT_ASTREAM)
+    result = pytester.runpytest("--argus", "-q")
+    result.assert_outcomes(failed=1)
+    combined = str(result.stdout) + str(result.stderr)
+    assert "argus check failed" in combined
+
+
+@pytest.mark.unit
+def test_pytest_argus_silent_batch_fails_test(pytester: pytest.Pytester):
+    pytest.importorskip("argus.pytest_plugin")
+    _prepare_plugin_project(pytester)
+    pytester.makepyfile(_SILENT_BATCH)
+    result = pytester.runpytest("--argus", "-q")
+    result.assert_outcomes(failed=1)
+    combined = str(result.stdout) + str(result.stderr)
+    assert "argus check failed" in combined
+
+
+@pytest.mark.unit
+def test_pytest_argus_silent_abatch_fails_test(pytester: pytest.Pytester):
+    pytest.importorskip("argus.pytest_plugin")
+    _prepare_plugin_project(pytester)
+    pytester.makepyfile(_SILENT_ABATCH)
     result = pytester.runpytest("--argus", "-q")
     result.assert_outcomes(failed=1)
     combined = str(result.stdout) + str(result.stderr)
