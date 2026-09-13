@@ -71,15 +71,20 @@ def _placeholder_node(name: str) -> Callable[..., Any]:
     critical ``empty_output`` rule (``inspector.py``) only fires when a node has
     successors waiting. The placeholder restores that. It is deliberately
     unannotated: a trace does not carry what the next step expected, so the
-    structural field check degrades to ``unannotated_successors`` instead of
-    quietly inventing a contract. That contract is layer 3
-    (:mod:`argus.contextual`).
+    structural field check is skipped rather than quietly inventing a contract.
+    That contract is layer 3 (:mod:`argus.contextual`), declared with
+    ``consumers=``.
+
+    The marker tells the inspector this successor is ours, not the user's, so it
+    does not advise "add type hints to X" — advice that is wrong on an annotated
+    node and impossible to act on either way.
     """
 
     def _node(state):  # type: ignore[no-untyped-def]  # unannotated on purpose
         raise RuntimeError(f"{name} is a trace placeholder and is never called")
 
     _node.__name__ = name
+    _node.__argus_trace_placeholder__ = True  # type: ignore[attr-defined]
     return _node
 
 
@@ -179,7 +184,12 @@ class ArgusRecorder(BaseCallbackHandler):
         # Declared `field -> [reader nodes]`; a trace cannot tell us who reads what.
         self._consumers = consumers
 
+        # The most recently started run's session. One attach can serve many
+        # runs (a served app, a loop, `.batch()`), so the recorder keeps one
+        # session *per run* and this is only the latest — read `run_ids` when
+        # several runs came out of one attach.
         self.session: ArgusSession | None = None
+        self.run_ids: list[str] = []
         self._lock = threading.Lock()
         # run_id -> (node name, input snapshot, start time)
         self._pending: dict[UUID, tuple[str, dict[str, Any], float]] = {}
@@ -187,7 +197,21 @@ class ArgusRecorder(BaseCallbackHandler):
         self._tools: dict[UUID, list[dict[str, Any]]] = {}
         # tool run_id -> that tool's own record, so concurrent tools don't cross
         self._tool_owner: dict[UUID, dict[str, Any]] = {}
-        self._root_run_id: UUID | None = None
+        # One session per graph run, keyed by that run's root callback id, plus
+        # every callback id's route back to its root. `.batch()` runs its items
+        # on separate threads with interleaved callbacks; without this they fold
+        # into one notebook and the running state is a merge of two different
+        # inputs, which is worse than no verdict.
+        self._roots: dict[UUID, ArgusSession] = {}
+        self._root_of: dict[UUID, UUID] = {}
+        # Every chain run_id -> the node name it belongs to, so a step's inner
+        # runnables are recognised however deeply they nest.
+        self._node_of: dict[UUID, str] = {}
+        self._attached = False
+        # Set at attach; every per-run session is built from them.
+        self._topology: tuple[list[str], dict[str, list[str]], set[str]] = ([], {}, set())
+        self._reducers: dict[str, Any] = {}
+        self._judge = False
 
     # ── attach ──────────────────────────────────────────────────────────────
 
@@ -197,10 +221,20 @@ class ArgusRecorder(BaseCallbackHandler):
         Reads topology through the public ``get_graph(xray=True)`` (see
         :func:`_topology`, so subgraph nodes are graded too) and returns
         ``app.with_config(callbacks=[self])``. Nothing is patched or mutated.
-        """
-        node_names, edge_map, conditional_sources = _topology(app)
 
-        judge = self._resolve_judge()
+        The returned app is reusable: every ``invoke`` / ``stream`` / ``batch``
+        item gets its own session, its own run file and its own verdict.
+        """
+        self._topology = _topology(app)
+        self._reducers = _reducer_fields(app)
+        self._judge = self._resolve_judge()
+        self._attached = True
+        return app.with_config(callbacks=[self])
+
+    def _new_session(self) -> ArgusSession:
+        """A session for one graph run — the state the old ``attach`` set up."""
+        node_names, edge_map, conditional_sources = self._topology
+        judge = self._judge
         session = ArgusSession(
             max_field_size=self._max_field_size,
             validators=self._validators,
@@ -217,13 +251,11 @@ class ArgusRecorder(BaseCallbackHandler):
         session.set_edges(edge_map)
         session.set_conditional_sources(conditional_sources)
         session.node_fn_registry = {name: _placeholder_node(name) for name in node_names}
-        session.reducer_fields = _reducer_fields(app)
+        session.reducer_fields = self._reducers
         # The recorder owns finalize: the ledger and contextual layers run over
         # the complete trace, before the run is graded and saved.
         session._defer_auto_finalize = True
-
-        self.session = session
-        return app.with_config(callbacks=[self])
+        return session
 
     def _resolve_judge(self) -> bool:
         """Decide whether the LLM judge runs for this attach.
@@ -254,27 +286,49 @@ class ArgusRecorder(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        session = self._require_session()
+        self._require_attached()
         node = (metadata or {}).get("langgraph_node")
+
+        # Route this callback to the run it belongs to. A parentless chain *is*
+        # a run boundary; everything else inherits its parent's root.
+        root = run_id if parent_run_id is None else self._root_of.get(parent_run_id)
+        if root is None:
+            return  # a callback we cannot attribute to any run we started
+        with self._lock:
+            self._root_of[run_id] = root
 
         if node is None:
             # The graph run itself (no node name, no parent) — the run boundary.
-            if parent_run_id is None and self._root_run_id is None:
-                self._root_run_id = run_id
-                session.capture_state(inputs if isinstance(inputs, dict) else {})
+            if run_id == root:
+                started = self._new_session()
+                with self._lock:
+                    self._roots[root] = started
+                self.session = started
+                started.capture_state(inputs if isinstance(inputs, dict) else {})
+            return
+
+        session = self._roots.get(root)
+        if session is None:
             return
 
         with self._lock:
-            parent = self._pending.get(parent_run_id) if parent_run_id else None
-        if parent is not None and parent[0] == node:
+            # Which node, if any, the enclosing chain already belongs to —
+            # tracked for *every* chain, recorded or not. Matching only against
+            # open `_pending` steps meant a suppressed inner chain vanished from
+            # the lineage and its own children looked like fresh visits: a
+            # `create_react_agent` filed four `agent` rows for two turns, two of
+            # them with no update at all, and the phantoms pushed the real rows
+            # into `retried` — a status `argus check` skips. Verified against
+            # langgraph 0.6.11 / prebuilt react.
+            enclosing = self._node_of.get(parent_run_id) if parent_run_id else None
+            self._node_of[run_id] = node
+        if enclosing == node:
             # A chain nested inside the step we are already recording, carrying
             # that same node's name: LangGraph's own inner runnable, not a
-            # second visit. The conditional-edge branch is the one that shows up
-            # — it runs *after* the node function, so recording it filed a
-            # duplicate row whose "input" already held what the real row wrote,
-            # and made the node look `retried`. Verified against langgraph
-            # 0.6.11. Matching on the name rather than the `seq:step:N` tag
-            # keeps a real subgraph's inner nodes (different names) recorded.
+            # second visit. Matching on the name rather than the `seq:step:N`
+            # tag keeps a real subgraph's inner nodes (different names)
+            # recorded. A subgraph node sharing its parent's name is folded into
+            # the parent — the same collision `_bare()` documents.
             return
 
         input_snap = session.capture_state(inputs if isinstance(inputs, dict) else {})
@@ -290,10 +344,7 @@ class ArgusRecorder(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        if self._close_step(run_id, outputs, exc=None):
-            return
-        if run_id == self._root_run_id:
-            self._finish()
+        self._end(run_id, outputs, exc=None)
 
     def on_chain_error(
         self,
@@ -303,14 +354,29 @@ class ArgusRecorder(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        if self._close_step(run_id, None, exc=error):
-            return
-        if run_id == self._root_run_id:
-            self._finish()
+        self._end(run_id, None, exc=error)
 
-    def _close_step(self, run_id: UUID, outputs: Any, exc: BaseException | None) -> bool:
+    def _end(self, run_id: UUID, outputs: Any, exc: BaseException | None) -> None:
+        """Close whatever ``run_id`` was: a node step, a run, or neither."""
+        with self._lock:
+            root = self._root_of.pop(run_id, None)
+            self._node_of.pop(run_id, None)
+        if root is None:
+            return
+        session = self._roots.get(root)
+        if session is None:
+            return
+        if self._close_step(session, run_id, outputs, exc=exc):
+            return
+        if run_id == root:
+            with self._lock:
+                self._roots.pop(root, None)
+            self._finish(session, root)
+
+    def _close_step(
+        self, session: ArgusSession, run_id: UUID, outputs: Any, exc: BaseException | None
+    ) -> bool:
         """Record one node step. Returns True if ``run_id`` was a node."""
-        session = self._require_session()
         # Held across on_node_end so the step index we file tools under is the
         # one this step actually gets. Parallel fan-out runs these callbacks on
         # separate threads and the session assigns indices under its own lock.
@@ -384,12 +450,16 @@ class ArgusRecorder(BaseCallbackHandler):
 
     # ── the layer chain ─────────────────────────────────────────────────────
 
-    def _finish(self) -> None:
+    def _finish(self, session: ArgusSession, root: UUID) -> None:
         """Ledger → contextual → structure/tools + semantic → judge → verdict."""
-        session = self._require_session()
-
         with self._lock:
-            unfinished = sorted(node for node, _, _ in self._pending.values())
+            # Only this run's steps. Another `.batch()` item may still be mid
+            # flight on another thread; its open steps are not this run's gap.
+            unfinished = sorted(
+                node
+                for rid, (node, _, _) in self._pending.items()
+                if self._root_of.get(rid) == root
+            )
         if unfinished:
             self._refuse(
                 session,
@@ -411,6 +481,7 @@ class ArgusRecorder(BaseCallbackHandler):
         # tool and semantic checks already ran inside on_node_end; finalize rolls
         # them up, applies the judge last, collects findings and saves the run.
         session.finalize()
+        self.run_ids.append(session.run_id)
 
         # So a bare `argus check` grades this run (cli/cmd_check.py reads it).
         os.environ["ARGUS_RUN_ID"] = session.run_id
@@ -449,7 +520,6 @@ class ArgusRecorder(BaseCallbackHandler):
         session._completed = True
         raise IncompleteTraceError(f"{why}. An incomplete recording is not a pass.")
 
-    def _require_session(self) -> ArgusSession:
-        if self.session is None:
+    def _require_attached(self) -> None:
+        if not self._attached:
             raise RuntimeError("ArgusRecorder.attach(app) must be called before invoking the app")
-        return self.session
