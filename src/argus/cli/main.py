@@ -458,7 +458,7 @@ def cmd_replay(
 
 @app.command("inspect")
 def cmd_inspect(
-    run_id: Annotated[str, typer.Argument(help="Run ID or 8-char prefix.")],
+    run_id: Annotated[str, typer.Argument(help="Run ID, 8-char prefix, or 'last'.")],
     step: Annotated[str, typer.Option("--step", "-s", help="Node name to inspect.")],
 ) -> None:
     """Dump full input/output state snapshot for a specific step."""
@@ -467,14 +467,14 @@ def cmd_inspect(
 
 @app.command("locate")
 def cmd_locate(
-    run_id: Annotated[str, typer.Argument(help="Run ID or 8-char prefix.")],
+    run_id: Annotated[str, typer.Argument(help="Run ID, 8-char prefix, or 'last'.")],
     no_save: Annotated[
         bool,
         typer.Option("--no-save", help="Display results without saving to the run record."),
     ] = False,
 ) -> None:
     """Auto-locate source files for all nodes in a run."""
-    locate_sources(run_id, save=not no_save)
+    locate_sources(_resolve_selector(run_id), save=not no_save)
 
 
 @app.command("ui")
@@ -514,9 +514,28 @@ def cmd_diff(
     diff_runs(run_id_a, run_id_b)
 
 
+def _resolve_selector(run_id: str) -> str:
+    """Turn the ``last`` alias into a real run id.
+
+    ``show`` and ``check`` have always accepted ``last`` — and ``argus show``
+    prints "argus show last" as a hint — so a user reasonably tries it
+    everywhere. On ``fix`` and ``locate`` it fell through as a literal id and
+    died with "No run found for id 'last'".
+    """
+    if run_id not in ("last", "run"):
+        return run_id
+    from argus.storage import last_run_id
+
+    resolved = last_run_id()
+    if resolved is None:
+        _console.print("[red]Error:[/red] No runs found.")
+        raise typer.Exit(1)
+    return resolved
+
+
 @app.command("fix")
 def cmd_fix(
-    run_id: Annotated[str, typer.Argument(help="Run ID or 8-char prefix.")],
+    run_id: Annotated[str, typer.Argument(help="Run ID, 8-char prefix, or 'last'.")],
     node: Annotated[
         Optional[str],
         typer.Option("--node", help="Target a specific node instead of the root cause."),
@@ -531,7 +550,7 @@ def cmd_fix(
     ] = False,
 ) -> None:
     """Print a ready-to-paste fix prompt for the run's root-cause failure."""
-    fix_run(run_id, node=node, output=output, sanitized=sanitized)
+    fix_run(_resolve_selector(run_id), node=node, output=output, sanitized=sanitized)
 
 
 @app.command("login")
