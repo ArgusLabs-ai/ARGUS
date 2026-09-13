@@ -38,9 +38,13 @@ Writes `.cursor/skills/argus-debug/` and `.claude/skills/argus-debug/`. Commit t
 Ask your editor agent to wire ARGUS. (The skill already contains this AI setup prompt; the landing-page copy is just a fallback.)
 
 ```python
-from argus import ArgusWatcher
-app = ArgusWatcher().attach(graph)
+from argus import ArgusRecorder
+app = ArgusRecorder().attach(graph)
 ```
+
+`attach()` returns the app you invoke. Nothing about your graph is patched or
+rewritten — ARGUS rides LangGraph's own callback stream. See
+[Which entry point?](#which-entry-point) if you are on the older `ArgusWatcher`.
 
 <img src="https://github.com/VaradDurge/ARGUS/blob/master/assets/Argus%20Guidelines%20and%20Contribution.png?raw=true" width="700"/>
 
@@ -99,14 +103,67 @@ Hosted cloud sync (`argus login`) is optional and only applies if a hosted backe
 ## Quick Start (manual)
 
 ```python
+from argus import ArgusRecorder
+
+app = ArgusRecorder().attach(compiled_graph)   # returns the app you invoke
+result = app.invoke(initial_state)             # run is persisted automatically
+```
+
+ARGUS records every node, grades the run, and saves it. No changes to your node
+functions, and no changes to the graph either.
+
+What it keeps is **the dict each node returned** — its update, before LangGraph
+merges it into shared state. That is the whole trick. A node that searches,
+throws the result away and returns `{}` leaves a full-looking merged state
+behind; only the update shows the silent no-op, and only then can blame land on
+the node that caused it instead of whoever crashes three steps later.
+
+`invoke`, `ainvoke`, `stream`, `astream` and `batch` all work. One `attach()`
+serves many runs — each `invoke`, and each `.batch()` item, gets its own run
+file and its own verdict.
+
+<a id="which-entry-point"></a>
+### Which entry point?
+
+| | `ArgusRecorder` **(use this)** | `ArgusWatcher` (legacy) |
+|---|---|---|
+| How it captures | Listens to LangGraph callbacks | Patches `compile()` and rebinds `invoke` / `stream` / `batch` |
+| Touches your graph | No | Yes |
+| Contract for "who needs this field" | Declared — `consumers=` | Read from successor type hints |
+| Status | The path under active development | Still supported, not being extended |
+
+`ArgusWatcher` keeps working and its docs below still apply to it. New code
+should use `ArgusRecorder`.
+
+### Declaring who reads what
+
+A recording carries state, not code, so it cannot know that `write` three steps
+later needs the `audience` field `plan` produced. Tell it:
+
+```python
+app = ArgusRecorder(consumers={"audience": ["write"]}).attach(graph)
+```
+
+Now a field that is **never written**, **written empty**, or **written and then
+dropped** fails on the node responsible — not on the node that happened to
+notice. Without a declaration ARGUS still catches empty updates, tool failures,
+crashes and degraded output; `consumers=` is what adds long-range field
+contracts.
+
+It is also the answer for a **final** node: `empty_output` only fires when a
+node has a successor waiting, so a last node that returns `{}` is exempt by
+design (a terminal `send_email` legitimately returns nothing). Declare the field
+the run is supposed to end with and that gap closes.
+
+### `ArgusWatcher` (legacy path)
+
+```python
 from argus import ArgusWatcher
 
 watcher = ArgusWatcher()
 app = watcher.attach(graph)         # StateGraph or already-compiled app
-result = app.invoke(initial_state)  # run is persisted automatically
+result = app.invoke(initial_state)
 ```
-
-ARGUS monitors every node, detects failures, and saves the run. No changes to your node functions.
 
 > **`finalize()` is optional.** `attach()` wraps `invoke()` / `ainvoke()` / `batch()` / `abatch()` / `stream()` so the run is written to `.argus/runs/` when the outermost call returns — including cyclic graphs. Calling `watcher.finalize()` afterwards is a no-op.
 
@@ -126,7 +183,8 @@ result = app.invoke(initial_state)
 | **Silent failures** | Node returns `{}` or drops a required field — no exception, pipeline keeps running broken |
 | **Semantic failures** | Output structure is fine but values are wrong (placeholders, refusals, degraded text) |
 | **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field |
-| **Contract violations** | Output types don't match the next node's expected input schema |
+| **Wrong subject entirely** | Ingredients go in, a paragraph about helicopters comes out. Structurally perfect, semantically nonsense — the [judge](#semantic-judge) catches this |
+| **Contract violations** | A field a later node needs was never written, written empty, or dropped in between — blamed on the node responsible ([`consumers=`](#declaring-who-reads-what)) |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
 | **Conditional path confusion** | Unchosen branches correctly shown as "skipped" — not false "crashed" |
 
@@ -198,28 +256,62 @@ the patch it ran with, so the run explains its own divergence from the original.
 
 ## Semantic Judge
 
-For subtle quality issues that pattern matching can't catch:
+Pattern matching cannot tell you that a node fed cake ingredients wrote about
+helicopter rotors. Nothing is missing, nothing is empty, no tool failed — the
+output is simply about the wrong thing. That is what the judge is for.
 
 ```python
-watcher = ArgusWatcher(graph, semantic_judge=True)  # opt-in; default is off
+app = ArgusRecorder().attach(graph)                       # on when a key is set
+app = ArgusRecorder(semantic_judge=False).attach(graph)   # rules only, fully deterministic
 ```
 
-LLM evaluates output quality on every node. Catches wrong tone, unhelpful responses, outdated info. Requires a provider key (OpenAI, Anthropic, or Google) — set via `argus key set [--provider ...]` (see [BYOK](#bring-your-own-key-byok)).
+On by default once a provider key exists (`argus key set`, or `argus login`) —
+setting a key is opt-in enough. With no key it stays off, since it could only
+skip anyway.
 
-The judge receives **all prior evidence** — validator failures, anomaly signals, inspection results — so it rules with full context, not just input/output. Every decision includes an audit trail:
+### Judge last, never first
+
+The judge runs **after** every deterministic layer and receives what they found.
+It cannot overturn a validator failure or a critical anomaly, and — the rule
+that matters most in CI — it mostly cannot **originate** a failure either:
+
+| The judge says | Gates the build? |
+|---|---|
+| `unrelated` — output is about a different subject than the input | **Yes, on its own.** No rule can see this |
+| `contradiction` — output contradicts the input or itself | **Yes, on its own** |
+| `empty_or_missing`, or anything else | Only if a deterministic layer flagged that step too |
+
+The reason is measured, not philosophical. Left free to fail anything it
+disliked, the judge made the gate nondeterministic: one healthy
+`create_react_agent` failed two runs in three, at confidence 1.0, with
+self-contradicting reasons. Emptiness is a job the rules already do reliably, so
+the judge only gets a vote there. Coherence is a job nothing else can do, so it
+stands alone — and because it stands alone it has to prove itself **twice**, on
+two independent samples, before failing a build.
+
+An uncorroborated verdict is still recorded and shown by `argus show`; it just
+does not move the status.
+
+> Judging is skipped entirely for a turn that only issued tool calls — an empty
+> `content` next to a populated `tool_calls` is how every tool-calling model
+> works, and there is no prose there to rule on.
+
+Every verdict carries an audit trail:
 
 ```json
 {
   "pass": false,
-  "reason": "Validator correctly identified missing resolution_ticket",
-  "confidence": 0.85,
+  "reason": "The output is completely unrelated to the input, which is about ingredients for a recipe.",
+  "failure_kind": "unrelated",
+  "confidence": 1.0,
   "evidence_considered": ["validator:payment_check", "anomaly:BA-003"],
   "overridden_signals": []
 }
 ```
 
-- `evidence_considered` — which prior signals the LLM weighed
-- `overridden_signals` — which signals the LLM disagreed with (passed despite the flag)
+- `failure_kind` — which of the four kinds above, deciding whether it can gate alone
+- `evidence_considered` — which prior signals the judge weighed
+- `overridden_signals` — which it disagreed with and passed despite
 
 ---
 
@@ -250,6 +342,7 @@ config = ArgusConfig(
     persist_failures=True,         # always persist failed runs
 )
 
+app = ArgusRecorder().attach(graph)   # ArgusConfig applies to ArgusWatcher today
 watcher = ArgusWatcher(graph, config=config)
 ```
 

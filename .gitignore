@@ -82,3 +82,6 @@ supabase/.temp/
 # Misc reference files
 argus_architecture.html
 
+
+# Merge-readiness stress suite (pivot architecture, local only)
+merge_readiness/

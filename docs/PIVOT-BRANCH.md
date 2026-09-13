@@ -137,29 +137,175 @@ Ordering matters in `session._finalize`: `_blame_crash_origins()` runs **after**
 - A skinny trace (node spans sampled away) raises `IncompleteTraceError`
   instead of "no findings, so clean".
 
-### What the matrix does NOT cover
+### The shipped-shapes matrix — and the nine defects it found
 
-Read this before quoting the matrix as evidence the architecture is validated.
-It stress-tests the **detection core** over seven topologies. It is not
-exhaustive, and the holes are in exactly the places production LangGraph code
-lives. Nothing below is known-broken — it is **unverified**, which is a
-different and more dangerous thing to leave undocumented.
+`tests/test_shipped_shapes_matrix.py` closes the three highest-value holes the
+detection matrix left open: **`create_react_agent`**, **`MessagesState` /
+`add_messages`**, and **`.batch()` / repeat `invoke`**. 17 tests, deterministic
+(a scripted fake model), same contract as the sibling matrix — `patch_graph`
+raises, every test names the blamed node, and half of them assert a pipeline is
+**clean**.
 
-| Not covered | Why it matters |
+Each of those three shapes was hiding a defect. Nine in total, all fixed:
+
+| # | Where | What was wrong | Consequence |
+|---|---|---|---|
+| 1 | `anomaly_detector.py` | BA-004 matched refusal phrases in *any* string, including input a node passed through | A ticket reading "I cannot reset my password" made the classifier that normalised it a **critical** failure. Every desk / chat pipeline failed CI on the customer's own words |
+| 2 | `recorder.py` | One session per `attach` | Attach once, invoke twice and run 2 appended to a finalized session: never saved, never graded, no error |
+| 3 | `recorder.py` | `.batch()` items (parallel threads) folded into one run | The running state became a merge of two different inputs, so a field written by item B read as present for item A |
+| 4 | `inspector.py` | `_RESULT_NAME_RE` matched `response_metadata` — `metadata` ends in `data` | Every LangChain message carries an empty one, so **every healthy react agent** failed on `empty_result` |
+| 5 | `data/signatures.json` | MP-006 matched any single-line JSON ending `"…}` | Every structured tool return was a **critical** `malformed_payload` |
+| 6 | `recorder.py` | Step dedup compared only against open `_pending` | A react agent filed **4 `agent` rows for 2 turns**; the phantoms pushed the real rows into `retried`, which the gate skips |
+| 7 | `ledger.py` | `add_messages` folded as overwrite (its callable is `_add_messages`) | Every `MessagesState` graph's running state held only the last node's messages |
+| 8 | `inspector.py` | Tool-failure rules never decoded JSON-encoded strings | LangChain stringifies tool returns, so a swallowed HTTP 500 in a react agent graded **clean** |
+| 9 | `inspector.py` | `_is_the_whole_answer` could not walk `[0]` path segments | The whole-value placeholder promotion was dead for `MessagesState`, i.e. for every agent |
+
+1, 4 and 5 are false positives that make the gate unusable; 3, 6, 8 and 9 are
+false negatives that let real failures ship; 2 grades nothing at all. Running
+the new file against the pre-fix tree fails 9 of its 17 tests, so it is a real
+regression guard and not a restatement of current behaviour.
+
+```bash
+PYTHONPATH=src pytest tests/test_shipped_shapes_matrix.py -q   # 17 passed, ~25s
+```
+
+Also verified during that work, and previously unverified: `.stream()` /
+`.astream()` parity with `invoke`, subgraphs **two levels** deep, a 12-way
+contended fan-out (no step lost or duplicated, one silent shard blamed alone),
+custom-reducer fan-in blame, interrupt / checkpointer / resume (a paused run is
+never graded clean; the resumed half is graded on its own), oversized-payload
+truncation markers, and live OpenAI pipelines.
+
+### The new-user walkthrough — driving the CLI, not the internals
+
+Both matrices call the Python API and assert on `RunRecord`. That is not how a
+user meets ARGUS. This pass built three pipelines of rising difficulty in a
+clean workspace and drove them the way the README does — run the graph, then
+`argus check` / `show` / `fix` / `diff`, then `pytest --argus` — with real
+`gpt-4o-mini` on the model nodes and **the LLM judge left on by default**.
+
+| Level | Pipeline | Sabotages |
+|---|---|---|
+| 1 | support-desk RAG: classify → retrieve → draft → send | retriever drops what it found |
+| 2 | `create_react_agent` + two tools | backend 500s · lookup returns `[]` · model refuses |
+| 3 | research desk: planner → **3-way parallel fan-out** → **subgraph**(rank → write) → reviewer on a **conditional loop** | branch returns `{}` · node two levels down returns `{}` · long-range contract dropped · branch echoes its input |
+
+**True positives: 7 of 8, each blamed on the right node** — including a silent
+`rank` two levels inside a subgraph, where the model then hallucinated an
+unrelated job description and the pipeline's own LLM reviewer *approved* it.
+The one miss is listed below.
+
+The judge being on is what made this pass worth running. It found five defects
+the judge-off suites structurally could not:
+
+| # | Where | What was wrong |
+|---|---|---|
+| 10 | `session.py` | **The judge could fail a step no deterministic layer had flagged.** With `rules=[]` on every step, the same healthy `create_react_agent` failed **two runs in three** at confidence 1.0, with contradictory reasons. A gate that red-lights working pipelines at random gets switched off |
+| 11 | `semantic_checker.py` | A tool-call turn (`content: ""`, payload in `tool_calls`) was judged as an empty answer. That is the normal shape of every tool-calling model |
+| 12 | `semantic_checker.py` | The prompt's "empty field" rule was being applied to the **input**. On any message state the history contains empty-content tool turns, so the judge failed nodes for their input |
+| 13 | `inspector.py` | `content: ""` next to a non-empty `tool_calls` raised `empty_result`. Warning-level — but the judge then read it as evidence and turned it critical |
+| 14 | `inspector.py` | `json_in_string` fired on every `ToolMessage`, whose content LangChain always json-encodes |
+| 15 | `inspector.py` | Every node of every clean run said **"pass (warnings) — add type hints to X"**. On this path the recorder *itself* supplies unannotated placeholder successors, so the advice was both wrong (the user's nodes were annotated) and impossible to act on |
+| 16 | `cli/main.py` | `argus fix last` and `argus locate last` did not resolve the `last` alias, though `show` and `check` do — and `argus show` prints "argus show last" as a hint |
+
+Defect 10 is the important one, and it is a **deliberate semantics change**:
+
+> A judge `fail` verdict now only moves a step's status when some deterministic
+> layer — a tool failure, a semantic signal, a missing/empty field, a type
+> mismatch, a failed validator, or a **critical** anomaly — flagged that step
+> too. Uncorroborated verdicts are still recorded and shown by `argus show`;
+> they no longer gate CI. This is "judge last, never first" enforced rather
+> than merely intended. `tests/test_async_judge_e2e.py` was updated to encode
+> it, and `test_shipped_shapes_matrix.py` pins both halves (a healthy agent
+> survives a judge that always votes fail; a real failure still fails).
+
+Warning-level *behavioural* anomalies deliberately do not corroborate:
+`BA-005 structural malformation` fires on any flat dict, which is what a normal
+LangGraph node returns, so counting it would let the judge fail almost anything.
+
+Verified working end to end from the CLI: `argus check` exit codes (0 clean /
+1 unclean), `show`, `list`, `diff` (correctly reports "retrieve: silent failure
+→ pass FIXED"), `fix` (names the file and line — `01_rag.py:50`), `doctor`, and
+`pytest --argus` (healthy test passes, silent-retriever test fails).
+
+### Semantic coherence — the judge's actual job
+
+"Is the node doing the right thing?" — cake ingredients in, a paragraph about
+helicopter rotors out — is the one failure class no deterministic rule can see.
+Nothing is missing, empty, malformed or erroring. `04_coherence.py` in the
+new-user suite makes exactly that pipeline.
+
+Defect 10's first fix (require corroboration for *every* judge verdict) killed
+this outright: the judge said *"completely unrelated to the input, which is
+about ingredients for a recipe"* at confidence 1.0, and the run graded **clean**.
+Blanket corroboration threw away the judge's only unique competence.
+
+The rule was refined to turn on *why* the judge failed something. It now returns
+a `failure_kind`, and only two kinds may gate alone:
+
+| `failure_kind` | Gates with no rule agreeing? | Why |
+|---|---|---|
+| `unrelated` | **yes** | Different subject matter. Nothing else can detect it |
+| `contradiction` | **yes** | Output contradicts the input or itself |
+| `empty_or_missing` | no | The rules already do this, and more reliably |
+| `other` | no | Includes any malformed or unparsable reply — degrades to annotate-only |
+
+Two further guards, both added because measurement demanded them, not by taste:
+
+1. **`unrelated` means subject matter, never answer quality.** The first version
+   flagged a fan-out branch contributing one relevant fact ("does not address
+   the input question") and a reviewer node emitting `{"verdict": "APPROVE"}`.
+   The prompt now says to ask *"is this the same topic?"*, never *"does this
+   answer the question?"*, and that a short label — verdict, category, routing
+   key, score — is a classification result and never `unrelated`.
+2. **A standalone coherence verdict must reproduce.** It is re-asked once and
+   both samples must agree; a verdict that does not reproduce is demoted to
+   `other` and needs a rule to agree like any other. Costs one short call, only
+   on the rare path where a build is about to fail on the judge's word alone.
+
+Confidence thresholding was tried and **rejected**: over 20 verdicts the classes
+looked cleanly separated (true ≥0.9, false =0.8), then the same false positive
+came back at 0.9 on the next sample. `JUDGE_STANDALONE_MIN_CONFIDENCE` remains
+as a floor, but reproduction is what actually carries the weight.
+
+Measured after all of it, 6 trials per scenario:
+
+```text
+04_coherence.py helicopter      want fail   111111   ✓
+04_coherence.py wrong_topic     want fail   111111   ✓
+04_coherence.py contradiction   want fail   111111   ✓
+04_coherence.py healthy         want clean  000000   ✓
+01_rag / 02_agent (all modes)               ✓ all six scenarios stable
+03_research_desk healthy        want clean  000100   ← 1 in 6 false fail
+```
+
+**The residual is real and unresolved**: a healthy fan-out-plus-review pipeline
+still fails roughly one run in six, on a judge verdict about the reviewer node.
+Down from two in three, not to zero. For a hard CI gate today the honest advice
+is `ArgusRecorder(semantic_judge=False)` — fully deterministic, and it still
+catches empty updates, dropped contracts, tool failures, crashes and degraded
+output. Turn the judge on when you want coherence checking and can tolerate a
+rerun. Guarded by `test_shipped_shapes_matrix.py` (3 tests) with mocked verdicts,
+so the *rule* is pinned even though the model's judgement is not.
+
+### What is still NOT covered
+
+Nothing below is known-broken — it is **unverified** or a **pinned decision**,
+which is a different and more dangerous thing to leave undocumented.
+
+| Not covered / pinned | Why it matters |
 |---|---|
-| **`.stream()` / `.astream()` / `.batch()`** | Only `invoke` and `ainvoke` are exercised. The recorder's callback bookkeeping (`_pending`, root-run detection, deferred finalize) differs across these, and repeat invokes on one recorder (`begin_new_run`) are untested here |
-| **Real LLM nodes** | Every node in the matrix is a deterministic stub. No live model call anywhere. Token accounting, latency signals and judge behaviour under real outputs are untested by this file |
-| **`MessagesState` / `add_messages`** | The matrix uses `operator.add` on plain lists. `add_messages` de-duplicates by message id, which `ledger.py` already flags as an approximation (`_ADD_REDUCERS` treats it as plain concatenation). That ceiling is unverified |
-| **`create_react_agent` and real tool-calling loops** | The prebuilt agent is what most teams actually ship. The matrix hand-builds its graphs, so the prebuilt's node naming and tool-call shape are unexercised |
-| **Interrupts / human-in-the-loop** | Checkpointer, `interrupt()`, resume. The `interrupted` status exists in the vocabulary (`docs/STATUS.md`) and no test in the matrix produces it |
-| **Custom reducers** | Documented to round-trip as `"overwrite"` (see `ledger.reducer_kinds`). The consequence — fan-in reading as "last branch wins" — is asserted nowhere |
-| **Nested subgraphs deeper than one level** | `_topology()` strips one `parent:` prefix. Two levels is untried |
-| **Concurrency under real parallel load** | Fan-out is tested, but with trivial fast nodes. The recorder's locking is not load-tested |
-| **Oversized / truncated payloads** | `max_field_size` markers are handled in `ledger.py` but not driven through the recorder here |
-
-Highest-value additions, in order: **streaming**, **`create_react_agent`**, and
-**`add_messages`**. Those three are the difference between "the detection core
-is sound" and "the architecture is validated for what people ship."
+| **Real LLM nodes in CI** | Both matrices use deterministic stubs. Live-model runs were exercised by hand against OpenAI (healthy pipelines clean, sabotaged pipelines blamed on the sabotaged node, stable over three runs) but no live test runs in CI |
+| **A terminal node returning `{}`** | `empty_output` is gated on having successors, and an edge to `END` is not one. Defensible — a terminal `send_email` node legitimately returns nothing — but it is also the last chance to notice the answer was never produced. Workaround: declare `consumers={"answer": ["finalize"]}` |
+| **A silent early iteration of a loop** | `_apply_loop_retries` relabels every earlier iteration `retried` when the final one passes, and the gate skips `retried`. Right for a genuine retry, wrong for an accumulating field where round 1's empty contribution is never superseded. Pinned by a test; **the one open product decision** |
+| **Custom reducers** | Round-trip as `"overwrite"` (see `ledger.reducer_kinds`). Blame is unaffected — verified — but the folded state is approximate |
+| **`add_messages` id de-duplication** | Folded as plain concatenation, so an updated message counts twice. Pinned by a test |
+| **Token accounting** | `llm_tracker` reads usage off the node's output dict, so a node returning `{"category": "..."}` records none. Verified identical on the old wrap path — pre-existing, not a pivot regression. `on_llm_end` would fix it on this path |
+| **A victim flagged alongside the origin** | When an upstream `{}` starves a downstream model node, both are flagged. `first_failure_step` is still the origin, so the verdict is right and the extra finding is noise: `degraded_input` covers present-and-bad fields, not absent ones |
+| **A node that echoes its input** | The one true-positive miss: a researcher branch returned the question verbatim as its note and the run graded clean. Echo detection exists for main answer fields but not for a fan-in accumulator. Related signal worth adding: the reviewer loop hit its revision cap and shipped anyway, which is itself evidence |
+| **`BA-005 structural malformation`** | Warning-level noise on any flat dict — i.e. on most healthy nodes. It no longer gates anything (see defect 10) but still clutters `argus show` and the `argus fix` prompt |
+| **A healthy fan-out + review pipeline, judge on** | Still fails ~1 run in 6 (down from 2 in 3). See "Semantic coherence" above. `semantic_judge=False` is deterministic and remains the advice for a hard gate |
+| **Frameworks other than LangGraph** | The recorder is LangGraph-specific. CrewAI etc. later |
 
 ---
 
