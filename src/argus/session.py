@@ -48,6 +48,8 @@ from argus.inspector import (
 from argus.ledger import reducer_kinds as _reducer_kinds
 from argus.llm_tracker import create_tracker, extract_usage, install_handler, remove_handler
 from argus.models import (
+    JUDGE_STANDALONE_FAILURE_KINDS,
+    JUDGE_STANDALONE_MIN_CONFIDENCE,
     AnomalySignal,
     ArgusConfig,
     BehaviorConfig,
@@ -239,7 +241,6 @@ def _compute_coverage_summary(
         summary["judge"] = round(evaluated / len(judged), 4)
 
     return summary
-
 
 
 def _parse_validator_return(raw: Any) -> tuple[bool, str, str]:
@@ -683,9 +684,7 @@ class ArgusSession:
 
     # ── Latency-correlated degradation ──────────────────────────────────────
 
-    def _check_latency_signals(
-        self, duration_ms: float, inspection: InspectionResult
-    ) -> None:
+    def _check_latency_signals(self, duration_ms: float, inspection: InspectionResult) -> None:
         """Append latency-based ToolFailure entries to an existing inspection."""
         # 1. Timeout-adjacent — output likely truncated
         if self._node_timeout_ms and duration_ms / self._node_timeout_ms > 0.95:
@@ -695,8 +694,7 @@ class ArgusSession:
                     field_name="_latency",
                     severity="warning",
                     evidence=(
-                        f"{duration_ms:.0f}ms is >=95% of "
-                        f"{self._node_timeout_ms:.0f}ms timeout"
+                        f"{duration_ms:.0f}ms is >=95% of {self._node_timeout_ms:.0f}ms timeout"
                     ),
                 )
             )
@@ -708,8 +706,7 @@ class ArgusSession:
                     field_name="_latency",
                     severity="warning",
                     evidence=(
-                        f"{duration_ms:.0f}ms < expected minimum "
-                        f"{self._min_expected_ms:.0f}ms"
+                        f"{duration_ms:.0f}ms < expected minimum {self._min_expected_ms:.0f}ms"
                     ),
                 )
             )
@@ -809,9 +806,7 @@ class ArgusSession:
                 # is recorded on the event for visibility but must not alone
                 # fail the node. Mirrors how ToolFailure already gates on
                 # severity == "critical" for has_tool_failure above.
-                _has_signals = any(
-                    s.severity == "critical" for s in inspection.semantic_signals
-                )
+                _has_signals = any(s.severity == "critical" for s in inspection.semantic_signals)
 
                 if _has_failure or _has_signals:
                     # Before blaming this node, check if it's operating on
@@ -895,17 +890,25 @@ class ArgusSession:
 
                 if self._on_judge_failure == "abort":
                     # Synchronous path: abort mode needs to raise mid-pipeline
-                    semantic_check_result, disambiguation_results = (
-                        self._run_judge_sync(
-                            node_name, input_snap, output_snap,
-                            validator_results, anomaly_signals,
-                            inspection, ambiguous_signals,
-                        )
+                    semantic_check_result, disambiguation_results = self._run_judge_sync(
+                        node_name,
+                        input_snap,
+                        output_snap,
+                        validator_results,
+                        anomaly_signals,
+                        inspection,
+                        ambiguous_signals,
                     )
                     status = self._apply_judge_verdict(
-                        status, semantic_check_result, disambiguation_results,
-                        inspection, validator_results, anomaly_signals,
-                        node_name, behavior_type_val, output_snap,
+                        status,
+                        semantic_check_result,
+                        disambiguation_results,
+                        inspection,
+                        validator_results,
+                        anomaly_signals,
+                        node_name,
+                        behavior_type_val,
+                        output_snap,
                         input_snap=input_snap,
                     )
                 else:
@@ -941,23 +944,29 @@ class ArgusSession:
                     )
                 future = self._judge_pool.submit(
                     self._run_judge_sync,
-                    node_name, input_snap, output_snap,
-                    validator_results, anomaly_signals,
-                    inspection, ambiguous_signals,
+                    node_name,
+                    input_snap,
+                    output_snap,
+                    validator_results,
+                    anomaly_signals,
+                    inspection,
+                    ambiguous_signals,
                 )
                 with self._pending_judges_lock:
-                    self._pending_judges.append(_PendingJudge(
-                        event=event,
-                        future=future,
-                        inspection=inspection,
-                        validator_results=validator_results,
-                        anomaly_signals=anomaly_signals,
-                        ambiguous_signals=ambiguous_signals,
-                        deterministic_status=status,
-                        node_name=node_name,
-                        input_snap=input_snap,
-                        output_snap=output_snap,
-                    ))
+                    self._pending_judges.append(
+                        _PendingJudge(
+                            event=event,
+                            future=future,
+                            inspection=inspection,
+                            validator_results=validator_results,
+                            anomaly_signals=anomaly_signals,
+                            ambiguous_signals=ambiguous_signals,
+                            deterministic_status=status,
+                            node_name=node_name,
+                            input_snap=input_snap,
+                            output_snap=output_snap,
+                        )
+                    )
 
             # Track terminal node completion for parallel-aware finalization
             if node_name in self._terminal_nodes:
@@ -1052,6 +1061,43 @@ class ArgusSession:
                 )
         return None, []
 
+    @staticmethod
+    def _corroborating_signal(
+        inspection: InspectionResult | None,
+        validator_results: list[ValidatorResult],
+        anomaly_signals: list[AnomalySignal],
+    ) -> bool:
+        """Did any deterministic layer flag this step at all?
+
+        The judge runs **last** and rules on evidence — it is not a detector in
+        its own right. Left free to fail a step the rules were silent about, it
+        made the gate nondeterministic: the same healthy ``create_react_agent``
+        failed two runs in three, at confidence 1.0, with contradictory reasons
+        ("the output contains a valid response but is missing a required
+        field"). A gate that red-lights working pipelines at random gets turned
+        off, which costs more than the failures it might have caught.
+
+        So a judge verdict can still confirm, explain, sharpen or overturn what
+        the rules found — it just cannot be the only thing failing a build. An
+        uncorroborated fail is still recorded on the event and shown by
+        ``argus show``; it just does not move the status.
+        """
+        if inspection is not None and (
+            inspection.tool_failures
+            or inspection.semantic_signals
+            or inspection.missing_fields
+            or inspection.empty_fields
+            or inspection.type_mismatches
+        ):
+            return True
+        if any(not v.is_valid for v in validator_results):
+            return True
+        # Behavioural anomalies only corroborate at critical. The warning-level
+        # ones describe shape, not content: `BA-005 structural malformation`
+        # fires on any flat dict, which is what a normal LangGraph node returns,
+        # so counting it would let the judge fail almost anything it disliked.
+        return any(a.severity == "critical" for a in anomaly_signals)
+
     def _apply_judge_verdict(
         self,
         status: StepStatus,
@@ -1074,16 +1120,12 @@ class ArgusSession:
             }
             if dismissed_ids:
                 inspection.semantic_signals = [
-                    s
-                    for s in inspection.semantic_signals
-                    if s.sig_id not in dismissed_ids
+                    s for s in inspection.semantic_signals if s.sig_id not in dismissed_ids
                 ]
                 inspection.tool_failures = [
                     tf
                     for tf in inspection.tool_failures
-                    if not any(
-                        d_id in (tf.evidence or "") for d_id in dismissed_ids
-                    )
+                    if not any(d_id in (tf.evidence or "") for d_id in dismissed_ids)
                 ]
                 inspection.has_tool_failure = any(
                     tf.severity == "critical" for tf in inspection.tool_failures
@@ -1091,15 +1133,11 @@ class ArgusSession:
                 inspection.is_silent_failure = bool(
                     inspection.missing_fields or inspection.has_tool_failure
                 )
-                _has_failure = (
-                    inspection.is_silent_failure or inspection.has_tool_failure
-                )
+                _has_failure = inspection.is_silent_failure or inspection.has_tool_failure
                 # Same severity gate as the initial status determination —
                 # a leftover warning-severity signal shouldn't re-fail a
                 # node the disambiguation pass otherwise cleared.
-                _has_signals = any(
-                    s.severity == "critical" for s in inspection.semantic_signals
-                )
+                _has_signals = any(s.severity == "critical" for s in inspection.semantic_signals)
                 if not _has_failure and not _has_signals:
                     status = "pass"
                 elif _has_failure:
@@ -1121,12 +1159,8 @@ class ArgusSession:
                     tf.failure_type == "placeholder_detected"
                     for tf in (inspection.tool_failures or [])
                 )
-                _has_validator_failures = any(
-                    r.is_blocking for r in validator_results
-                )
-                _has_critical_anomalies = any(
-                    a.severity == "critical" for a in anomaly_signals
-                )
+                _has_validator_failures = any(r.is_blocking for r in validator_results)
+                _has_critical_anomalies = any(a.severity == "critical" for a in anomaly_signals)
                 _can_override = (
                     not _has_structural
                     and not _has_placeholder
@@ -1143,14 +1177,10 @@ class ArgusSession:
                             node_name=node_name,
                             override_type="llm_full_override",
                             anomaly_ids=[
-                                a.anomaly_id
-                                for a in anomaly_signals
-                                if a.severity == "critical"
+                                a.anomaly_id for a in anomaly_signals if a.severity == "critical"
                             ],
                             anomaly_reasons=[
-                                a.reason
-                                for a in anomaly_signals
-                                if a.severity == "critical"
+                                a.reason for a in anomaly_signals if a.severity == "critical"
                             ],
                             llm_reason=semantic_check_result.reason,
                             llm_confidence=semantic_check_result.confidence,
@@ -1158,9 +1188,7 @@ class ArgusSession:
                             output_shape={
                                 "key_count": len(output_snap) if output_snap else 0,
                                 "depth": _measure_output_depth(output_snap),
-                                "total_chars": len(
-                                    json.dumps(output_snap, default=str)
-                                )
+                                "total_chars": len(json.dumps(output_snap, default=str))
                                 if output_snap
                                 else 0,
                             },
@@ -1173,8 +1201,19 @@ class ArgusSession:
                     except Exception:
                         pass
             elif not sc_passed and sc_confident:
-                if status == "pass" and not is_legitimate_field_handoff(
-                    input_snap, output_snap
+                _stands_alone = (
+                    semantic_check_result.failure_kind in JUDGE_STANDALONE_FAILURE_KINDS
+                    and semantic_check_result.confidence >= JUDGE_STANDALONE_MIN_CONFIDENCE
+                )
+                if (
+                    status == "pass"
+                    and not is_legitimate_field_handoff(input_snap, output_snap)
+                    and (
+                        _stands_alone
+                        or self._corroborating_signal(
+                            inspection, validator_results, anomaly_signals
+                        )
+                    )
                 ):
                     status = "semantic_fail"
 

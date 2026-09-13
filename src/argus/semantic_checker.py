@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from dataclasses import replace
 from typing import Any
 
 from argus.models import DisambiguationResult, SemanticCheckResult, SemanticSignal
@@ -21,10 +22,27 @@ _SYSTEM_PROMPT = (
     "You verify whether an AI pipeline node produced semantically correct "
     "output given its input. Respond with JSON:\n"
     '{"pass": bool, "reason": "<1 sentence>", "confidence": <0.0-1.0>, '
+    '"failure_kind": "unrelated"|"contradiction"|"empty_or_missing"|"other", '
     '"evidence_considered": ["<signal1>", ...], '
     '"overridden_signals": ["<signal_you_disagree_with>", ...], '
     '"disambiguation_verdicts": [{"sig_id": "<id>", "is_failure": <bool>, '
     '"confidence": <0.0-1.0>, "reason": "<1 sentence>"}]}\n\n'
+    '- failure_kind: when "pass" is false, say which kind of failure it is.\n'
+    '    "unrelated" — the output is about a DIFFERENT SUBJECT than the input. '
+    "This is about subject matter only. Cake ingredients in, helicopter rotors "
+    "out: unrelated. A node that stays on the input's subject but does not "
+    "answer the question, covers only one aspect of it, or contributes a single "
+    "fact to a shared list is NOT unrelated — that is a normal step in a "
+    'pipeline and must be "pass": true. Ask "is this the same topic?", '
+    'never "does this answer the question?".\n'
+    "    A short output that is a LABEL rather than prose — a verdict "
+    "(APPROVE/REVISE), a category, a routing key, a score, a count, a boolean, "
+    'a status — is a classification result. It is never "unrelated", however '
+    "little it resembles the input text.\n"
+    '    "contradiction" — the output asserts the opposite of the input or of '
+    "itself (a summary saying a recipe has no eggs when the input lists eggs).\n"
+    '    "empty_or_missing" — a field is blank, null or absent.\n'
+    '    "other" — anything else. Use "other" when "pass" is true.\n'
     "- evidence_considered: list every Prior Signal you evaluated (empty list if none provided)\n"
     "- overridden_signals: list any Prior Signals you chose to PASS despite "
     "(empty list if you agreed with all signals or none were provided)\n"
@@ -39,6 +57,11 @@ _SYSTEM_PROMPT = (
     "the input contained meaningful data for that field, FAIL the node — "
     "an empty output is not semantically relevant regardless of other fields "
     "like logs or metadata\n"
+    "- That exception applies to the OUTPUT ONLY. NEVER fail a node because a "
+    "field in the INPUT is empty, missing or blank — the input is context you "
+    "are given, not the node's work. In particular, a message history often "
+    "contains assistant turns whose 'content' is empty because they carried a "
+    "tool call instead; that is normal and is never a reason to fail.\n"
     "- If you cannot determine relevance (insufficient context), pass it\n"
     "- This is one node in a MULTI-STEP pipeline. The output does not need to "
     "directly answer the input — it may be an intermediate transformation "
@@ -202,6 +225,21 @@ def _coerce_verdict(value: Any) -> bool | None:
     return None
 
 
+_FAILURE_KINDS = frozenset({"unrelated", "contradiction", "empty_or_missing", "other"})
+
+
+def _coerce_failure_kind(value: Any) -> str:
+    """Normalise the judge's `failure_kind`, defaulting to the cautious answer.
+
+    An unknown or absent value becomes ``"other"``, which needs a corroborating
+    rule finding before it can fail a build — so a malformed reply degrades to
+    "annotate only" rather than to a standalone gate failure.
+    """
+    if isinstance(value, str) and value.strip().lower() in _FAILURE_KINDS:
+        return value.strip().lower()
+    return "other"
+
+
 def _skip_result(reason: str, model: str, ms: float) -> SemanticCheckResult:
     return SemanticCheckResult(
         passed=True,
@@ -214,6 +252,94 @@ def _skip_result(reason: str, model: str, ms: float) -> SemanticCheckResult:
         evidence_considered=(),
         overridden_signals=(),
         evaluated=False,
+    )
+
+
+def _is_tool_call_turn(output_dict: dict[str, Any]) -> bool:
+    """Is this update a model turn that only issued tool calls?
+
+    A tool-calling turn puts its payload in ``tool_calls`` and leaves
+    ``content`` empty. There is no prose to rule on, and asked anyway the judge
+    reliably answers "the content field is empty, so the output is not
+    semantically relevant" — at full confidence, on every agent turn, which is
+    enough on its own to fail a working ``create_react_agent``. Judging a
+    function call as if it were an answer is a category error, so skip it.
+    """
+    messages = output_dict.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    return all(
+        isinstance(m, dict) and bool(m.get("tool_calls")) and _is_blank(m.get("content"))
+        for m in messages
+    )
+
+
+def _is_blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip()) or value == []
+
+
+def _confirm_standalone_coherence(
+    sc: SemanticCheckResult,
+    node_name: str,
+    user_msg: str,
+    model: str,
+    api_key: str | None,
+) -> SemanticCheckResult:
+    """Ask a second time before letting a coherence verdict fail a build alone.
+
+    An "unrelated" / "contradiction" verdict is the only kind that gates CI with
+    no rule agreeing (see `models.JUDGE_STANDALONE_FAILURE_KINDS`), because no
+    deterministic rule can see that a node fed cake ingredients wrote about
+    helicopters. That privilege makes its false positives expensive, and a
+    single sample from a model is not stable: the same healthy fan-out branch
+    came back "unrelated" on roughly one run in eight.
+
+    Two independent samples have to agree. A genuine mismatch of subject is
+    obvious enough to reproduce; an intermittent misread is not. If the second
+    look disagrees, the verdict is kept and reported but demoted to "other", so
+    it now needs a corroborating rule finding like any other judge opinion.
+
+    Costs one extra short call, and only on the rare path where a run is about
+    to fail on the judge's word alone.
+    """
+    from argus.models import JUDGE_STANDALONE_FAILURE_KINDS
+
+    if sc.passed or sc.failure_kind not in JUDGE_STANDALONE_FAILURE_KINDS:
+        return sc
+
+    from argus.llm_proxy import create_chat_completion
+
+    try:
+        second = create_chat_completion(
+            model=model,
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0,
+            max_tokens=200,
+            api_key=api_key,
+        )
+        parsed = _extract_json_object(
+            second.get("choices", [{}])[0].get("message", {}).get("content", "")
+        )
+    except Exception:
+        parsed = None
+
+    if parsed is None:
+        return sc  # could not get a second opinion — leave the first as it is
+
+    agrees = (
+        _coerce_verdict(parsed.get("pass")) is False
+        and _coerce_failure_kind(parsed.get("failure_kind")) in JUDGE_STANDALONE_FAILURE_KINDS
+    )
+    if agrees:
+        return sc
+
+    return replace(
+        sc,
+        failure_kind="other",
+        reason=f"{sc.reason} (not reproduced on a second look — needs a rule to agree)",
     )
 
 
@@ -246,6 +372,9 @@ def check_semantic_coherence(
 
     if not compact_in or not compact_out:
         return _skip_result("check skipped: empty input or output", model, 0.0), []
+
+    if _is_tool_call_turn(output_dict):
+        return _skip_result("check skipped: tool-call turn, no prose to judge", model, 0.0), []
 
     user_msg = (
         f'Node: "{node_name}"\n'
@@ -368,6 +497,7 @@ def check_semantic_coherence(
             duration_ms=round(elapsed, 2),
             evidence_considered=tuple(parsed.get("evidence_considered", ())),
             overridden_signals=tuple(parsed.get("overridden_signals", ())),
+            failure_kind=_coerce_failure_kind(parsed.get("failure_kind")),
         )
 
         dis_results: list[DisambiguationResult] = []
@@ -400,6 +530,8 @@ def check_semantic_coherence(
                         duration_ms=round(elapsed, 2),
                     )
                 )
+
+        sc = _confirm_standalone_coherence(sc, node_name, user_msg, model, api_key)
 
         return sc, dis_results
     except Exception as exc:
