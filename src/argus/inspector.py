@@ -28,6 +28,7 @@ def _is_empty_element(v: Any) -> bool:
         return len(v) == 0
     return False
 
+
 # ── Truncation detection helpers ─────────────────────────────────────────────
 
 _TRUNCATION_RE = re.compile(r"\w$")
@@ -135,11 +136,27 @@ _STATUS_KEYS = {"status_code", "status", "http_status", "code", "response_code"}
 # Boolean fields whose False/True value indicates an error condition
 _SUCCESS_KEYS = {"success", "ok", "succeeded", "is_valid", "is_ok"}
 _FAILURE_KEYS = {"failed", "is_error", "has_error", "errored", "is_failed"}
-_RESULT_NAME_RE = re.compile(
-    r"(results?|items?|documents?|docs?|sources?|records?|rows?|hits?|entries?|matches?"
-    r"|findings?|output|content|data|response|answer|text|body|payload)$",
-    re.IGNORECASE,
+# Nouns that mean "this field holds what the tool found". Matched against the
+# *last word* of the key, not its trailing characters: a bare suffix test makes
+# `response_metadata` end in "data", and since every LangChain message carries
+# an empty `response_metadata` that made "empty result" fire on every healthy
+# tool call in a react agent.
+_RESULT_NOUNS = frozenset(
+    """result results item items document documents doc docs source sources
+    record records row rows hit hits entry entries match matches finding findings
+    output content data response answer text body payload""".split()
 )
+# Split on separators and at camelCase humps, so `responseData` and
+# `response_data` both end on the word `data` while `metadata` does not.
+_WORD_SPLIT_RE = re.compile(r"[^a-zA-Z0-9]+|(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _is_result_name(key: str) -> bool:
+    """Does `key` name a field that holds a tool's results?"""
+    words = [w for w in _WORD_SPLIT_RE.split(key) if w]
+    return bool(words) and words[-1].lower() in _RESULT_NOUNS
+
+
 _RATE_LIMIT_RE = re.compile(
     r"rate.?limit|quota.?exceed|too.?many.?requests?|429",
     re.IGNORECASE,
@@ -156,9 +173,7 @@ _SEVERITY_RANK = {"critical": 2, "warning": 1}
 _MAX_TOOL_SCAN_DEPTH = 5
 
 # Empty lists on these keys are failed retrievals, not optional blanks.
-_RETRIEVAL_LIST_KEYS = frozenset(
-    {"documents", "docs", "results", "hits", "sources", "items"}
-)
+_RETRIEVAL_LIST_KEYS = frozenset({"documents", "docs", "results", "hits", "sources", "items"})
 
 # Main LLM text fields — truncated output here is a node failure.
 _MAIN_LLM_OUTPUT_KEYS = frozenset({"answer", "draft", "summary", "reply", "content"})
@@ -229,8 +244,21 @@ def _is_the_whole_answer(output_dict: dict[str, Any] | None, field_path: str) ->
     """
     if not output_dict or _leaf_key(field_path).lower() not in _MAIN_LLM_OUTPUT_KEYS:
         return False
-    value = output_dict
+    value: Any = output_dict
     for part in field_path.split("."):
+        # `messages.[0].content` — list hops are path segments too. Without
+        # them this walk gave up at the first list, which meant the promotion
+        # never applied to `MessagesState`: every agent's refusal-as-the-whole
+        # -answer stayed a warning and graded clean.
+        index = re.fullmatch(r"\[(\d+)\]", part)
+        if index is not None:
+            if not isinstance(value, list):
+                return False
+            position = int(index.group(1))
+            if position >= len(value):
+                return False
+            value = value[position]
+            continue
         if not isinstance(value, dict) or part not in value:
             return False
         value = value[part]
@@ -301,8 +329,7 @@ def _apply_tool_shape_rules(
                         field_name=field_path,
                         severity="warning",
                         evidence=(
-                            f"{'nested ' if nested else ''}"
-                            f"rate limit detected: {as_str[:120]!r}"
+                            f"{'nested ' if nested else ''}rate limit detected: {as_str[:120]!r}"
                         ),
                     )
                 )
@@ -334,9 +361,7 @@ def _apply_tool_shape_rules(
                 failure_type="error_response",
                 field_name=field_path,
                 severity="critical",
-                evidence=(
-                    f"{'nested ' if nested else ''}success indicator '{key}' is False"
-                ),
+                evidence=(f"{'nested ' if nested else ''}success indicator '{key}' is False"),
             )
         )
         return
@@ -348,15 +373,13 @@ def _apply_tool_shape_rules(
                 failure_type="error_response",
                 field_name=field_path,
                 severity="critical",
-                evidence=(
-                    f"{'nested ' if nested else ''}failure indicator '{key}' is True"
-                ),
+                evidence=(f"{'nested ' if nested else ''}failure indicator '{key}' is True"),
             )
         )
         return
 
     # Rule 3 — empty result field with results-like name
-    if _RESULT_NAME_RE.search(key):
+    if _is_result_name(key):
         if value is None or value == [] or value == {} or value == "":
             add(
                 ToolFailure(
@@ -408,6 +431,18 @@ def _apply_tool_shape_rules(
             )
 
 
+def _as_json_payload(value: str) -> Any | None:
+    """`value` decoded, when it is a JSON object or array. Otherwise None."""
+    stripped = value.lstrip()
+    if not stripped.startswith(("{", "[")):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None
+
+
 def _scan_payload_for_tool_failures(
     obj: Any,
     prefix: str,
@@ -418,13 +453,32 @@ def _scan_payload_for_tool_failures(
     if depth > _MAX_TOOL_SCAN_DEPTH:
         return
     if isinstance(obj, dict):
+        carries_tool_call = bool(obj.get("tool_calls"))
         for key, value in obj.items():
             field_path = f"{prefix}.{key}" if prefix else str(key)
+            if key == "content" and carries_tool_call and _is_empty(value):
+                # A tool-calling turn puts its payload in `tool_calls` and
+                # leaves `content` empty — that is the normal shape of every
+                # model that calls a tool, not a tool returning nothing. Left
+                # in, it raised a warning on every agent turn, and the judge
+                # then read that warning as evidence and failed the node: a
+                # working `create_react_agent` could not pass the gate.
+                continue
             _apply_tool_shape_rules(key, value, field_path, depth, add)
             if isinstance(value, dict):
                 _scan_payload_for_tool_failures(value, field_path, depth + 1, add)
             elif isinstance(value, list):
                 _scan_payload_for_tool_failures(value, field_path, depth + 1, add)
+            elif isinstance(value, str):
+                # A tool result that arrived as encoded JSON is still a tool
+                # result. LangChain stringifies every structured tool return
+                # into `ToolMessage.content`, so without this an HTTP 500 inside
+                # a `create_react_agent` — the flagship swallowed failure — is
+                # invisible to every rule above. Parsing costs one json.loads on
+                # strings that already look like JSON.
+                nested = _as_json_payload(value)
+                if nested is not None:
+                    _scan_payload_for_tool_failures(nested, field_path, depth + 1, add)
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
             if isinstance(item, (dict, list)):
@@ -432,15 +486,17 @@ def _scan_payload_for_tool_failures(
                 _scan_payload_for_tool_failures(item, item_path, depth + 1, add)
 
 
-_JSON_EXPECTED_KEYS = frozenset({
-    "raw_response",
-    "log",
-    "logs",
-    "raw",
-    "history",
-    "raw_output",
-    "payload",
-})
+_JSON_EXPECTED_KEYS = frozenset(
+    {
+        "raw_response",
+        "log",
+        "logs",
+        "raw",
+        "history",
+        "raw_output",
+        "payload",
+    }
+)
 
 
 def _scan_double_encoded(
@@ -453,8 +509,15 @@ def _scan_double_encoded(
     if depth > 5:
         return
     if isinstance(obj, dict):
+        # A `ToolMessage` must carry a string, so LangChain json-encodes every
+        # structured tool return into its `content`. That is the framework's
+        # doing, not a node returning double-encoded JSON, and flagging it put
+        # a warning on every healthy tool call in every agent.
+        tool_message = obj.get("type") == "tool"
         for key, value in obj.items():
             if str(key).lower() in _JSON_EXPECTED_KEYS:
+                continue
+            if tool_message and key == "content":
                 continue
             field_path = f"{prefix}.{key}" if prefix else str(key)
             if isinstance(value, str):
@@ -611,7 +674,7 @@ def inspect_tool_outputs(
     for key, value in output_dict.items():
         if key.lower() in _SUCCESS_FIELD_NAMES:
             success_fields[key] = value
-        if _RESULT_NAME_RE.search(key):
+        if _is_result_name(key):
             result_fields[key] = value
 
     for s_key, s_val in success_fields.items():
@@ -783,15 +846,17 @@ def inspect_tool_outputs(
                 for in_key, in_val in input_str_fields:
                     # Legitimate pipeline handoff: closer copies draft→reply
                     # (or similar) rather than repeating the user prompt.
-                    if (
-                        in_key.lower() in _HANDOFF_SOURCE_KEYS
-                        and key.lower() != in_key.lower()
-                    ):
+                    if in_key.lower() in _HANDOFF_SOURCE_KEYS and key.lower() != in_key.lower():
                         continue
                     if max(len(value), len(in_val)) > 5000:
-                        ratio = 1.0 if value == in_val else (
-                            1.0 - abs(len(value) - len(in_val)) / max(len(value), len(in_val))
-                            if value[:500] == in_val[:500] else 0.0
+                        ratio = (
+                            1.0
+                            if value == in_val
+                            else (
+                                1.0 - abs(len(value) - len(in_val)) / max(len(value), len(in_val))
+                                if value[:500] == in_val[:500]
+                                else 0.0
+                            )
                         )
                     else:
                         ratio = SequenceMatcher(None, value, in_val, autojunk=False).ratio()
@@ -1006,6 +1071,15 @@ def inspect_transition(
 
     for fn in successor_fns:
         fn_name = _get_fn_name(fn)
+        if getattr(fn, "__argus_trace_placeholder__", False):
+            # A recorded trace carries state, not code, so the recorder stands
+            # every successor up as an unannotated placeholder. Reporting that
+            # as "add type hints to X" is both wrong (the user's node may be
+            # fully annotated) and unactionable (no annotation they add will
+            # ever reach this check) — and it fired on every node of every
+            # clean run, which reads as "ARGUS is half-working". The contract
+            # on this path is declared with `consumers=`; see argus.contextual.
+            continue
         state_type = get_node_state_type(fn)
         if state_type is None:
             unannotated.append(fn_name)

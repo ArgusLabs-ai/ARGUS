@@ -934,7 +934,7 @@
     {
       "id": "MP-006",
       "category": "malformed_payload",
-      "pattern": "^\\s*[{\\[].*\"[^\"]*$",
+      "pattern": "^\\s*[{\\[][^\"]*(\"[^\"]*\"[^\"]*)*\"[^\"]*$",
       "match_strategy": "regex",
       "severity": "critical",
       "description": "Unterminated JSON string in JSON-like payload — truncated mid-value",

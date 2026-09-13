@@ -49,9 +49,20 @@ def reducer_kinds(reducer_fields: dict[str, Any] | None) -> dict[str, str]:
     notebook that never existed.
     """
     return {
-        name: ("add" if getattr(fn, "__name__", "") in _ADD_REDUCERS else "overwrite")
+        name: ("add" if _reducer_name(fn) in _ADD_REDUCERS else "overwrite")
         for name, fn in (reducer_fields or {}).items()
     }
+
+
+def _reducer_name(fn: Any) -> str:
+    """The reducer's name, without the private-alias underscore.
+
+    LangGraph exports `add_messages` but the callable on the annotation is the
+    undecorated `_add_messages`. Matching the raw `__name__` therefore folded
+    `MessagesState` — the state most graphs use — as overwrite, so every row's
+    running state held only the last node's messages.
+    """
+    return getattr(fn, "__name__", "").lstrip("_")
 
 
 @dataclass(frozen=True)

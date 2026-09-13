@@ -350,25 +350,57 @@ def _check_info_density(
     )
 
 
-def _check_generic_response(output_dict: dict[str, Any]) -> AnomalySignal | None:
-    """BA-004: Suspiciously generic responses."""
+# The fields that carry a node's actual answer, and the length past which a
+# generic phrase reads as a mention inside real prose rather than the whole
+# reply. Kept in step with `inspector._MAIN_LLM_OUTPUT_KEYS`.
+_MAIN_OUTPUT_KEYS = frozenset({"answer", "draft", "summary", "reply", "content"})
+_WHOLE_ANSWER_MAX_LEN = 160
+_LIST_INDEX_RE = re.compile(r"\[\d+\]$")
+
+
+def _is_short_main_output(path: str, text: str) -> bool:
+    """Is `path` a main answer field whose whole value is this short string?"""
+    leaf = _LIST_INDEX_RE.sub("", path.rsplit(".", 1)[-1])
+    return leaf.lower() in _MAIN_OUTPUT_KEYS and len(text) <= _WHOLE_ANSWER_MAX_LEN
+
+
+def _check_generic_response(
+    output_dict: dict[str, Any],
+    input_state: dict[str, Any] | None = None,
+) -> AnomalySignal | None:
+    """BA-004: Suspiciously generic responses.
+
+    Only the node's *own* words count. A string the node was handed and passed
+    through unchanged is the caller's text, not evidence the node degraded: a
+    support ticket reading "I cannot reset my password" is a real user, and
+    flagging the classifier that normalised it fails the build on the customer's
+    phrasing. Echoed strings are skipped entirely rather than counted as clean,
+    so a node whose only output is a pass-through raises nothing either way. If
+    the phrase really did originate from a model, the node that first emitted it
+    is still checked — which is where blame belongs.
+    """
     all_strings = _extract_all_strings(output_dict)
     if not all_strings:
         return None
 
+    echoed = {text.strip().lower() for _, text in _extract_all_strings(input_state or {})}
+
     generic_hits = 0
     total_checked = 0
     worst_path = ""
+    is_the_whole_answer = False
 
     for path, text in all_strings:
         lower = text.lower().strip()
-        if len(lower) < 5:
+        if len(lower) < 5 or lower in echoed:
             continue
         total_checked += 1
         for phrase in _GENERIC_PHRASES:
             if phrase in lower:
                 generic_hits += 1
                 worst_path = path
+                if _is_short_main_output(path, lower):
+                    is_the_whole_answer = True
                 break
 
     if total_checked == 0 or generic_hits == 0:
@@ -379,7 +411,12 @@ def _check_generic_response(output_dict: dict[str, Any]) -> AnomalySignal | None
         return None
 
     score = min(1.0, ratio)
-    severity = "critical" if score > 0.7 else "warning"
+    # A refusal that *is* the answer is a silent failure, not a hint of one.
+    # Ratio alone under-rates it: an agent's update carries message plumbing
+    # (`type`, `id`) alongside the text, so the one field that matters is
+    # diluted to a warning and the run ships clean. Same calibration the
+    # registry path already makes for `{"answer": "N/A"}`.
+    severity = "critical" if score > 0.7 or is_the_whole_answer else "warning"
     return AnomalySignal(
         anomaly_id="BA-004",
         severity=severity,
@@ -605,7 +642,7 @@ def detect_anomalies(
         _check_length_collapse(output_dict, profile, behavior_type),
         _check_repetitive_filler(output_dict),
         _check_info_density(output_dict, profile, behavior_type),
-        _check_generic_response(output_dict),
+        _check_generic_response(output_dict, input_state),
         _check_structural_malformation(output_dict, profile, behavior_type),
         _check_shallow_empty(output_dict, profile, behavior_type, input_state),
         _check_incomplete_reasoning(output_dict, behavior_type),
