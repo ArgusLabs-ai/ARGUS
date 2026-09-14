@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Annotated, Optional
 
 try:
@@ -20,6 +21,7 @@ from argus.cli.cmd_check import check_run
 from argus.cli.cmd_diff import diff_runs
 from argus.cli.cmd_doctor import doctor
 from argus.cli.cmd_fix import fix_run
+from argus.cli.cmd_ingest import ingest_langsmith_file
 from argus.cli.cmd_init import init_skills_cmd
 from argus.cli.cmd_key import key_clear, key_set, key_show, key_use
 from argus.cli.cmd_locate import locate_sources
@@ -46,6 +48,25 @@ key_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(key_app, name="key")
+
+ingest_app = typer.Typer(
+    help="Grade an exported trace file with no live app.",
+    no_args_is_help=True,
+)
+app.add_typer(ingest_app, name="ingest")
+
+
+@ingest_app.command("langsmith")
+def cmd_ingest_langsmith(
+    path: Path = typer.Argument(..., help="LangSmith JSONL export of one LangGraph run."),
+    allow_cloud: bool = typer.Option(
+        False,
+        "--allow-cloud",
+        help="Save even while logged in to ARGUS cloud (the run is uploaded).",
+    ),
+) -> None:
+    """Grade a LangSmith export and save it as a run; then `argus check last`."""
+    ingest_langsmith_file(path, allow_cloud=allow_cloud)
 
 
 @key_app.command("set")
@@ -122,6 +143,7 @@ _COMMANDS = [
     ("diff <id>", "diff a replay run against its original"),
     ("diff <id-a> <id-b>", "diff any two runs side-by-side"),
     ("fix <id>", "print a fix prompt for the root cause, ready to paste"),
+    ("ingest langsmith <file>", "grade a LangSmith JSONL export with no live app"),
     ("login", "(optional) hosted cloud sync — only if a hosted backend is configured"),
     ("logout", "clear stored credentials"),
     ("whoami", "show current login status"),
