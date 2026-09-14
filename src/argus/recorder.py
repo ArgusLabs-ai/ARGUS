@@ -30,15 +30,13 @@ The LLM judge is on by default when a key is configured (``argus key set`` or
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from typing import Any, Callable
 from uuid import UUID
 
-from argus.contextual import ConsumerMap, contextual_findings
-from argus.ledger import build_ledger
-from argus.models import Finding, LLMInvestigationConfig
+from argus.contextual import ConsumerMap
+from argus.grading import IncompleteTraceError, finish, new_session
 from argus.session import ArgusSession
 
 try:  # pragma: no cover - exercised only when langchain-core is absent
@@ -53,39 +51,6 @@ __all__ = ["ArgusRecorder", "IncompleteTraceError"]
 
 # LangGraph's graph sentinels — not nodes anyone wrote.
 _SENTINELS = ("__start__", "__end__")
-
-
-class IncompleteTraceError(RuntimeError):
-    """The recording was too thin to grade.
-
-    Brief §4: an incomplete recording is never a pass. Refusing loudly beats
-    reporting "no findings, so it passed" off a trace that never arrived.
-    """
-
-
-def _placeholder_node(name: str) -> Callable[..., Any]:
-    """A stand-in for a node function the trace never gives us.
-
-    ``ArgusSession._get_successor_fns`` looks successors up in
-    ``node_fn_registry``; an empty registry means no successors, and the
-    critical ``empty_output`` rule (``inspector.py``) only fires when a node has
-    successors waiting. The placeholder restores that. It is deliberately
-    unannotated: a trace does not carry what the next step expected, so the
-    structural field check is skipped rather than quietly inventing a contract.
-    That contract is layer 3 (:mod:`argus.contextual`), declared with
-    ``consumers=``.
-
-    The marker tells the inspector this successor is ours, not the user's, so it
-    does not advise "add type hints to X" — advice that is wrong on an annotated
-    node and impossible to act on either way.
-    """
-
-    def _node(state):  # type: ignore[no-untyped-def]  # unannotated on purpose
-        raise RuntimeError(f"{name} is a trace placeholder and is never called")
-
-    _node.__name__ = name
-    _node.__argus_trace_placeholder__ = True  # type: ignore[attr-defined]
-    return _node
 
 
 def _reducer_fields(app: Any) -> dict[str, Any]:
@@ -246,28 +211,16 @@ class ArgusRecorder(BaseCallbackHandler):
     def _new_session(self) -> ArgusSession:
         """A session for one graph run — the state the old ``attach`` set up."""
         node_names, edge_map, conditional_sources = self._topology
-        judge = self._judge
-        session = ArgusSession(
-            max_field_size=self._max_field_size,
+        return new_session(
+            node_names,
+            edge_map,
+            conditional_sources,
+            self._reducers,
+            judge=self._judge,
             validators=self._validators,
             strict=self._strict,
-            # Explicit config (never None) so the session does not fall back to
-            # its own auto-enable logic — the recorder owns the decision here.
-            llm_investigation=LLMInvestigationConfig(
-                enabled=judge,
-                always_investigate=judge,
-                semantic_check=judge,
-            ),
+            max_field_size=self._max_field_size,
         )
-        session.set_node_names(node_names)
-        session.set_edges(edge_map)
-        session.set_conditional_sources(conditional_sources)
-        session.node_fn_registry = {name: _placeholder_node(name) for name in node_names}
-        session.reducer_fields = self._reducers
-        # The recorder owns finalize: the ledger and contextual layers run over
-        # the complete trace, before the run is graded and saved.
-        session._defer_auto_finalize = True
-        return session
 
     def _resolve_judge(self) -> bool:
         """Decide whether the LLM judge runs for this attach.
@@ -467,7 +420,7 @@ class ArgusRecorder(BaseCallbackHandler):
     # ── the layer chain ─────────────────────────────────────────────────────
 
     def _finish(self, session: ArgusSession, root: UUID) -> None:
-        """Ledger → contextual → structure/tools + semantic → judge → verdict."""
+        """Grade one finished run (:func:`argus.grading.finish`)."""
         with self._lock:
             # Only this run's steps. Another `.batch()` item may still be mid
             # flight on another thread; its open steps are not this run's gap.
@@ -476,65 +429,8 @@ class ArgusRecorder(BaseCallbackHandler):
                 for rid, (node, _, _) in self._pending.items()
                 if self._root_of.get(rid) == root
             )
-        if unfinished:
-            self._refuse(
-                session,
-                f"steps started but never reported an update: {', '.join(unfinished)}",
-            )
-        if not session._events:
-            self._refuse(session, "no steps were recorded — the trace is empty")
-
-        ledger = build_ledger(session._events, session._initial_state, session.reducer_kinds)
-        self._blame_origins(session, contextual_findings(ledger, self._consumers))
-
-        # The per-step judge already fired (its futures don't re-check this
-        # flag); disabling it here only stops finalize from also running the
-        # investigate() essay — a second LLM call that is not the verdict.
-        if session._llm_investigation_config is not None:
-            session._llm_investigation_config.enabled = False
-
-        # Everything after this is the existing ARGUS brain: per-step structure,
-        # tool and semantic checks already ran inside on_node_end; finalize rolls
-        # them up, applies the judge last, collects findings and saves the run.
-        session.finalize()
+        finish(session, self._consumers, unfinished)
         self.run_ids.append(session.run_id)
-
-        # So a bare `argus check` grades this run (cli/cmd_check.py reads it).
-        os.environ["ARGUS_RUN_ID"] = session.run_id
-
-    @staticmethod
-    def _blame_origins(session: ArgusSession, findings: list[Finding]) -> None:
-        """Record a contextual miss on the step that caused it.
-
-        No second gate: a step carrying `missing_fields` already fails the
-        roll-up in `session._finalize` and `check.evaluate_run`, and
-        `findings.collect_findings` already turns it into a `missing_field`
-        finding naming the origin. Must run before finalize.
-        """
-        by_node = {event.node_name: event for event in session._events}
-        for finding in findings:
-            event = by_node.get(finding.node)
-            if event is None or event.inspection is None or finding.field_path is None:
-                continue
-            insp = event.inspection
-            if finding.field_path not in insp.missing_fields:
-                insp.missing_fields.append(finding.field_path)
-            insp.is_silent_failure = True
-            insp.severity = "critical"
-            insp.message = finding.reason
-            event.status = "fail"
-
-    @staticmethod
-    def _refuse(session: ArgusSession, why: str) -> None:
-        """Abandon the run rather than grade a recording we cannot trust.
-
-        The session's atexit safety net would otherwise finalize this run on
-        interpreter exit and, finding no failures in a trace that never arrived,
-        save it as clean — the exact "no findings, so it passed" the brief bans.
-        Marking it complete makes that finalize a no-op.
-        """
-        session._completed = True
-        raise IncompleteTraceError(f"{why}. An incomplete recording is not a pass.")
 
     def _require_attached(self) -> None:
         if not self._attached:
