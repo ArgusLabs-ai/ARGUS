@@ -12,10 +12,11 @@ import pytest
 from typer.testing import CliRunner
 
 from argus.cli.main import app
-from argus.ingest.langsmith import node_runs
+from argus.ingest.langsmith import load_runs, node_runs, tool_calls_by_step
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "demo_graph.jsonl"
+TOOL_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "tool_graph.jsonl"
 
 
 @pytest.fixture(autouse=True)
@@ -35,6 +36,56 @@ def test_the_silent_node_is_blamed_from_the_file_alone():
     checked = runner.invoke(app, ["check", "last", "--format", "json"])
     assert checked.exit_code == 1, checked.output
     assert json.loads(checked.output)["first_failure_step"] == "summarize"
+
+
+def test_a_swallowed_tool_500_fails_the_node_that_called_the_tool():
+    runner = CliRunner()
+    ingested = runner.invoke(app, ["ingest", "langsmith", str(TOOL_FIXTURE)])
+    assert ingested.exit_code == 0, ingested.output
+
+    checked = runner.invoke(app, ["check", "last", "--format", "json"])
+    assert checked.exit_code == 1, checked.output
+    payload = json.loads(checked.output)
+    assert payload["first_failure_step"] == "fetch"
+    critical = [
+        f
+        for f in payload["findings"]
+        if f["node"] == "fetch"
+        and f["severity"] == "critical"
+        and "fetch_docs" in f["reason"]
+        and "500" in f["reason"]
+    ]
+    assert critical, payload["findings"]
+
+
+def test_a_tool_result_is_unwrapped_to_what_the_recorder_hears():
+    # LangSmith stores `outputs={"output": <result>}`; on_tool_end hears the bare result.
+    runs = load_runs(TOOL_FIXTURE)
+    steps = node_runs(runs)
+    fetch = next(r for r in steps if r["extra"]["metadata"]["langgraph_node"] == "fetch")
+    [call] = tool_calls_by_step(runs, steps)[str(fetch["id"])]
+    assert call["name"] == "fetch_docs"
+    assert call["output"] == {"status": 500, "body": "upstream down"}
+    assert call["error"] is None
+
+
+def test_a_tool_result_with_no_output_key_keeps_its_payload():
+    """An export that does not wrap the result must not lose it.
+
+    `outputs["output"]` is LangSmith's shape, not a guarantee. Reading that key
+    blind hands the graders `None` for anything else — and a dropped payload is
+    a tool failure nobody sees, which is the whole point of reading tools.
+    """
+    import copy
+
+    runs = copy.deepcopy(load_runs(TOOL_FIXTURE))
+    for run in runs:
+        if run.get("run_type") == "tool":
+            run["outputs"] = {"status": 500, "body": "upstream down"}
+    steps = node_runs(runs)
+    fetch = next(r for r in steps if r["extra"]["metadata"]["langgraph_node"] == "fetch")
+    [call] = tool_calls_by_step(runs, steps)[str(fetch["id"])]
+    assert call["output"] == {"status": 500, "body": "upstream down"}
 
 
 def test_logged_in_refuses_to_save_without_allow_cloud(monkeypatch):

@@ -9,6 +9,10 @@ That rule matters for the silent node: `summarize` returns `{}`, and its
 end-of-run update carries no `outputs` at all (docs/prd_abhishek.md, BUG-1).
 
     PYTHONPATH=src python scripts/make_langsmith_fixture.py
+    PYTHONPATH=src python scripts/make_langsmith_fixture.py --tool
+
+``--tool`` traces a second graph instead: its `fetch` node calls a tool that
+returns an HTTP 500 body, swallows it and returns a normal-looking update.
 """
 
 from __future__ import annotations
@@ -17,9 +21,12 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
 from langchain_core.tracers.langchain import LangChainTracer
+from langgraph.graph import END, START, StateGraph
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "demo" / "fat_trace"))
@@ -67,19 +74,50 @@ class StubClient:
         pass
 
 
+class ToolState(TypedDict, total=False):
+    query: str
+    docs: list[str]
+    answer: str
+
+
+@tool
+def fetch_docs(query: str) -> dict:
+    """Look up documents for a query."""
+    return {"status": 500, "body": "upstream down"}
+
+
+def build_tool_app():
+    def fetch(state: ToolState, config: RunnableConfig) -> dict:
+        # The config carries the tracer to the tool on every Python version.
+        fetch_docs.invoke({"query": state["query"]}, config=config)
+        return {"docs": ["cached result"]}  # ← the 500 is swallowed
+
+    def answer(state: ToolState) -> dict:
+        return {"answer": f"Based on: {state['docs'][0]}"}
+
+    graph = StateGraph(ToolState)
+    graph.add_node("fetch", fetch)
+    graph.add_node("answer", answer)
+    graph.add_edge(START, "fetch")
+    graph.add_edge("fetch", "answer")
+    graph.add_edge("answer", END)
+    return graph.compile()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--out", default=str(REPO / "tests" / "fixtures" / "langsmith" / "demo_graph.jsonl")
-    )
+    parser.add_argument("--tool", action="store_true", help="trace the tool graph instead")
+    parser.add_argument("--out", default=None)
     args = parser.parse_args()
+    name = "tool_graph.jsonl" if args.tool else "demo_graph.jsonl"
+    out = Path(args.out or REPO / "tests" / "fixtures" / "langsmith" / name)
+    app = build_tool_app() if args.tool else build_app()
 
     client = StubClient()
     tracer = LangChainTracer(client=client, project_name="argus-fixture")
-    build_app().invoke({"query": "how do agents fail silently?"}, config={"callbacks": [tracer]})
+    app.invoke({"query": "how do agents fail silently?"}, config={"callbacks": [tracer]})
     tracer.wait_for_futures()
 
-    out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w") as fh:
         for row in client.runs.values():
