@@ -562,9 +562,9 @@ class NestedState(TypedDict, total=False):
     out: str
 
 
-def _subgraph_app(inner_last):
+def _subgraph_app(inner_last, inner_first=lambda s: {"query": s.get("query", "").strip()}):
     inner = StateGraph(NestedState)
-    inner.add_node("normalize", lambda s: {"query": s.get("query", "").strip()})
+    inner.add_node("normalize", inner_first)
     inner.add_node("retrieve", inner_last)
     inner.add_edge(START, "normalize")
     inner.add_edge("normalize", "retrieve")
@@ -601,6 +601,43 @@ def test_a_silent_node_inside_a_subgraph_is_caught():
         _subgraph_app(lambda s: {}), {"query": " contracts "}, {"docs": ["render"]}
     )
     assert verdict.passed is False
+
+
+def test_a_subgraph_that_contributes_nothing_is_blamed_on_its_first_inner_node():
+    """The whole subgraph no-ops and `render` waits on it (#89).
+
+    The parent row is not recorded — its "update" is the merged state, so
+    grading it credits it with fields it never wrote. Blame therefore has to
+    land inside: `normalize` is the first step whose update was empty, and
+    naming it beats naming the opaque `child` the issue originally expected.
+    `render` is the crash site's equivalent here, never the culprit.
+    """
+    verdict, record, rows = _run(
+        _subgraph_app(lambda s: {}, inner_first=lambda s: {}),
+        {"query": " contracts "},
+        {"docs": ["render"]},
+    )
+
+    assert verdict.passed is False, "a subgraph contributing nothing is not a clean run"
+    assert record.first_failure_step == "normalize"
+    assert "child" not in rows, "the parent row stays unrecorded even when it is the silent one"
+    assert rows["render"].status == "pass", "the node left waiting is not the one to blame"
+    assert {f.node for f in record.findings if f.type == "empty_output"} == {
+        "normalize",
+        "retrieve",
+    }
+
+
+def test_a_working_subgraph_stays_clean():
+    """Every inner node contributes — nothing about nesting invents a finding."""
+    verdict, record, _rows = _run(
+        _subgraph_app(lambda s: {"docs": ["a", "b"]}),
+        {"query": " contracts "},
+        {"docs": ["render"]},
+    )
+
+    assert verdict.passed is True, f"healthy subgraph flagged: {verdict.reasons}"
+    assert record.findings == []
 
 
 # ── false positives: the reason this architecture exists ─────────────────────
