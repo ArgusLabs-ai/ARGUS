@@ -363,6 +363,20 @@ PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k skinny
 **Must not:** treat one node's empty `outputs` as skinny — with root outputs
 present, that is the signal.
 
+**Done (2026-09-14):** `_refuse_skinny` in `src/argus/ingest/langsmith.py` runs
+after the steps are picked and before a session exists, so there is no run to
+save or finalize at exit. It refuses on root `outputs` absent or `{}`, or a
+node run whose `inputs` is absent or not a dict. A node run with `inputs == {}`
+is still graded; "hide inputs" is not covered here. Zero node runs was already
+refused by `grading.finish` ("no steps were recorded"), so ingest adds no
+check for it; `test_skinny_trace_with_no_node_runs_saves_nothing` pins that.
+Rich wraps the error at 80 columns, so tests match the start of the message.
+Proof by breaking: skipping the root check fails
+`test_skinny_trace_with_outputs_hidden_saves_nothing`; skipping the inputs
+check fails `test_skinny_node_run_without_inputs_saves_nothing`; refusing on
+any node's `{}` fails `test_not_skinny_when_only_one_node_has_empty_outputs`
+and four other tests; restored, 1033 pass.
+
 ### S-7 — `--consumers` on ingest wires the contextual layer
 
 **PR:** one.
