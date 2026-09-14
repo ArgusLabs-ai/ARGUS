@@ -95,6 +95,10 @@ the sentence contextual/the crash walk authored — the one that names the
 **reader** — instead of `collect_findings` re-deriving a blander line, and
 `origin_node` is set rather than `None`.
 
+When several contextual findings blame the same origin, every authored reason
+is appended to that step's inspection message. Any earlier structural or tool
+message is preserved instead of being overwritten.
+
 ```bash
 PYTHONPATH=src pytest tests/test_silent_failure_matrix.py -q   # 28 passed, ~20s
 ```

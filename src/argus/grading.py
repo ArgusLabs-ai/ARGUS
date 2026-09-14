@@ -146,7 +146,13 @@ def _blame_origins(session: ArgusSession, findings: list[Finding]) -> None:
             insp.missing_fields.append(finding.field_path)
         insp.is_silent_failure = True
         insp.severity = "critical"
-        insp.message = finding.reason
+        # Accumulate: two consumers can miss two fields on one origin, and a
+        # structural or tool message may already be here. Overwriting would
+        # keep only the last reason and drop what the earlier layers authored.
+        if insp.message == "All checks passed":
+            insp.message = finding.reason
+        elif finding.reason not in insp.message:
+            insp.message = f"{insp.message}; {finding.reason}"
         event.status = "fail"
 
 

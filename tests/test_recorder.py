@@ -133,6 +133,36 @@ def test_a_real_update_stays_clean(monkeypatch):
 
 
 @pytest.mark.integration
+def test_contextual_reasons_accumulate_on_the_same_origin(monkeypatch):
+    """Every missing field should keep its explanation on the blamed step."""
+    _no_patching(monkeypatch)
+
+    g = StateGraph(_S)
+    g.add_node("prepare", lambda state: {"query": "prepared"})
+    g.add_node(
+        "answer",
+        lambda state: {"answer": f"{state.get('docs')} {state.get('summary')}"},
+    )
+    g.add_edge(START, "prepare")
+    g.add_edge("prepare", "answer")
+    g.add_edge("answer", END)
+
+    recorder = ArgusRecorder(
+        consumers={"docs": ["answer"], "summary": ["answer"]},
+        semantic_judge=False,
+    )
+    recorder.attach(g.compile()).invoke({})
+
+    record = load_run(recorder.session.run_id)
+    origin = next(step for step in record.steps if step.node_name == "prepare")
+
+    assert origin.inspection is not None
+    assert set(origin.inspection.missing_fields) == {"docs", "summary"}
+    assert "`docs`" in origin.inspection.message
+    assert "`summary`" in origin.inspection.message
+
+
+@pytest.mark.integration
 def test_parallel_fan_out_records_every_branch(monkeypatch):
     """Branches run on separate threads — each still gets its own step and its own update."""
     _no_patching(monkeypatch)
