@@ -287,6 +287,21 @@ PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k tool
 ```
 **Must not:** change `inspector.py` rules.
 
+**Done 2026-09-14 (branch `s4-tool-child-runs`).** Learned: a LangSmith tool
+run stores its result wrapped, `outputs = {"output": <result>}`; the recorder's
+`on_tool_end` hears the bare result, so ingest unwraps it. Detection alone does
+not prove the unwrap: `inspect_tool_outputs` scans nested dicts, so the wrapped
+shape still fails `fetch` (as `output.status`), which is why a separate test pins
+the unwrapped shape. A tool belongs to its nearest node-step ancestor, found by
+walking `parent_run_id`. The tool graph lives in the fixture script, not
+`demo/`. The node must pass its `config` to `tool.invoke` so the tracer
+reaches the tool on Python 3.9. The verdict reads `silent_failure on fetch /
+error_response on fetch_docs.status`. Proof by breaking: passing
+`tool_calls=[]` fails
+`test_a_swallowed_tool_500_fails_the_node_that_called_the_tool`; dropping the
+unwrap fails `test_a_tool_result_is_unwrapped_to_what_the_recorder_hears`;
+restored, 1024 pass.
+
 ### S-5 — Edges sidecar: `argus edges` export and `--edges` on ingest
 
 **PR:** one.
