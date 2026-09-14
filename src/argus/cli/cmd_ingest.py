@@ -8,18 +8,19 @@ import typer
 from rich.console import Console
 
 from argus.grading import IncompleteTraceError
-from argus.ingest.langsmith import CloudSyncRefused, ingest_langsmith
+from argus.ingest.langsmith import CloudSyncRefused, ingest_langsmith, load_edges
 
 console = Console()
 
 
-def ingest_langsmith_file(path: Path, *, allow_cloud: bool) -> None:
+def ingest_langsmith_file(path: Path, *, allow_cloud: bool, edges: Path | None = None) -> None:
     """Grade ``path`` and save the run; exit 2 when it cannot be graded.
 
     The session prints the one-line verdict as it saves, as it does for a live run.
     """
     try:
-        ingest_langsmith(path, allow_cloud=allow_cloud)
+        graph = load_edges(edges) if edges is not None else None
+        ingest_langsmith(path, allow_cloud=allow_cloud, edges=graph)
     except (CloudSyncRefused, IncompleteTraceError, ValueError, OSError) as e:
         # A bad JSON line is a ValueError too.
         console.print(f"[red]Error:[/red] {e}")

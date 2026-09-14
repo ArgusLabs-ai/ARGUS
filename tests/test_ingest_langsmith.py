@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from argus.cli.main import app
 from argus.ingest.langsmith import load_runs, node_runs, tool_calls_by_step
+from argus.storage import list_runs, load_run
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "demo_graph.jsonl"
@@ -94,6 +95,89 @@ def test_a_subgraph_parent_row_is_not_a_step():
         run("child", "inner-seq", "search", 1),
     ]
     assert [r["id"] for r in node_runs(runs)] == ["child"]
+
+
+def _new_run_after(runner_call):
+    before = {r["run_id"] for r in list_runs()}
+    runner_call()
+    [run_id] = {r["run_id"] for r in list_runs()} - before
+    return load_run(run_id)
+
+
+def test_edges_from_the_demo_graph_match_the_recorder(monkeypatch):
+    monkeypatch.syspath_prepend(str(REPO))
+    from demo.fat_trace.demo_graph import build_app
+
+    from argus import ArgusRecorder
+
+    runner = CliRunner()
+    exported = runner.invoke(
+        app, ["edges", "demo.fat_trace.demo_graph:build_app", "--out", "edges.json"]
+    )
+    assert exported.exit_code == 0, exported.output
+
+    live = _new_run_after(
+        lambda: ArgusRecorder(semantic_judge=False).attach(build_app()).invoke({"query": "q"})
+    )
+
+    def ingest():
+        result = runner.invoke(app, ["ingest", "langsmith", str(FIXTURE), "--edges", "edges.json"])
+        assert result.exit_code == 0, result.output
+
+    ingested = _new_run_after(ingest)
+    assert ingested.graph_edge_map == live.graph_edge_map
+
+    checked = runner.invoke(app, ["check", "last", "--format", "json"])
+    assert checked.exit_code == 1, checked.output
+    assert json.loads(checked.output)["first_failure_step"] == "summarize"
+
+
+def test_the_edges_file_replaces_the_step_order_guess():
+    # Step order can only ever say search -> summarize; this map says more.
+    edges = {
+        "edge_map": {"search": ["summarize", "answer"], "summarize": ["answer"]},
+        "conditional_sources": ["search"],
+        "node_names": ["search", "summarize", "answer"],
+        "subgraph_parents": [],
+    }
+    Path("edges.json").write_text(json.dumps(edges))
+    runner = CliRunner()
+
+    def ingest():
+        result = runner.invoke(app, ["ingest", "langsmith", str(FIXTURE), "--edges", "edges.json"])
+        assert result.exit_code == 0, result.output
+
+    assert _new_run_after(ingest).graph_edge_map == edges["edge_map"]
+
+
+def test_an_unreadable_edges_file_saves_nothing():
+    Path("edges.json").write_text(json.dumps({"edge_map": {}}))
+    result = CliRunner().invoke(
+        app, ["ingest", "langsmith", str(FIXTURE), "--edges", "edges.json"]
+    )
+    assert result.exit_code == 2
+    assert "argus edges" in result.output
+    assert list(Path(".argus/runs").iterdir()) == []
+
+
+def test_edges_name_the_subgraph_parents_instead_of_nesting():
+    def run(run_id, parent, node):
+        return {
+            "id": run_id,
+            "parent_run_id": parent,
+            "run_type": "chain",
+            "tags": ["graph:step:1"],
+            "extra": {"metadata": {"langgraph_node": node, "langgraph_step": 1}},
+        }
+
+    runs = [
+        {"id": "root", "parent_run_id": None, "run_type": "chain", "tags": []},
+        run("parent", "root", "research"),
+        run("child", "parent", "search"),
+        run("sibling", "root", "report"),
+    ]
+    # The nested parent stays (the file says it is no subgraph); the named one goes.
+    assert sorted(r["id"] for r in node_runs(runs, {"report"})) == ["child", "parent"]
 
 
 def test_the_ingest_module_imports_without_langgraph_or_langchain():
