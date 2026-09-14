@@ -268,6 +268,7 @@ class ArgusRecorder(BaseCallbackHandler):
             validators=self._validators,
             strict=self._strict,
             max_field_size=self._max_field_size,
+            state_keys=sorted(self._outer_keys),
         )
 
     def _resolve_judge(self) -> bool:

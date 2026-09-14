@@ -349,6 +349,7 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         graph_edge_map=data.get("graph_edge_map", {}),
         initial_state=data.get("initial_state", {}),
         reducer_kinds=data.get("reducer_kinds", {}),
+        state_keys=data.get("state_keys", []),
         steps=steps,
         schema_version=data.get("schema_version", "0"),
         parent_run_id=data.get("parent_run_id"),

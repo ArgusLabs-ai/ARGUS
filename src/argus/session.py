@@ -298,6 +298,8 @@ class ArgusSession:
         self._persist_failures = config.persist_failures if config else True
         self._dry_run = config.dry_run if config else False
         self.graph_node_names: list[str] = []
+        # Keys the graph's state has; see RunRecord.state_keys.
+        self.state_keys: list[str] = []
         self.graph_edge_map: dict[str, list[str]] = {}
         self.node_fn_registry: dict[str, Any] = {}
 
@@ -1473,6 +1475,7 @@ class ArgusSession:
             graph_edge_map=self.graph_edge_map,
             initial_state=self._initial_state,
             reducer_kinds=self.reducer_kinds,
+            state_keys=list(self.state_keys),
             steps=events_snapshot,
             schema_version=SCHEMA_VERSION,
             is_cyclic=self._is_cyclic,

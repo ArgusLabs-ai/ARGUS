@@ -60,7 +60,9 @@ def _run(app, payload, consumers=None, *, is_async=False, expect_raise=None):
     else:
         bound.invoke(payload)
     record = load_run(recorder.session.run_id)
-    rows = build_ledger(record.steps, record.initial_state, record.reducer_kinds)
+    rows = build_ledger(
+        record.steps, record.initial_state, record.reducer_kinds, record.state_keys
+    )
     return evaluate_run(record), record, {r.node: r for r in rows}
 
 
@@ -756,6 +758,59 @@ def test_a_looping_subgraph_that_contributes_on_a_later_pass_stays_clean():
     assert calls["n"] == 2
     assert verdict.passed is True, f"got there on retry, so clean: {verdict.reasons}"
     assert record.findings == []
+
+
+def test_an_inner_only_key_never_reaches_the_notebook():
+    """The subgraph contributes, but one of its keys is invisible outside it.
+
+    `retrieve` writes `docs` (real) and `scratch` (inner-only), so the subgraph
+    did contribute and `subgraph_no_contribution` correctly stays quiet. The
+    bug was the notebook: it carried `scratch` forward, so a consumer declared
+    on it looked satisfied and the run graded clean while `render` read `None`.
+    """
+    inner = StateGraph(InnerOnlyState)
+    inner.add_node("retrieve", lambda s: {"scratch": "leaked", "docs": ["d"]})
+    inner.add_edge(START, "retrieve")
+    inner.add_edge("retrieve", END)
+
+    outer = StateGraph(NestedState)
+    outer.add_node("child", inner.compile())
+    outer.add_node("render", lambda s: {"out": f"scratch={s.get('scratch')}"})
+    outer.add_edge(START, "child")
+    outer.add_edge("child", "render")
+    outer.add_edge("render", END)
+
+    verdict, record, rows = _run(outer.compile(), {}, {"scratch": ["render"]})
+
+    assert "scratch" not in rows["retrieve"].state_after, (
+        "`scratch` exists only in the subgraph's schema — the outer notebook never had it"
+    )
+    assert rows["retrieve"].update == {"scratch": "leaked", "docs": ["d"]}, (
+        "the update still reports what the node returned; only the notebook is scoped"
+    )
+    assert verdict.passed is False, "a consumer reading a field it cannot see is a failure"
+    assert [(f.node, f.type) for f in record.findings] == [("retrieve", "missing_field")]
+
+
+def test_the_notebook_agrees_live_and_reloaded_for_a_subgraph():
+    """Scoping must come off the run file too, or replay disagrees with the run."""
+    recorder = ArgusRecorder(semantic_judge=False)
+    app = _inner_only_app(lambda s: {"scratch": "a"}, lambda s: {"docs": ["d"]})
+    recorder.attach(app).invoke({"query": "q"})
+
+    record = load_run(recorder.session.run_id)
+    assert record.state_keys, "the run file has to carry the graph's own keys"
+    live = build_ledger(
+        recorder.session._events,
+        recorder.session._initial_state,
+        recorder.session.reducer_kinds,
+        recorder.session.state_keys,
+    )
+    reloaded = build_ledger(
+        record.steps, record.initial_state, record.reducer_kinds, record.state_keys
+    )
+    assert [r.state_after for r in live] == [r.state_after for r in reloaded]
+    assert all("scratch" not in r.state_after for r in reloaded)
 
 
 def test_a_working_subgraph_stays_clean():

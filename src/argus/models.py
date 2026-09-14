@@ -329,6 +329,11 @@ class RunRecord:
     # string, so the ledger folds a reloaded run the same way it folds a live
     # one. Reducer callables cannot be persisted. See ledger.reducer_kinds.
     reducer_kinds: dict[str, str] = field(default_factory=dict)
+    # The keys this graph's state actually has. A subgraph node writes into its
+    # own schema, and a key that lives only there never reaches the parent state
+    # — so the ledger must not carry it forward as though a later node could
+    # read it. Empty means unknown, and the ledger folds everything as before.
+    state_keys: list[str] = field(default_factory=list)
     steps: list[NodeEvent] = field(default_factory=list)
     schema_version: str = "0"  # ponytail: "0"=pre-VAR-71, "1"=current; migrate on load
     parent_run_id: str | None = None

@@ -21,7 +21,9 @@ def _rows(record: RunRecord) -> list[LedgerRow]:
     the graph really merged them. Replaying off the raw steps meant replay and
     `argus check` could disagree about what a node was handed.
     """
-    return build_ledger(record.steps, record.initial_state, record.reducer_kinds)
+    return build_ledger(
+        record.steps, record.initial_state, record.reducer_kinds, record.state_keys
+    )
 
 
 def _row(record: RunRecord, node_name: str) -> LedgerRow:

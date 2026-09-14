@@ -66,8 +66,15 @@ def new_session(
     validators: dict[str, Callable[[dict[str, Any]], tuple[bool, str]]],
     strict: bool,
     max_field_size: int,
+    state_keys: list[str] | None = None,
 ) -> ArgusSession:
-    """A session for one graph run, ready for ``on_node_start`` / ``on_node_end``."""
+    """A session for one graph run, ready for ``on_node_start`` / ``on_node_end``.
+
+    ``state_keys`` are the keys the graph's own state has. Passing them keeps a
+    subgraph's inner-only field out of the ledger's running state, where it
+    would otherwise look available to a node that can never read it
+    (:class:`argus.models.RunRecord`). A caller with no schema omits it.
+    """
     session = ArgusSession(
         max_field_size=max_field_size,
         validators=validators,
@@ -85,6 +92,7 @@ def new_session(
     session.set_conditional_sources(conditional_sources)
     session.node_fn_registry = {name: _placeholder_node(name) for name in node_names}
     session.reducer_fields = reducer_fields
+    session.state_keys = list(state_keys or ())
     # The caller owns finalize: the ledger and contextual layers run over the
     # complete trace, before the run is graded and saved.
     session._defer_auto_finalize = True
@@ -110,7 +118,9 @@ def finish(
     if not session._events:
         _refuse(session, "no steps were recorded — the trace is empty")
 
-    ledger = build_ledger(session._events, session._initial_state, session.reducer_kinds)
+    ledger = build_ledger(
+        session._events, session._initial_state, session.reducer_kinds, session.state_keys
+    )
     _blame_origins(session, contextual_findings(ledger, consumers))
 
     # The per-step judge already fired (its futures don't re-check this

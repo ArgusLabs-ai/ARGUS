@@ -103,6 +103,7 @@ def build_ledger(
     steps: list[Any],
     initial_state: dict[str, Any] | None = None,
     reducers: dict[str, str] | None = None,
+    state_keys: list[str] | None = None,
 ) -> list[LedgerRow]:
     """Fold recorded steps into the notebook.
 
@@ -130,6 +131,13 @@ def build_ledger(
     # "overwrite", so its fan-in still reads as the last branch winning. Widen
     # `_ADD_REDUCERS`, or persist something richer than a name, if that bites.
     kinds = reducers or {}
+    # A subgraph node writes into the subgraph's schema. A key that exists only
+    # there is invisible to every node outside it, so carrying it in the running
+    # state tells a later reader a field was waiting for it that never was — and
+    # `contextual` then clears the node that should have been blamed. The
+    # node's own recorded `input_state` is untouched: this scopes the notebook,
+    # not the trace. Unknown (empty) keeps the old fold.
+    outer = set(state_keys or ())
     running: dict[str, Any] = dict(initial_state or {})
     rows: list[LedgerRow] = []
 
@@ -138,7 +146,10 @@ def build_ledger(
             continue
         update = event.output_dict
         if update:
-            running = _fold(running, update, kinds)
+            # Fold the outward-visible part; the row still reports the update
+            # the node actually returned.
+            visible = {k: v for k, v in update.items() if k in outer} if outer else update
+            running = _fold(running, visible, kinds)
         rows.append(
             LedgerRow(
                 step_index=event.step_index,
