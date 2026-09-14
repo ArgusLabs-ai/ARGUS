@@ -35,7 +35,9 @@ name that node, with no LangGraph app loaded.
 - `on_chain_end` outputs for a node is the **update** the node returned
   (`{}` for a silent node), not the merged state.
 - LangSmith's tracer is that same callback, so a LangSmith Run has
-  `extra.metadata.langgraph_node` and `outputs` == update. Run fields:
+  `extra.metadata.langgraph_node` and, for a node that returned keys,
+  `outputs` == update. **A node that returned `{}` does not arrive as `{}`**
+  (BUG-1 below): its end-PATCH carries no `outputs` at all. Run fields:
   `id`, `trace_id`, `parent_run_id`, `name`, `run_type`, `inputs`, `outputs`,
   `error`, `extra`, `start_time`, `end_time`, `dotted_order`, `tags`.
 - Edges are **not** in the trace. `langgraph_triggers` reads
@@ -49,6 +51,32 @@ name that node, with no LangGraph app loaded.
 - Crash blame needs no live exception: `crash_origins` reads the missing key
   out of `NodeEvent.exception` text with a regex (`KeyError: 'x'` /
   `KeyError('x')`). A LangSmith `error` string can feed it (S-11).
+
+## Bugs found
+
+### BUG-1 — "silent node exports `outputs == {}`" was wrong (found during S-1, 2026-09-14)
+
+**Seen:** stub-client probe of `demo/fat_trace/demo_graph.py` under
+`LangChainTracer` (langsmith 0.12.4, langchain-core 1.6.3). Every chain run's
+create-POST carries `outputs={}` (nothing has run yet). `summarize`'s end-PATCH
+carries `outputs=None`, because `RunTree.patch` sends
+`self.outputs.copy() if self.outputs else None`, and `Client.update_run` drops
+`outputs` when it is `None`. `search` and `answer` end-PATCHes carry their real
+updates.
+**Also seen:** with `hide_outputs=True` (or `LANGSMITH_HIDE_OUTPUTS=true`),
+`Client._hide_run_outputs` returns `{}` for every run, root included. So a
+single node's empty outputs cannot tell "returned `{}`" from "hidden".
+**Reproduce:** run the S-1 script and inspect the `summarize` row; or read
+`langsmith/run_trees.py` `RunTree.patch` and `langsmith/client.py`
+`Client.update_run`.
+**Spec change:** a node run with no error and `outputs` absent or `{}` is an
+empty update **only if** the root run's `outputs` is a non-empty dict (the
+merged final state proves outputs were not hidden). Root `outputs` absent or
+`{}` → skinny, refuse. S-1, S-3 and S-6 updated.
+**Not verified:** what the LangSmith server stores for a create `{}` followed
+by a PATCH without `outputs` (null or `{}`). Both are handled by the rule
+above. One real export of the demo graph closes this (needs Abhishek's
+LangSmith account; not a step).
 
 ## Options considered
 
@@ -101,21 +129,26 @@ a file path without a LangSmith account.
 **Change:** run `demo/fat_trace/demo_graph.py`'s graph under
 `langchain_core.tracers.langchain.LangChainTracer` with a stub
 `langsmith.Client` that captures every run payload the tracer posts
-(`create_run` / `update_run` / `batch_ingest_runs` / `multipart_ingest`,
-whichever the installed `langsmith` calls — stub all four). Merge create+update
-per `id`, write one JSON object per line with at least: `id`, `trace_id`,
+(langsmith 0.12.4 calls `create_run` and `update_run` directly when a client
+is passed; stub those plus `flush`). Merge create then update per `id`, with
+the client's own rule: a key whose value is `None` is not sent, so it never
+overwrites. Write one JSON object per line with at least: `id`, `trace_id`,
 `parent_run_id`, `name`, `run_type`, `inputs`, `outputs`, `error`, `extra`,
 `start_time`, `end_time`, `dotted_order`, `tags`. No network.
 **Acceptance:** WHEN the script runs THEN it SHALL write a JSONL whose `chain`
-runs include one with `extra.metadata.langgraph_node == "summarize"` and
-`outputs == {}`, and one root run with `parent_run_id == null`.
+runs include one with `extra.metadata.langgraph_node == "summarize"` whose
+`outputs` is absent or `{}`, one for `search` whose `outputs` has `docs`, and
+one root run with `parent_run_id == null` whose `outputs` is a non-empty dict
+(BUG-1).
 **Verify:**
 ```
 PYTHONPATH=src python scripts/make_langsmith_fixture.py
 python - <<'PY'
 import json;rows=[json.loads(l) for l in open("tests/fixtures/langsmith/demo_graph.jsonl")]
 s=[r for r in rows if (r.get("extra") or {}).get("metadata",{}).get("langgraph_node")=="summarize"]
-assert s and s[0]["outputs"]=={}, s; assert any(r["parent_run_id"] is None for r in rows); print("ok", len(rows))
+assert s and not s[0].get("outputs"), s
+root=[r for r in rows if r["parent_run_id"] is None]; assert len(root)==1 and root[0]["outputs"], root
+print("ok", len(rows))
 PY
 ```
 **Must not:** call the network; import `langsmith.Client` for real; touch `src/`.
@@ -160,8 +193,11 @@ grep -nE "^(from|import) (langgraph|langchain)" src/argus/grading.py ; echo "exp
 `extra.metadata.langgraph_node` is set and whose `tags` contain a
 `graph:step:N` tag (this excludes inner `seq:step:N` runnables). Order by
 `langgraph_step` then `dotted_order`. For each: `session.on_node_start(node,
-capture_state(inputs))` then `on_node_end(node, input_snap, capture_output(
-outputs) if isinstance(outputs, dict) else None, duration_ms, exc=...)`,
+capture_state(inputs))` then `on_node_end(node, input_snap, update,
+duration_ms, exc=...)`, where `update` is `capture_output(outputs)` when
+`outputs` is a non-empty dict, and `{}` when `outputs` is absent or `{}` and
+the run has no error (BUG-1: that is how a silent node arrives; S-6 refuses the
+trace first if outputs were hidden),
 where `exc` is `None` when `error` is empty, else an exception whose `str()` is
 the run's `error` string verbatim (crash blame reads that text; see S-11).
 Skip a node run that has another selected node run among its descendants:
@@ -248,20 +284,21 @@ PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k edges
 **PR:** one.
 **Depends on:** S-3.
 **Files:** `src/argus/ingest/langsmith.py`, `tests/test_ingest_langsmith.py`.
-**Today:** a run whose `outputs` key is absent (LangSmith "hide outputs"
-setting, or a sampled span) would grade as a crash or as clean.
-**Change:** before grading, if any selected node run lacks the `outputs` key
-(absent, not `{}`) or lacks `inputs`, or if zero node runs were selected,
-raise `IncompleteTraceError` with the node names; exit 2 from the CLI; save
-nothing.
-**Acceptance:** WHEN a fixture with `outputs` deleted from one node run is
-ingested THEN the CLI SHALL exit 2 naming that node and `.argus/runs/` SHALL
-gain no file.
+**Today:** a trace exported with LangSmith "hide outputs" has `outputs == {}`
+on every run, which S-3 would read as every node returning `{}`.
+**Change:** before grading, if the root run's `outputs` is absent or `{}`, or
+any selected node run lacks `inputs`, or zero node runs were selected, raise
+`IncompleteTraceError` saying why; exit 2 from the CLI; save nothing (BUG-1).
+**Acceptance:** WHEN the demo fixture with every run's `outputs` set to `{}`
+(what `hide_outputs=True` produces) is ingested THEN the CLI SHALL exit 2 and
+`.argus/runs/` SHALL gain no file; WHEN only `summarize` has empty outputs THEN
+ingest SHALL grade it and fail `summarize`.
 **Verify:**
 ```
 PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k skinny
 ```
-**Must not:** treat `outputs == {}` as skinny — that is the signal.
+**Must not:** treat one node's empty `outputs` as skinny — with root outputs
+present, that is the signal.
 
 ### S-7 — `--consumers` on ingest wires the contextual layer
 
