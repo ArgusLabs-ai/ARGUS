@@ -323,12 +323,24 @@ saved RunRecord's `graph_edge_map` SHALL equal the recorder's for the same
 graph, and the `summarize` verdict SHALL be unchanged.
 **Verify:**
 ```
-PYTHONPATH=src python -m argus.cli.main edges demo.fat_trace.demo_graph:build --out /tmp/edges.json
-PYTHONPATH=src python -m argus.cli.main ingest langsmith tests/fixtures/langsmith/demo_graph.jsonl --edges /tmp/edges.json
+argus edges demo.fat_trace.demo_graph:build_app --out /tmp/edges.json
+argus ingest langsmith tests/fixtures/langsmith/demo_graph.jsonl --edges /tmp/edges.json
 PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k edges
 ```
 **Must not:** make `--edges` required; import `langgraph` inside `ingest/`
 (the import lives in `cmd_edges.py` only).
+
+**Done 2026-09-14 (branch `s5-edges-sidecar`).** Learned: the demo graph is a
+straight line, so its real edges equal the step-order guess and the
+recorder-equality test passes with or without `--edges`. It proves the
+acceptance, not the wiring; a second test feeds an edge map step order can
+never produce (`search` → `summarize` and `answer`) and checks it is saved.
+The factory is `build_app`, not `build`, and `python -m argus.cli.main` runs
+nothing (the module has no `__main__` guard), so Verify uses `argus`. A bad
+edges file exits 2 and saves nothing. Proof by breaking: using the step-order
+guess with `--edges` fails `test_the_edges_file_replaces_the_step_order_guess`;
+ignoring `subgraph_parents` fails
+`test_edges_name_the_subgraph_parents_instead_of_nesting`; restored, 1029 pass.
 
 ### S-6 — Skinny trace refuses, never passes
 
