@@ -43,6 +43,7 @@ from langchain_core.language_models.fake_chat_models import (  # noqa: E402
     FakeMessagesListChatModel,
 )
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
+from langchain_core.runnables import RunnableLambda  # noqa: E402
 from langchain_core.tools import tool  # noqa: E402
 from langgraph.graph import END, START, MessagesState, StateGraph  # noqa: E402
 from langgraph.prebuilt import create_react_agent  # noqa: E402
@@ -617,3 +618,77 @@ def test_a_coherence_verdict_that_does_not_reproduce_is_demoted(monkeypatch):
     monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _flip_flop)
     assert _run_judged(_cake_graph(_ON_TOPIC), {}).passed
     assert calls["n"] >= 2, "the confirmation call never happened"
+
+
+# ── 4. the graph composed into something bigger ──────────────────────────────
+
+
+class _ComposedState(TypedDict, total=False):
+    a: str
+
+
+def _silent_then_writing_graph():
+    """`n1` no-ops with `n2` waiting — `empty_output` territory."""
+    g = StateGraph(_ComposedState)
+    g.add_node("n1", lambda s: {})
+    g.add_node("n2", lambda s: {"a": "x"})
+    g.add_edge(START, "n1")
+    g.add_edge("n1", "n2")
+    g.add_edge("n2", END)
+    return g.compile()
+
+
+@pytest.mark.parametrize(
+    "compose",
+    [
+        pytest.param(lambda app: app, id="direct"),
+        pytest.param(lambda app: RunnableLambda(lambda x: x) | app, id="lambda|app"),
+        pytest.param(
+            lambda app: RunnableLambda(lambda x: x) | app | RunnableLambda(lambda x: x),
+            id="lambda|app|lambda",
+        ),
+        pytest.param(
+            lambda app: (RunnableLambda(lambda x: x) | RunnableLambda(lambda x: x)) | app,
+            id="nested-sequence|app",
+        ),
+    ],
+)
+def test_a_composed_graph_is_still_graded(compose):
+    """The graph is one step of something larger — still one run, still blamed (#87).
+
+    `attach` used to return `app.with_config(callbacks=[self])`. LangGraph's
+    `ensure_config` overwrites the callbacks key rather than merging it, so the
+    handler was dropped the moment a caller passed its own — which composition
+    always does. ARGUS then recorded nothing and, never reaching `_finish`,
+    said nothing either: the silent pass the brief bans, arriving through the
+    front door.
+    """
+    recorder = ArgusRecorder(semantic_judge=False)
+    compose(recorder.attach(_silent_then_writing_graph())).invoke({})
+
+    assert recorder.run_ids, "a composed graph must still produce a run"
+    record = load_run(recorder.run_ids[-1])
+    assert record.first_failure_step == "n1"
+    assert {s.node_name for s in record.steps} == {"n1", "n2"}
+
+
+def test_a_composed_graph_records_one_run_per_call():
+    """Composition must not cost the per-call runs `.batch()` and reuse rely on."""
+    recorder = ArgusRecorder(semantic_judge=False)
+    chain = RunnableLambda(lambda x: x) | recorder.attach(_silent_then_writing_graph())
+
+    chain.invoke({})
+    chain.batch([{}, {}])
+    list(chain.stream({}))
+
+    assert len(recorder.run_ids) == 4, f"one run per call, got {recorder.run_ids}"
+    assert all(load_run(rid).first_failure_step == "n1" for rid in recorder.run_ids)
+
+
+def test_attach_still_hands_back_the_graph_api():
+    """Callers get a graph, not an opaque wrapper — `argus replay` reads `.nodes`."""
+    recorder = ArgusRecorder(semantic_judge=False)
+    attached = recorder.attach(_silent_then_writing_graph())
+
+    for attr in ("nodes", "get_graph", "invoke", "stream", "batch"):
+        assert hasattr(attached, attr), f"attach() dropped `{attr}`"

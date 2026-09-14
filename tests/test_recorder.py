@@ -331,3 +331,26 @@ def test_a_conditional_node_is_recorded_once(tmp_path, monkeypatch):
     assert router.status == "pass", "the node never retried"
     assert router.output_dict == {"route": "left"}
     assert "route" not in router.input_state, "input must predate the node's own update"
+
+
+@pytest.mark.unit
+def test_a_node_with_no_enclosing_run_refuses_rather_than_vanishing():
+    """The floor #87 asked for: never drop a node span in silence.
+
+    A `langgraph_node` callback is normally a child of the graph's own chain,
+    which is what `_adopt_graph_run` adopts when that chain came from an outer
+    framework we never saw. With no parent at all there is nothing to attribute
+    it to — and dropping it is exactly how a run recorded nothing and reported
+    nothing.
+    """
+    recorder = ArgusRecorder()
+    recorder.attach(_build_app({"a": "x"}))
+
+    with pytest.raises(IncompleteTraceError, match="no enclosing graph run"):
+        recorder.on_chain_start(
+            {"name": "n1"},
+            {},
+            run_id=uuid4(),
+            parent_run_id=None,
+            metadata={"langgraph_node": "n1"},
+        )

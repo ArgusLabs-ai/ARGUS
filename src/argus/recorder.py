@@ -42,10 +42,12 @@ from argus.session import ArgusSession
 
 try:  # pragma: no cover - exercised only when langchain-core is absent
     from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.runnables.base import RunnableBinding
 
     _HAS_LANGCHAIN = True
 except ImportError:  # pragma: no cover
     BaseCallbackHandler = object  # type: ignore[assignment,misc]
+    RunnableBinding = None  # type: ignore[assignment,misc]
     _HAS_LANGCHAIN = False
 
 __all__ = ["ArgusRecorder", "IncompleteTraceError"]
@@ -254,7 +256,17 @@ class ArgusRecorder(BaseCallbackHandler):
         self._reducers = _reducer_fields(app)
         self._judge = self._resolve_judge()
         self._attached = True
-        return app.with_config(callbacks=[self])
+        # A binding, not `app.with_config(callbacks=[self])` (#87). LangGraph's
+        # own `ensure_config` overwrites the callbacks key instead of merging
+        # it, so a Pregel's bound callbacks are dropped the moment a caller
+        # passes its own — which composition always does. `prompt | app`, a
+        # graph used as a tool, a LangServe route: the handler was silently
+        # discarded and ARGUS recorded nothing and said nothing.
+        # `RunnableBinding` merges through langchain's `merge_configs`, which
+        # handles list-plus-manager correctly, and proxies the graph API
+        # (`nodes`, `get_graph`, `stream`, `batch`) so the returned object is
+        # still the graph as far as callers are concerned.
+        return RunnableBinding(bound=app, config={"callbacks": [self]})
 
     def _new_session(self) -> ArgusSession:
         """A session for one graph run — the state the old ``attach`` set up."""
@@ -305,9 +317,21 @@ class ArgusRecorder(BaseCallbackHandler):
 
         # Route this callback to the run it belongs to. A parentless chain *is*
         # a run boundary; everything else inherits its parent's root.
+        if node is not None and parent_run_id is None:
+            # A node span with no enclosing graph run — the inverse of the
+            # skinny trace the matrix covers, with the boundary sampled away
+            # instead of the nodes. Making it its own root files a run per node;
+            # dropping it is how #87 recorded nothing and said nothing. Neither
+            # is a pass, so refuse.
+            raise IncompleteTraceError(
+                f"node `{node}` reported with no enclosing graph run, so there is "
+                "nothing to attribute it to. An incomplete recording is not a pass."
+            )
         root = run_id if parent_run_id is None else self._root_of.get(parent_run_id)
         if root is None:
-            return  # a callback we cannot attribute to any run we started
+            root = self._adopt_graph_run(node, parent_run_id, inputs)
+        if root is None:
+            return  # an outer chain that is not ours — someone else's callback
         with self._lock:
             self._root_of[run_id] = root
 
@@ -354,6 +378,41 @@ class ArgusRecorder(BaseCallbackHandler):
         with self._lock:
             self._pending[run_id] = (node, input_snap, time.perf_counter())
         session.on_node_start(node, input_snap)
+
+    def _adopt_graph_run(
+        self, node: str | None, parent_run_id: UUID | None, inputs: Any
+    ) -> UUID | None:
+        """Start a run for a graph chain we were never told the start of (#87).
+
+        ``attach`` binds this handler to the graph, but the moment that graph is
+        one step of something larger — ``prompt | app``, a graph used as a tool,
+        a LangServe route — its chain arrives carrying a parent we never saw.
+        Treating "parentless" as the run boundary dropped that chain and then
+        every node callback under it: no session, no run file, no verdict, and
+        no error either, because ``_finish`` was never reached. A silent pass is
+        the one outcome the brief bans, and this one arrived through the front
+        door — `argus check` had nothing to grade and said so by saying nothing.
+
+        The enclosing chain of a ``langgraph_node`` callback *is* the graph run,
+        whatever ran above it. Adopting it needs no name matching (``LangGraph``
+        is not load-bearing and a user can rename it with ``with_config``) and
+        no guess about the outer framework.
+
+        Returns the adopted root, or ``None`` for a chain that is not ours —
+        the outer sequence in the example above has no node name and belongs to
+        whoever built it.
+        """
+        if node is None or parent_run_id is None:
+            return None
+        started = self._new_session()
+        with self._lock:
+            self._root_of[parent_run_id] = parent_run_id
+            self._roots[parent_run_id] = started
+        self.session = started
+        # The first node's input is the graph's state on entry; `capture_state`
+        # latches the initial state off the first non-empty snapshot.
+        started.capture_state(inputs if isinstance(inputs, dict) else {})
+        return parent_run_id
 
     def on_chain_end(
         self,

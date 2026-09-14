@@ -64,7 +64,7 @@ End-to-end story in `tests/test_rerun_e2e.py`: ingest → retrieve → rerank �
 ## Detection stress matrix (new) — and the six gaps it found
 
 `tests/test_silent_failure_matrix.py` is the answer to "does this architecture
-actually catch what enterprises ship?". 28 tests over seven real LangGraph
+actually catch what enterprises ship?". 39 tests over eight real LangGraph
 pipelines — supervisor/worker loop (cyclic + conditional), map-reduce fan-out
 with `operator.add`, a four-node CRM triage chain, a tool-calling fetcher, a
 degraded-output generator, a crash handoff, and a subgraph. `patch_graph` is
@@ -100,7 +100,7 @@ is appended to that step's inspection message. Any earlier structural or tool
 message is preserved instead of being overwritten.
 
 ```bash
-PYTHONPATH=src pytest tests/test_silent_failure_matrix.py -q   # 28 passed, ~20s
+PYTHONPATH=src pytest tests/test_silent_failure_matrix.py -q   # 39 passed, ~20s
 ```
 
 ### Behaviour changes — read this before you debug a "broken" test
@@ -145,7 +145,7 @@ Ordering matters in `session._finalize`: `_blame_crash_origins()` runs **after**
 
 `tests/test_shipped_shapes_matrix.py` closes the three highest-value holes the
 detection matrix left open: **`create_react_agent`**, **`MessagesState` /
-`add_messages`**, and **`.batch()` / repeat `invoke`**. 17 tests, deterministic
+`add_messages`**, and **`.batch()` / repeat `invoke`**. 29 tests, deterministic
 (a scripted fake model), same contract as the sibling matrix — `patch_graph`
 raises, every test names the blamed node, and half of them assert a pipeline is
 **clean**.
@@ -166,11 +166,11 @@ Each of those three shapes was hiding a defect. Nine in total, all fixed:
 
 1, 4 and 5 are false positives that make the gate unusable; 3, 6, 8 and 9 are
 false negatives that let real failures ship; 2 grades nothing at all. Running
-the new file against the pre-fix tree fails 9 of its 17 tests, so it is a real
+the new file against the pre-fix tree failed 9 of its original 17 tests, so it is a real
 regression guard and not a restatement of current behaviour.
 
 ```bash
-PYTHONPATH=src pytest tests/test_shipped_shapes_matrix.py -q   # 17 passed, ~25s
+PYTHONPATH=src pytest tests/test_shipped_shapes_matrix.py -q   # 29 passed, ~25s
 ```
 
 Also verified during that work, and previously unverified: `.stream()` /
@@ -454,3 +454,59 @@ Demos: `demo/fat_trace/`, `demo/new_user_rag.py`.
   value — the old default, and why grading was minutes and leaked node data.
 
 Untracked on purpose (not in the implementation): `docs/ARGUS-PIVOT*.pdf`, `docs/generate_pivot_*.py`, `demo/research_agent/`, `website/public/__artifact.html`.
+
+---
+
+### Composition, subgraph scope, and blame messages — four more defects
+
+Three issues off the pivot backlog (#87, #89, #100). Each looked like a small
+fix and each was hiding a case where ARGUS **graded a broken pipeline clean** —
+the one outcome the brief bans.
+
+| # | Where | What was wrong | Consequence |
+|---|---|---|---|
+| 1 | `recorder.py` (#87) | `attach()` returned `app.with_config(callbacks=[self])`. LangGraph's own `ensure_config` **overwrites** the callbacks key instead of merging it, so a Pregel's bound callbacks are dropped the moment a caller passes its own | Compose the graph into anything — `prompt \| app`, a graph used as a tool, a LangServe route — and ARGUS recorded **nothing**. No session, no run file, no verdict, and no error either, because `_finish` was never reached. `argus check` had nothing to grade and said so by saying nothing |
+| 2 | `recorder.py` (#87) | Attribution treated "parentless chain" as the run boundary | Once the callbacks *were* delivered, the graph's chain arrives as a child of the outer framework's chain. Unattributable, so every node span under it was dropped too |
+| 3 | `recorder.py` (#89) | Nothing asked whether a subgraph contributed to the **parent** state | An inner node writing an inner-only key returns a perfectly non-empty update, so `empty_output` stays quiet, and the subgraph parent row is deliberately not recorded. The parent state gained nothing, the next node read it unchanged, run graded **clean** |
+| 4 | `ledger.py` (#89) | The notebook folded inner-only keys into the running state | `contextual` reads that state to decide whether a declared consumer got what it reads. A node declared to read an inner-only field looked satisfied, the origin went unblamed, and the run graded clean while the reader actually got `None` — a missed detection in the layer whose whole job is catching it |
+
+Plus #100 from an outside contributor: `_blame_origins` overwrote
+`inspection.message`, so when one node missed several declared fields only the
+last reason survived, and any structural or tool message already on that step
+was clobbered.
+
+**Fixes.** (1) `attach()` returns a `RunnableBinding`, which merges through
+langchain's `merge_configs` — correct for the list-plus-manager case — and
+still proxies `nodes` / `get_graph` / `stream` / `batch`, so callers keep the
+graph API. (2) The enclosing chain of a `langgraph_node` callback *is* the
+graph run, whatever ran above it, so adopt it; a node span with no enclosing
+run at all refuses loudly rather than vanishing. (3) `_blame_barren_subgraphs`
+asks the subgraph-level question — did any inner update touch a key the outer
+graph has? — **not** per inner node, because an early node writing a scratch
+key to feed a later one contributes nothing outward and is ordinary work.
+(4) `RunRecord.state_keys` scopes the notebook to the graph's own keys,
+persisted so a reloaded ledger folds like the live one; the row's `update`
+still reports what the node returned.
+
+**One trap worth knowing if you ever mark a step from outside the normal
+path:** `retried` is assigned in *finalize*, after the per-step layers run, and
+both `check.evaluate_run` and `collect_findings` drop retried steps. Blame
+written onto the first visit of a repeated node is therefore invisible and the
+run still goes out clean — which is how a subgraph on a loop edge that never
+contributed kept passing even with fix 3 in place. Blame goes on the earliest
+inner node's **last** visit.
+
+Guards live in both matrices and were each verified to fail when the mechanism
+is reverted — including the tempting wrong variants (per-node instead of
+subgraph-level, first visit instead of last, scoping the reported update as
+well as the notebook, and `with_config` instead of the binding).
+
+```bash
+PYTHONPATH=src pytest tests/test_silent_failure_matrix.py tests/test_shipped_shapes_matrix.py -q   # 68 passed
+```
+
+**Still open, deliberately:** nothing scopes a subgraph's running state *within*
+the subgraph — inner steps read the outer notebook, so an inner node reading a
+sibling's inner-only key is not modelled. It costs nothing today (the row's own
+`input_state` is what the node really saw) and would need scoped running state
+to do properly.
