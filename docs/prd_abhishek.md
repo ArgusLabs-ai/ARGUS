@@ -153,6 +153,15 @@ PY
 ```
 **Must not:** call the network; import `langsmith.Client` for real; touch `src/`.
 
+**Done 2026-09-14 (local branch `s1-langsmith-fixture`, not pushed).** Learned:
+the probe found BUG-1 before any ingest code existed. Two more shapes an
+ingester must expect: every field is present and `null` when never sent (the
+root's `parent_run_id` is `null`, not absent), and a silent node's `outputs`
+is `{}` only because the create-POST sent `{}` first. The root run carries no
+`langgraph_node` and no tags. Ids and timestamps change on every regeneration,
+so tests must not pin them. No proof-by-breaking: this step adds data, not a
+guard.
+
 ### S-2 — Extract the recorder's grading chain so a file can use it
 
 **PR:** one.
