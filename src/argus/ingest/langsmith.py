@@ -12,6 +12,10 @@ as the ``{}`` update.
 
 Tool runs beneath a node step become that step's ``tool_calls``, in the dict
 shape the live recorder builds, so a tool's swallowed failure is graded.
+
+A trace holds no graph. With an ``argus edges`` file the real edges,
+conditional sources and subgraph parents are used; without one, successors
+are guessed from step order.
 """
 
 from __future__ import annotations
@@ -30,10 +34,13 @@ __all__ = [
     "CloudSyncRefused",
     "TracedError",
     "ingest_langsmith",
+    "load_edges",
     "load_runs",
     "node_runs",
     "tool_calls_by_step",
 ]
+
+_EDGE_KEYS = ("edge_map", "conditional_sources", "node_names", "subgraph_parents")
 
 # Marks a graph step; LangGraph's inner runnables carry `seq:step:N` instead.
 _GRAPH_STEP = re.compile(r"^graph:step:\d+$")
@@ -60,6 +67,15 @@ def load_runs(path: Path) -> list[dict[str, Any]]:
     return list(runs.values())
 
 
+def load_edges(path: Path) -> dict[str, Any]:
+    """Read an ``argus edges`` file; ``ValueError`` when it is not one."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    missing = [key for key in _EDGE_KEYS if not isinstance(data, dict) or key not in data]
+    if missing:
+        raise ValueError(f"{path} is not an `argus edges` file: missing {', '.join(missing)}")
+    return data
+
+
 def _node_name(run: dict[str, Any]) -> str | None:
     return ((run.get("extra") or {}).get("metadata") or {}).get("langgraph_node")
 
@@ -68,12 +84,15 @@ def _step(run: dict[str, Any]) -> int:
     return int(((run.get("extra") or {}).get("metadata") or {}).get("langgraph_step") or 0)
 
 
-def node_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def node_runs(
+    runs: list[dict[str, Any]], subgraph_parents: set[str] | None = None
+) -> list[dict[str, Any]]:
     """The graph's node steps, in execution order, subgraph parents dropped.
 
     A node run with another node run beneath it is a subgraph's parent: its
     outputs are the subgraph's merged state, so recording it would double-count
-    every inner step (upstream's recorder skips the same row).
+    every inner step (upstream's recorder skips the same row). Given
+    ``subgraph_parents`` from an edges file, parents are dropped by name instead.
     """
     selected = {
         str(run["id"]): run
@@ -82,6 +101,9 @@ def node_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         and _node_name(run)
         and any(_GRAPH_STEP.match(tag) for tag in run.get("tags") or [])
     }
+    if subgraph_parents is not None:
+        kept = [run for run in selected.values() if _node_name(run) not in subgraph_parents]
+        return sorted(kept, key=lambda run: (_step(run), run.get("dotted_order") or ""))
     by_id = {str(run["id"]): run for run in runs}
     parents: set[str] = set()
     for run in selected.values():
@@ -145,7 +167,7 @@ def _step_order_edges(steps: list[dict[str, Any]]) -> dict[str, list[str]]:
 
     The trace has no graph, and with no successors the critical
     ``empty_output`` rule never fires. "A later step exists" is the successor
-    this trace can prove; real edges arrive with ``argus edges`` (S-5).
+    this trace can prove; ``argus edges`` gives the real ones.
     """
     at_step: dict[int, list[str]] = {}
     for run in steps:
@@ -166,6 +188,7 @@ def ingest_langsmith(
     *,
     consumers: ConsumerMap | None = None,
     allow_cloud: bool = False,
+    edges: dict[str, Any] | None = None,
     max_field_size: int = 50_000,
 ) -> ArgusSession:
     """Grade one exported run and save it; returns the finished session.
@@ -174,7 +197,9 @@ def ingest_langsmith(
     ``allow_cloud`` (saving would upload the trace), ``ValueError`` when the
     file does not hold exactly one root run, and
     :class:`argus.grading.IncompleteTraceError` when there is nothing to grade.
-    The LLM judge stays off: grading a file spends nothing.
+    ``edges`` is a :func:`load_edges` result; without it successors are
+    guessed from step order. The LLM judge stays off: grading a file spends
+    nothing.
     """
     from argus.cloud import is_logged_in
 
@@ -189,12 +214,31 @@ def ingest_langsmith(
     if len(roots) != 1:
         raise ValueError(f"expected one root run in {path}, found {len(roots)}")
 
-    steps = node_runs(runs)
-    names = list(dict.fromkeys(str(_node_name(run)) for run in steps))
+    if edges is not None:
+        steps = node_runs(runs, set(edges["subgraph_parents"]))
+        names = list(edges["node_names"])
+        edge_map = edges["edge_map"]
+        conditional_sources = set(edges["conditional_sources"])
+        # An edges file from another graph — or one gone stale since the graph
+        # was refactored — is worse than none: a node whose successors it does
+        # not know is a node `empty_output` cannot fire on, so the silent step
+        # this trace was ingested to catch grades clean. Refuse instead.
+        unknown = sorted({str(_node_name(run)) for run in steps} - set(names))
+        if unknown:
+            raise ValueError(
+                f"{path} ran nodes the edges file does not describe: "
+                f"{', '.join(unknown)}. Re-export with `argus edges` from the "
+                "graph this trace came from."
+            )
+    else:
+        steps = node_runs(runs)
+        names = list(dict.fromkeys(str(_node_name(run)) for run in steps))
+        edge_map = _step_order_edges(steps)
+        conditional_sources = set()
     session = new_session(
         names,
-        _step_order_edges(steps),
-        set(),
+        edge_map,
+        conditional_sources,
         {},
         judge=False,
         validators={},

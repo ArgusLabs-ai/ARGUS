@@ -20,6 +20,7 @@ except ImportError:
 from argus.cli.cmd_check import check_run
 from argus.cli.cmd_diff import diff_runs
 from argus.cli.cmd_doctor import doctor
+from argus.cli.cmd_edges import export_edges
 from argus.cli.cmd_fix import fix_run
 from argus.cli.cmd_ingest import ingest_langsmith_file
 from argus.cli.cmd_init import init_skills_cmd
@@ -64,9 +65,23 @@ def cmd_ingest_langsmith(
         "--allow-cloud",
         help="Save even while logged in to ARGUS cloud (the run is uploaded).",
     ),
+    edges: Optional[Path] = typer.Option(
+        None,
+        "--edges",
+        help="Graph topology from `argus edges`; without it edges are guessed from step order.",
+    ),
 ) -> None:
     """Grade a LangSmith export and save it as a run; then `argus check last`."""
-    ingest_langsmith_file(path, allow_cloud=allow_cloud)
+    ingest_langsmith_file(path, allow_cloud=allow_cloud, edges=edges)
+
+
+@app.command("edges")
+def cmd_edges(
+    spec: str = typer.Argument(..., help="Graph factory as module:function."),
+    out: Path = typer.Option(Path("edges.json"), "--out", "-o", help="File to write."),
+) -> None:
+    """Write a graph's edges for `argus ingest langsmith --edges`."""
+    export_edges(spec, out)
 
 
 @key_app.command("set")
@@ -144,6 +159,7 @@ _COMMANDS = [
     ("diff <id-a> <id-b>", "diff any two runs side-by-side"),
     ("fix <id>", "print a fix prompt for the root cause, ready to paste"),
     ("ingest langsmith <file>", "grade a LangSmith JSONL export with no live app"),
+    ("edges mod:fn", "write a graph's edges for ingest --edges"),
     ("login", "(optional) hosted cloud sync — only if a hosted backend is configured"),
     ("logout", "clear stored credentials"),
     ("whoami", "show current login status"),
