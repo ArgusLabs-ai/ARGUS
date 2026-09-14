@@ -16,6 +16,7 @@ from argus.ingest.langsmith import node_runs
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "demo_graph.jsonl"
+TOOL_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "tool_graph.jsonl"
 
 
 @pytest.fixture(autouse=True)
@@ -35,6 +36,26 @@ def test_the_silent_node_is_blamed_from_the_file_alone():
     checked = runner.invoke(app, ["check", "last", "--format", "json"])
     assert checked.exit_code == 1, checked.output
     assert json.loads(checked.output)["first_failure_step"] == "summarize"
+
+
+def test_a_swallowed_tool_500_fails_the_node_that_called_the_tool():
+    runner = CliRunner()
+    ingested = runner.invoke(app, ["ingest", "langsmith", str(TOOL_FIXTURE)])
+    assert ingested.exit_code == 0, ingested.output
+
+    checked = runner.invoke(app, ["check", "last", "--format", "json"])
+    assert checked.exit_code == 1, checked.output
+    payload = json.loads(checked.output)
+    assert payload["first_failure_step"] == "fetch"
+    critical = [
+        f
+        for f in payload["findings"]
+        if f["node"] == "fetch"
+        and f["severity"] == "critical"
+        and "fetch_docs" in f["reason"]
+        and "500" in f["reason"]
+    ]
+    assert critical, payload["findings"]
 
 
 def test_logged_in_refuses_to_save_without_allow_cloud(monkeypatch):

@@ -9,6 +9,9 @@ It imports nothing from ``langgraph`` or ``langchain_core``.
 A silent node arrives with ``outputs`` absent or ``{}`` (the tracer drops an
 empty update on its end-PATCH — ``docs/prd_abhishek.md`` BUG-1), so both read
 as the ``{}`` update.
+
+Tool runs beneath a node step become that step's ``tool_calls``, in the dict
+shape the live recorder builds, so a tool's swallowed failure is graded.
 """
 
 from __future__ import annotations
@@ -23,7 +26,14 @@ from argus.contextual import ConsumerMap
 from argus.grading import finish, new_session
 from argus.session import ArgusSession
 
-__all__ = ["CloudSyncRefused", "TracedError", "ingest_langsmith", "load_runs", "node_runs"]
+__all__ = [
+    "CloudSyncRefused",
+    "TracedError",
+    "ingest_langsmith",
+    "load_runs",
+    "node_runs",
+    "tool_calls_by_step",
+]
 
 # Marks a graph step; LangGraph's inner runnables carry `seq:step:N` instead.
 _GRAPH_STEP = re.compile(r"^graph:step:\d+$")
@@ -93,6 +103,39 @@ def _duration_ms(run: dict[str, Any]) -> float:
     return max((ended - started).total_seconds() * 1000, 0.0)
 
 
+def tool_calls_by_step(
+    runs: list[dict[str, Any]], steps: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    """Step run id → the tool runs beneath it, in the recorder's dict shape.
+
+    A tool belongs to its nearest step ancestor. LangSmith stores a tool's
+    result as ``outputs["output"]``; the recorder hears the bare value, so it is
+    unwrapped here.
+    """
+    by_id = {str(run["id"]): run for run in runs}
+    step_ids = {str(run["id"]) for run in steps}
+    tools: dict[str, list[dict[str, Any]]] = {}
+    ordered = sorted(runs, key=lambda run: run.get("dotted_order") or "")
+    for run in ordered:
+        if run.get("run_type") != "tool":
+            continue
+        parent = run.get("parent_run_id")
+        while parent is not None and str(parent) in by_id and str(parent) not in step_ids:
+            parent = by_id[str(parent)].get("parent_run_id")
+        if parent is None or str(parent) not in step_ids:
+            continue
+        outputs = run.get("outputs")
+        tools.setdefault(str(parent), []).append(
+            {
+                "name": run.get("name") or "tool",
+                "input": run.get("inputs"),
+                "output": outputs.get("output") if isinstance(outputs, dict) else outputs,
+                "error": run.get("error"),
+            }
+        )
+    return tools
+
+
 def _step_order_edges(steps: list[dict[str, Any]]) -> dict[str, list[str]]:
     """Each node → the nodes at the next step seen in this trace.
 
@@ -154,6 +197,7 @@ def ingest_langsmith(
         strict=False,
         max_field_size=max_field_size,
     )
+    tools = tool_calls_by_step(runs, steps)
     root_inputs = roots[0].get("inputs")
     session.capture_state(root_inputs if isinstance(root_inputs, dict) else {})
 
@@ -171,7 +215,15 @@ def ingest_langsmith(
         else:
             output_snap = {}
         session.on_node_start(node, input_snap)
-        session.on_node_end(node, input_snap, output_snap, _duration_ms(run), exc=exc)
+        # Tools go in with the step: graders run inside on_node_end (#86).
+        session.on_node_end(
+            node,
+            input_snap,
+            output_snap,
+            _duration_ms(run),
+            exc=exc,
+            tool_calls=tools.get(str(run["id"]), []),
+        )
 
     finish(session, consumers)
     return session
