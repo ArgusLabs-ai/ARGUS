@@ -238,12 +238,25 @@ runs THEN `argus check last` SHALL exit 1 with `summarize` as
 **Verify:**
 ```
 PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q
-PYTHONPATH=src python -m argus.cli.main ingest langsmith tests/fixtures/langsmith/demo_graph.jsonl
-PYTHONPATH=src python -m argus.cli.main check last; echo "exit=$?"   # expect exit=1, summarize
+PYTHONPATH=src python -c 'from argus.cli.main import app; app()' ingest langsmith tests/fixtures/langsmith/demo_graph.jsonl
+PYTHONPATH=src python -c 'from argus.cli.main import app; app()' check last; echo "exit=$?"   # expect exit=1, summarize
 grep -nE "^(from|import) (langgraph|langchain)" src/argus/ingest/langsmith.py ; echo "expect no output above"
 ```
 **Must not:** import the user's app; write `node_fn_refs`; upload to cloud
 while logged in without `--allow-cloud`.
+
+**Done 2026-09-14 (local branch `s3-ingest-langsmith`).** Learned:
+`python -m argus.cli.main` exits 0 and does nothing (no `__main__` guard), so
+the verify commands above now call `app()` directly; run them from a scratch
+directory, or they write `.argus/` into the repo. `edge_map = {}` would never
+fire `empty_output` (successors come from edges), so ingest builds edges from
+observed step order — each node → the nodes at the next step — which is the
+"a later step exists" rule in session terms; S-5 replaces it with real edges.
+The one-line verdict is printed by the session as it saves, not by the
+recorder, so ingest prints nothing extra. The judge is off for ingest (a file
+spends nothing). Proof by breaking: removing the cloud guard fails
+`test_logged_in_refuses_to_save_without_allow_cloud`; passing `{}` edges fails
+`test_the_silent_node_is_blamed_from_the_file_alone`; restored, 1022 pass.
 
 ### S-4 — Tool child runs land on the ledger row
 
