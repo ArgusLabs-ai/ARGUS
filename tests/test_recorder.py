@@ -163,6 +163,50 @@ def test_contextual_reasons_accumulate_on_the_same_origin(monkeypatch):
 
 
 @pytest.mark.integration
+def test_contextual_reason_preserves_existing_tool_message(monkeypatch):
+    """Contextual blame should append without erasing an existing tool failure.
+
+    `prepare` swallows an upstream error into an `error` key and never writes
+    `docs`, which `answer` is declared to read. Two layers land on one step: the
+    tool scan authors the message first, contextual appends to it.
+
+    The origin has to return a *non-empty* update for this to be reachable at
+    all. `contextual` deliberately stays quiet when the step it would blame
+    returned `{}`, deferring to `empty_output` so one no-op is not reported
+    twice — so an empty update yields the tool message alone and nothing to
+    append.
+    """
+    _no_patching(monkeypatch)
+
+    g = StateGraph(_S)
+    g.add_node("prepare", lambda state: {"error": "upstream exploded"})
+    g.add_node("answer", lambda state: {"answer": f"{state.get('docs')}"})
+    g.add_edge(START, "prepare")
+    g.add_edge("prepare", "answer")
+    g.add_edge("answer", END)
+
+    recorder = ArgusRecorder(
+        consumers={"docs": ["answer"]},
+        semantic_judge=False,
+    )
+    recorder.attach(g.compile()).invoke({})
+
+    record = load_run(recorder.session.run_id)
+    origin = next(step for step in record.steps if step.node_name == "prepare")
+
+    assert origin.inspection is not None
+    assert any(
+        failure.failure_type == "error_response" for failure in origin.inspection.tool_failures
+    )
+    message = origin.inspection.message
+    assert 'Tool failures: error_response on "error"' in message, (
+        f"the tool layer's own message was lost: {message!r}"
+    )
+    assert "`docs`" in message, f"the contextual reason was not appended: {message!r}"
+    assert message.index("Tool failures:") < message.index("`docs`")
+
+
+@pytest.mark.integration
 def test_parallel_fan_out_records_every_branch(monkeypatch):
     """Branches run on separate threads — each still gets its own step and its own update."""
     _no_patching(monkeypatch)
