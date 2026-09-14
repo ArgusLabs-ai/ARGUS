@@ -129,7 +129,11 @@ def tool_calls_by_step(
             {
                 "name": run.get("name") or "tool",
                 "input": run.get("inputs"),
-                "output": outputs.get("output") if isinstance(outputs, dict) else outputs,
+                # `outputs` itself is the fallback: LangSmith wraps a tool
+                # result as `{"output": ...}`, but an export that does not
+                # would otherwise hand the graders `None` and lose the very
+                # payload the tool rules exist to read.
+                "output": outputs.get("output", outputs) if isinstance(outputs, dict) else outputs,
                 "error": run.get("error"),
             }
         )

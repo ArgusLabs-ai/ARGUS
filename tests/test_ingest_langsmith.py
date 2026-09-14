@@ -69,6 +69,25 @@ def test_a_tool_result_is_unwrapped_to_what_the_recorder_hears():
     assert call["error"] is None
 
 
+def test_a_tool_result_with_no_output_key_keeps_its_payload():
+    """An export that does not wrap the result must not lose it.
+
+    `outputs["output"]` is LangSmith's shape, not a guarantee. Reading that key
+    blind hands the graders `None` for anything else — and a dropped payload is
+    a tool failure nobody sees, which is the whole point of reading tools.
+    """
+    import copy
+
+    runs = copy.deepcopy(load_runs(TOOL_FIXTURE))
+    for run in runs:
+        if run.get("run_type") == "tool":
+            run["outputs"] = {"status": 500, "body": "upstream down"}
+    steps = node_runs(runs)
+    fetch = next(r for r in steps if r["extra"]["metadata"]["langgraph_node"] == "fetch")
+    [call] = tool_calls_by_step(runs, steps)[str(fetch["id"])]
+    assert call["output"] == {"status": 500, "body": "upstream down"}
+
+
 def test_logged_in_refuses_to_save_without_allow_cloud(monkeypatch):
     monkeypatch.setattr("argus.cloud.is_logged_in", lambda: True)
     result = CliRunner().invoke(app, ["ingest", "langsmith", str(FIXTURE)])
