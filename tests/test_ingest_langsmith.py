@@ -180,6 +180,58 @@ def test_edges_name_the_subgraph_parents_instead_of_nesting():
     assert sorted(r["id"] for r in node_runs(runs, {"report"})) == ["child", "parent"]
 
 
+def _skinny_copy(change):
+    """The demo fixture with ``change(row)`` applied to every row, written to cwd."""
+    rows = [json.loads(line) for line in FIXTURE.read_text().splitlines() if line.strip()]
+    for row in rows:
+        change(row)
+    path = Path("skinny.jsonl")
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return path
+
+
+def test_skinny_trace_with_outputs_hidden_saves_nothing():
+    # hide_outputs=True gives every run, root included, outputs == {}.
+    path = _skinny_copy(lambda row: row.update(outputs={}))
+    result = CliRunner().invoke(app, ["ingest", "langsmith", str(path)])
+    assert result.exit_code == 2, result.output
+    assert "root run has no outputs" in result.output
+    assert list(Path(".argus/runs").iterdir()) == []
+
+
+def test_skinny_node_run_without_inputs_saves_nothing():
+    def drop_search_inputs(row):
+        if row.get("name") == "search":
+            row.pop("inputs")
+
+    path = _skinny_copy(drop_search_inputs)
+    result = CliRunner().invoke(app, ["ingest", "langsmith", str(path)])
+    assert result.exit_code == 2, result.output
+    assert "search" in result.output
+    assert list(Path(".argus/runs").iterdir()) == []
+
+
+def test_skinny_trace_with_no_node_runs_saves_nothing():
+    path = _skinny_copy(lambda row: None)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    path.write_text(json.dumps(next(r for r in rows if r["parent_run_id"] is None)) + "\n")
+    result = CliRunner().invoke(app, ["ingest", "langsmith", str(path)])
+    assert result.exit_code == 2, result.output
+    assert list(Path(".argus/runs").iterdir()) == []
+
+
+def test_not_skinny_when_only_one_node_has_empty_outputs():
+    # The fixture's summarize already arrives as {}; root outputs prove nothing was hidden.
+    rows = [json.loads(line) for line in FIXTURE.read_text().splitlines() if line.strip()]
+    assert [r["name"] for r in rows if r.get("outputs") == {}] == ["summarize"]
+    runner = CliRunner()
+    ingested = runner.invoke(app, ["ingest", "langsmith", str(FIXTURE)])
+    assert ingested.exit_code == 0, ingested.output
+    checked = runner.invoke(app, ["check", "last", "--format", "json"])
+    assert checked.exit_code == 1, checked.output
+    assert json.loads(checked.output)["first_failure_step"] == "summarize"
+
+
 def test_the_ingest_module_imports_without_langgraph_or_langchain():
     blocker = (
         "import sys\n"
