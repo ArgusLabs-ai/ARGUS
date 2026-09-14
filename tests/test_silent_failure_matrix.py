@@ -628,6 +628,136 @@ def test_a_subgraph_that_contributes_nothing_is_blamed_on_its_first_inner_node()
     }
 
 
+class InnerOnlyState(TypedDict, total=False):
+    """The subgraph's own schema — `scratch` exists here and nowhere outside."""
+
+    query: str
+    scratch: str
+    docs: list[str]
+
+
+def _inner_only_app(normalize, retrieve):
+    """`child` has a key the outer graph does not, so its writes can vanish."""
+    inner = StateGraph(InnerOnlyState)
+    inner.add_node("normalize", normalize)
+    inner.add_node("retrieve", retrieve)
+    inner.add_edge(START, "normalize")
+    inner.add_edge("normalize", "retrieve")
+    inner.add_edge("retrieve", END)
+
+    outer = StateGraph(NestedState)  # no `scratch` here
+    outer.add_node("child", inner.compile())
+    outer.add_node("render", lambda s: {"out": f"docs={s.get('docs')}"})
+    outer.add_edge(START, "child")
+    outer.add_edge("child", "render")
+    outer.add_edge("render", END)
+    return outer.compile()
+
+
+def test_a_subgraph_writing_only_inner_keys_is_caught():
+    """Busy inner nodes, nothing reaching the parent state (#89).
+
+    Both inner nodes return a non-empty update, so `empty_output` has nothing
+    to fire on, and the parent row is not recorded. Before the subgraph-level
+    check this graded `clean` while `render` read `docs=None` — a silent
+    failure passing CI, which is the one outcome the brief bans.
+    """
+    verdict, record, rows = _run(
+        _inner_only_app(lambda s: {"scratch": "a"}, lambda s: {"scratch": "b"}),
+        {"query": " contracts "},
+    )
+
+    assert verdict.passed is False, "a subgraph that wrote nothing outward is not clean"
+    assert record.first_failure_step == "normalize"
+    assert [(f.node, f.type) for f in record.findings] == [
+        ("normalize", "subgraph_no_contribution")
+    ], "one finding for one no-op — not one per inner node"
+    assert rows["render"].update == {"out": "docs=None"}, "the downstream node did read nothing"
+
+
+def test_a_scratch_key_feeding_a_later_inner_node_stays_clean():
+    """`normalize` contributes nothing outward on purpose — that is not a failure.
+
+    The false-positive twin of the test above, and the reason the check is
+    subgraph-level rather than per inner node: writing an inner-only key to
+    hand to the next node is ordinary, and `retrieve` does reach the parent.
+    """
+    verdict, record, _rows = _run(
+        _inner_only_app(
+            lambda s: {"scratch": s.get("query", "").strip()},
+            lambda s: {"docs": [s.get("scratch", "")]},
+        ),
+        {"query": " contracts "},
+    )
+
+    assert verdict.passed is True, f"healthy subgraph flagged: {verdict.reasons}"
+    assert record.findings == []
+
+
+def _looping_subgraph_app(retrieve, keep_looping):
+    """`child` sits on its own loop edge and may run several times."""
+    inner = StateGraph(InnerOnlyState)
+    inner.add_node("retrieve", retrieve)
+    inner.add_edge(START, "retrieve")
+    inner.add_edge("retrieve", END)
+
+    outer = StateGraph(NestedState)
+    outer.add_node("child", inner.compile())
+    outer.add_node("render", lambda s: {"out": f"docs={s.get('docs')}"})
+    outer.add_edge(START, "child")
+    outer.add_conditional_edges(
+        "child",
+        lambda s: "child" if keep_looping(s) else "render",
+        {"child": "child", "render": "render"},
+    )
+    outer.add_edge("render", END)
+    return outer.compile()
+
+
+def test_a_looping_subgraph_that_never_contributes_is_still_caught():
+    """Blame has to land on a visit that survives finalize.
+
+    `retried` is assigned in finalize, *after* the subgraph check runs, and
+    both `check.evaluate_run` and `collect_findings` drop retried steps. Blame
+    on the first visit is therefore invisible and the run goes out clean — so
+    the finding goes on the earliest inner node's *last* visit.
+    """
+    calls = {"n": 0}
+
+    def retrieve(_s):
+        calls["n"] += 1
+        return {"scratch": f"try{calls['n']}"}  # never an outer key
+
+    verdict, record, _rows = _run(
+        _looping_subgraph_app(retrieve, lambda _s: calls["n"] < 2), {"query": "q"}
+    )
+
+    assert calls["n"] == 2, "the subgraph really did run twice"
+    assert verdict.passed is False, "two dry passes are still a subgraph that wrote nothing"
+    assert [(f.node, f.type) for f in record.findings] == [
+        ("retrieve", "subgraph_no_contribution")
+    ]
+    blamed = [s for s in record.steps if s.node_name == "retrieve"][-1]
+    assert blamed.status == "fail", "the blamed visit must not be the one finalize retires"
+
+
+def test_a_looping_subgraph_that_contributes_on_a_later_pass_stays_clean():
+    """Dry on pass one, contributes on pass two — a retry, not a failure."""
+    calls = {"n": 0}
+
+    def retrieve(_s):
+        calls["n"] += 1
+        return {"scratch": "warmup"} if calls["n"] == 1 else {"docs": ["found"]}
+
+    verdict, record, _rows = _run(
+        _looping_subgraph_app(retrieve, lambda s: not s.get("docs")), {"query": "q"}
+    )
+
+    assert calls["n"] == 2
+    assert verdict.passed is True, f"got there on retry, so clean: {verdict.reasons}"
+    assert record.findings == []
+
+
 def test_a_working_subgraph_stays_clean():
     """Every inner node contributes — nothing about nesting invents a finding."""
     verdict, record, _rows = _run(

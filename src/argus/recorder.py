@@ -37,6 +37,7 @@ from uuid import UUID
 
 from argus.contextual import ConsumerMap
 from argus.grading import IncompleteTraceError, finish, new_session
+from argus.models import ToolFailure
 from argus.session import ArgusSession
 
 try:  # pragma: no cover - exercised only when langchain-core is absent
@@ -70,6 +71,43 @@ def _reducer_fields(app: Any) -> dict[str, Any]:
         return extract_reducer_fields(builder)
     except Exception:
         return {}
+
+
+def _subgraph_shape(app: Any) -> tuple[dict[str, list[str]], set[str], set[str]]:
+    """``{subgraph: [its inner nodes]}``, the ones with a successor, outer keys.
+
+    Needed for the one question no inner step can answer on its own: did the
+    subgraph contribute anything to the **parent** graph's state? An inner node
+    writing an inner-only key returns a perfectly non-empty update, so
+    ``empty_output`` stays quiet, while the parent state gains nothing and the
+    node after the subgraph reads ``None`` (#89). Keys the outer graph has are
+    ``builder.channels`` — the same public ``builder`` :func:`_reducer_fields`
+    already reads.
+
+    Best-effort: an app that exposes none of this yields empty sets, which only
+    switches the check off.
+    """
+    try:
+        xray = app.get_graph(xray=True)
+    except Exception:  # pragma: no cover - older/patched LangGraph
+        return {}, set(), set()
+
+    inner: dict[str, list[str]] = {}
+    for node_id in xray.nodes:
+        if ":" not in node_id:
+            continue
+        parent, _, _ = node_id.partition(":")
+        name = _bare(node_id)
+        if name not in _SENTINELS:
+            inner.setdefault(parent, []).append(name)
+
+    with_successors = {
+        edge.source
+        for edge in app.get_graph().edges
+        if edge.source in inner and _bare(edge.target) not in _SENTINELS
+    }
+    outer_keys = set(getattr(getattr(app, "builder", None), "channels", None) or {})
+    return inner, with_successors, outer_keys
 
 
 def _bare(node_id: str) -> str:
@@ -186,6 +224,11 @@ class ArgusRecorder(BaseCallbackHandler):
         # Set at attach; every per-run session is built from them.
         self._topology: tuple[list[str], dict[str, list[str]], set[str]] = ([], {}, set())
         self._subgraphs: set[str] = set()
+        # {subgraph: [inner nodes]}, those with a node waiting after them, and
+        # the keys the outer graph actually has — see _blame_barren_subgraphs.
+        self._subgraph_nodes: dict[str, list[str]] = {}
+        self._subgraphs_with_successors: set[str] = set()
+        self._outer_keys: set[str] = set()
         self._reducers: dict[str, Any] = {}
         self._judge = False
 
@@ -203,6 +246,11 @@ class ArgusRecorder(BaseCallbackHandler):
         """
         names, edges, conditionals, self._subgraphs = _topology(app)
         self._topology = (names, edges, conditionals)
+        (
+            self._subgraph_nodes,
+            self._subgraphs_with_successors,
+            self._outer_keys,
+        ) = _subgraph_shape(app)
         self._reducers = _reducer_fields(app)
         self._judge = self._resolve_judge()
         self._attached = True
@@ -429,8 +477,66 @@ class ArgusRecorder(BaseCallbackHandler):
                 for rid, (node, _, _) in self._pending.items()
                 if self._root_of.get(rid) == root
             )
+        self._blame_barren_subgraphs(session)
         finish(session, self._consumers, unfinished)
         self.run_ids.append(session.run_id)
+
+    def _blame_barren_subgraphs(self, session: ArgusSession) -> None:
+        """Fail a subgraph that ran and left the parent state untouched (#89).
+
+        Every inner node can return a non-empty update and the subgraph still
+        contribute nothing outward, because an inner-only key never reaches the
+        parent graph. ``empty_output`` asks "was this update empty?", which is
+        the wrong question one level down; this asks "did any of it survive into
+        the outer state?".
+
+        Subgraph-level on purpose. Blaming each inner node would fire on the
+        normal shape where an early node writes a scratch key purely to feed a
+        later one — real work that legitimately contributes nothing outward. The
+        finding lands on the first inner step, which is where the existing
+        all-empty case already blames, and is skipped when that step is flagged
+        already so one no-op is not reported twice.
+        """
+        if not self._outer_keys:
+            return
+
+        for parent in self._subgraphs_with_successors:
+            inner = set(self._subgraph_nodes.get(parent, []))
+            # Every visit, not the first one each: a subgraph on a loop edge can
+            # come up dry on pass one and contribute on pass two, and flagging
+            # that would be a false positive.
+            steps = [event for event in session._events if event.node_name in inner]
+            if not steps:
+                continue
+            if any(set(step.output_dict or {}) & self._outer_keys for step in steps):
+                continue
+            # Earliest inner node, but its *last* visit. Status cannot be read
+            # here — `retried` is assigned later, in finalize, which demotes
+            # every visit but the last. Blaming the first visit of a subgraph on
+            # a loop edge therefore parks the finding on a step that
+            # `check.evaluate_run` and `collect_findings` both drop, and the run
+            # goes out clean. Keeping the node but taking its final visit holds
+            # origin blame and stays visible.
+            first_node = steps[0].node_name
+            origin = [step for step in steps if step.node_name == first_node][-1]
+            if origin.inspection is None or origin.inspection.has_tool_failure:
+                continue
+            origin.inspection.tool_failures.append(
+                ToolFailure(
+                    failure_type="subgraph_no_contribution",
+                    field_name="_output",
+                    severity="critical",
+                    evidence=(
+                        f"subgraph `{parent}` ran and wrote nothing the parent graph can "
+                        f"see — every field it produced is internal to it, so the node "
+                        f"after it reads the state unchanged"
+                    ),
+                )
+            )
+            origin.inspection.has_tool_failure = True
+            origin.inspection.is_silent_failure = True
+            origin.inspection.severity = "critical"
+            origin.status = "fail"
 
     def _require_attached(self) -> None:
         if not self._attached:
