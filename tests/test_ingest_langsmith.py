@@ -12,7 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from argus.cli.main import app
-from argus.ingest.langsmith import node_runs
+from argus.ingest.langsmith import load_runs, node_runs, tool_calls_by_step
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "demo_graph.jsonl"
@@ -56,6 +56,17 @@ def test_a_swallowed_tool_500_fails_the_node_that_called_the_tool():
         and "500" in f["reason"]
     ]
     assert critical, payload["findings"]
+
+
+def test_a_tool_result_is_unwrapped_to_what_the_recorder_hears():
+    # LangSmith stores `outputs={"output": <result>}`; on_tool_end hears the bare result.
+    runs = load_runs(TOOL_FIXTURE)
+    steps = node_runs(runs)
+    fetch = next(r for r in steps if r["extra"]["metadata"]["langgraph_node"] == "fetch")
+    [call] = tool_calls_by_step(runs, steps)[str(fetch["id"])]
+    assert call["name"] == "fetch_docs"
+    assert call["output"] == {"status": 500, "body": "upstream down"}
+    assert call["error"] is None
 
 
 def test_logged_in_refuses_to_save_without_allow_cloud(monkeypatch):
