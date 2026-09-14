@@ -173,7 +173,7 @@ flag, `_defer_auto_finalize`) and run refuse-if-unfinished → ledger →
 contextual (`_blame_origins`) → disable investigate → finalize → set
 `ARGUS_RUN_ID`. Only the recorder can call them.
 **Change:** move them to module functions `new_session(node_names, edge_map,
-conditional_sources, reducer_kinds, *, judge, validators, strict,
+conditional_sources, reducer_fields, *, judge, validators, strict,
 max_field_size)` and `finish(session, consumers, unfinished=())` in
 `grading.py`. `IncompleteTraceError`, `_placeholder_node`, `_blame_origins`
 and `_refuse` move with them. The recorder still computes `unfinished` from its
@@ -188,6 +188,20 @@ PYTHONPATH=src pytest tests -q          # pass = 1018 passed, 4 skipped, 2 xfail
 grep -nE "^(from|import) (langgraph|langchain)" src/argus/grading.py ; echo "expect no output above"
 ```
 **Must not:** change any assertion in existing tests; change detection rules.
+
+**Done 2026-09-14 (local branch `s2-grading-module`, not pushed).** Learned:
+the fourth argument is `reducer_fields` (the reducer callables), not
+`reducer_kinds` — the session merges running state with the callables and
+derives the kinds itself; the step text is corrected above. Two tests call the
+recorder's private names (`recorder._finish(recorder._new_session(), ...)`,
+`from argus.recorder import IncompleteTraceError`), so the recorder keeps thin
+`_new_session` / `_finish` wrappers and re-exports the error; `run_ids` stays
+on the recorder. `argus.grading` imports cleanly with `langgraph` /
+`langchain_core` blocked, so S-3 can run without them. Proof by breaking:
+removing the empty-trace refuse from `grading.py` fails
+`test_recorder.py::test_an_empty_trace_refuses_to_grade` and
+`test_silent_failure_matrix.py::test_a_skinny_trace_is_refused_rather_than_graded_clean`
+(same guard, direct and end to end); restored, 1018 pass.
 
 ### S-3 — `argus ingest langsmith <file>` grades a run with no app
 
