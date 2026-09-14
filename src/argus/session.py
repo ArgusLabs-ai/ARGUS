@@ -42,6 +42,7 @@ from argus.anomaly_detector import detect_anomalies
 from argus.inspector import (
     build_root_cause_chain,
     crash_origins,
+    inspect_tool_calls,
     inspect_transition,
     is_legitimate_field_handoff,
 )
@@ -710,8 +711,13 @@ class ArgusSession:
                     ),
                 )
             )
-        # 3. Fast + already-failed = cached failure
-        fast_threshold = self._min_expected_ms or 500.0
+        # 3. Fast + already-failed = cached failure. Needs a declared expected
+        # minimum: without one, "fast" meant <500ms, which is every in-process
+        # node, so each real defect shipped a second "Completed in 0ms with
+        # quality issues" finding that said nothing.
+        if not self._min_expected_ms:
+            return
+        fast_threshold = self._min_expected_ms
         has_existing_failure = (
             inspection.is_silent_failure
             or inspection.has_tool_failure
@@ -744,6 +750,7 @@ class ArgusSession:
         exc: Exception | None,
         is_interrupt: bool = False,
         llm_usage: LLMUsage | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._lock:
             step_idx = self._step_index
@@ -797,6 +804,15 @@ class ArgusSession:
                     # the empty_output rule only needs that much.
                     has_successors=bool(self.graph_edge_map.get(node_name)),
                 )
+                # The tools this step actually called (fat trace). Must land
+                # before the status roll-up below, or a swallowed tool error is
+                # recorded and then graded clean (#86).
+                tool_call_failures = inspect_tool_calls(tool_calls, strict=self._strict)
+                if tool_call_failures:
+                    inspection.tool_failures.extend(tool_call_failures)
+                    if any(tf.severity == "critical" for tf in tool_call_failures):
+                        inspection.has_tool_failure = True
+                        inspection.severity = "critical"
                 # Latency-correlated degradation checks
                 self._check_latency_signals(duration_ms, inspection)
                 # Determine raw status from inspection
@@ -932,6 +948,7 @@ class ArgusSession:
                 anomaly_signals=anomaly_signals,
                 semantic_check=semantic_check_result,
                 disambiguation_results=disambiguation_results,
+                tool_calls=list(tool_calls or []),
             )
 
             self._events.append(event)

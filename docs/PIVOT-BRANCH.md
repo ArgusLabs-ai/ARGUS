@@ -42,7 +42,7 @@ app.invoke({"query": "..."})
 | **Inherited emptiness** | A node handed `[]` that returns `[]` is a warning, not the origin. A node that **had** docs and dropped them is still critical. A retriever that finds nothing is still critical (product: empty search is a silent failure). |
 | **Replay (new)** | Re-score is `argus check` (file only). Live rerun of **one** node: input from the ledger row, function from the app you pass in. No app → refuse, point at `argus check`. Original notebook is not rewritten. Upstream passers stay frozen in the notes. |
 
-Proof (run these, not the full suite — embeddings make it slow):
+Proof (run these first; the full suite is fine too):
 
 ```bash
 PYTHONPATH=src python demo/fat_trace/demo_graph.py
@@ -444,7 +444,9 @@ Demos: `demo/fat_trace/`, `demo/new_user_rag.py`.
   **type hints** (you will not get them from a trace — that is what `consumers`
   is for) or only that **something runs** (`has_successors`). Conflating the two
   is what hid gap 1.
-- Full `pytest tests/` takes ~8 minutes on live embeddings. Use the file list
-  above plus the matrix.
+- Full `pytest tests/` runs in ~15s now: embeddings are opt-in
+  (`ARGUS_EMBEDDINGS=1`) and off by default, so nothing calls out mid-grade.
+  Turning them on costs a synchronous OpenAI round trip per unique string
+  value — the old default, and why grading was minutes and leaked node data.
 
 Untracked on purpose (not in the implementation): `docs/ARGUS-PIVOT*.pdf`, `docs/generate_pivot_*.py`, `demo/research_agent/`, `website/public/__artifact.html`.

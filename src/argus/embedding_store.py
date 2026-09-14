@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -27,20 +28,38 @@ _CACHE_DB_PATH = ".argus/embeddings_cache.db"
 _EMBEDDING_DIM = 1536  # text-embedding-3-small output dimension
 
 
+def embeddings_enabled() -> bool:
+    """Whether ARGUS may send node values to the embeddings API.
+
+    Off unless the user opts in with ``ARGUS_EMBEDDINGS=1``. Computing an
+    embedding means POSTing a node's *output values* — claim text, customer
+    records, whatever the pipeline carries — to a third party, as a side effect
+    of grading. That is not something to do because a key happened to be
+    lying around. With it off, `semantic_similarity` signatures stay inactive
+    and `registry.heuristic_coverage()` reports the reduced coverage.
+    """
+    return os.environ.get("ARGUS_EMBEDDINGS", "").strip().lower() in ("1", "true", "yes")
+
+
 def _get_client() -> Any:
-    """Lazy-load the OpenAI client (thread-safe)."""
+    """Lazy-load the OpenAI client (thread-safe).
+
+    Deliberately does *not* load a .env file: reading the host app's dotenv (and
+    worse, `override=True`, which replaces keys the app itself is using) means
+    ARGUS picks up a key nobody gave it. The key comes from ARGUS's own
+    resolution path — `argus key set`, or an env var already in this process.
+    """
     global _client  # noqa: PLW0603
+    if not embeddings_enabled():
+        raise RuntimeError(
+            "Embeddings are off. Set ARGUS_EMBEDDINGS=1 to allow ARGUS to send "
+            "node values to the OpenAI embeddings API."
+        )
     if _client is not None:
         return _client
     with _client_lock:
         if _client is not None:
             return _client
-        try:
-            from dotenv import load_dotenv  # noqa: PLC0415
-
-            load_dotenv(override=True)
-        except ImportError:
-            pass
         from openai import OpenAI  # noqa: PLC0415
 
         from argus.user_config import resolve_openai_key  # noqa: PLC0415

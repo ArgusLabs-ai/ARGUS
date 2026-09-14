@@ -950,6 +950,61 @@ def inspect_tool_outputs(
     )
 
 
+def inspect_tool_calls(
+    tool_calls: list[dict[str, Any]] | None,
+    strict: bool = False,
+) -> list[ToolFailure]:
+    """Grade the tool I/O recorded for one step (`NodeEvent.tool_calls`).
+
+    The fat trace records what each tool actually did; until this ran, nothing
+    read it, so a tool that raised and was swallowed graded clean (#86). Two
+    shapes, both blamed on the node that made the call:
+
+    * the tool raised — critical, full stop. A caught exception the node did not
+      surface is the silent failure ARGUS exists for.
+    * the tool returned a payload — run it through the same `inspect_tool_outputs`
+      scan the node's own output gets, so a 404 body or an empty result set is
+      caught by the rules that already exist.
+
+    A plain-string tool result is left alone: it lands in the node's output if
+    the node used it, and scanning prose for error words is how false positives
+    get made.
+    """
+    out: list[ToolFailure] = []
+    for call in tool_calls or []:
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("name") or "tool")
+        error = call.get("error")
+        if error:
+            out.append(
+                ToolFailure(
+                    failure_type="tool_error",
+                    field_name=name,
+                    severity="critical",
+                    evidence=f"tool `{name}` raised {error}",
+                )
+            )
+            continue
+        payload = call.get("output")
+        if isinstance(payload, str):
+            payload = _as_json_payload(payload)
+        if isinstance(payload, list):
+            payload = {"results": payload}
+        if not isinstance(payload, dict):
+            continue
+        for tf in inspect_tool_outputs(payload, strict=strict).tool_failures:
+            out.append(
+                ToolFailure(
+                    failure_type=tf.failure_type,
+                    field_name=f"{name}.{tf.field_name}" if tf.field_name else name,
+                    severity=tf.severity,
+                    evidence=f"tool `{name}`: {tf.evidence}",
+                )
+            )
+    return out
+
+
 def inspect_transition(
     current_node: str,
     output_dict: dict[str, Any] | None,
@@ -1462,6 +1517,49 @@ def _build_predecessor_map(
     return result
 
 
+def _nested_container_origin(
+    steps_so_far: list[Any], crashed: Any, missing_key: str
+) -> Any | None:
+    """Who wrote the dict that was missing `missing_key`, if that is the story.
+
+    Only applies when `missing_key` is not a state field in its own right — if
+    it is, the normal top-level walk owns the crash. Among the crashed node's
+    input fields, a dict that lacks the key is a candidate container; an empty
+    one is the classic (`{"policy": {}}` from a cache miss) and wins. Blame goes
+    to the last step that *wrote* that field before the crash.
+
+    Returns None when nothing fits — no blame beats blaming a bystander.
+    """
+    state = crashed.input_state or {}
+    if missing_key in state:
+        return None  # a real state field; the top-level walk handles it
+
+    candidates = [
+        field
+        for field, value in state.items()
+        if isinstance(value, dict) and missing_key not in value
+    ]
+    # ponytail: empty container first, then whichever field was written latest.
+    # Several non-empty dicts all lacking the key is genuinely ambiguous; the
+    # tie-break is "most recently written", not a guess dressed up as analysis.
+    candidates.sort(key=lambda f: (bool(state[f]), f))
+    for field in candidates:
+        writer = next(
+            (
+                prev
+                for prev in reversed(steps_so_far)
+                if prev.step_index < crashed.step_index
+                and prev.status != "crashed"
+                and isinstance(prev.output_dict, dict)
+                and field in prev.output_dict
+            ),
+            None,
+        )
+        if writer is not None:
+            return writer
+    return None
+
+
 def crash_origins(
     steps_so_far: list[Any],
     edge_map: dict[str, list[str]] | None = None,
@@ -1499,6 +1597,16 @@ def crash_origins(
             for prev in steps_so_far
         )
         if key_was_available:
+            continue
+
+        # `state["policy"]["number"]` raises KeyError 'number', and `number` is
+        # not a state field at all — it is a key of a dict some node wrote. The
+        # top-level walk below cannot find it anywhere, so it falls through to
+        # "whoever ran last and wasn't a passthrough" and blames a bystander.
+        # Blame the node that wrote the container instead.
+        nested = _nested_container_origin(steps_so_far, event, missing_key)
+        if nested is not None:
+            found.append((nested, missing_key, event))
             continue
 
         # Determine actual graph predecessors of the crashed node

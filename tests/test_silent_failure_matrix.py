@@ -333,6 +333,12 @@ def exploding_api(query: str) -> dict:
     raise RuntimeError("connection reset by peer")
 
 
+@tool
+def healthy_api(query: str) -> dict:
+    """Look up orders. Works."""
+    return {"status": 200, "results": [{"id": "ord-1"}]}
+
+
 def _fetch_pipeline(fetch):
     def answer(state: FetchState) -> dict:
         hits = (state.get("raw") or {}).get("results", [])
@@ -376,6 +382,31 @@ def test_a_caught_tool_exception_still_fails_the_gate():
     assert "fetch" in verdict.failing_nodes
     assert "fetch" in _finding_nodes(record, "error_response")
     assert rows["fetch"].tools[0]["error"], "the raising tool's error is on the ledger row"
+
+
+def test_a_tool_failure_the_node_hides_completely_still_fails_the_gate():
+    """#86: the update looks fine, so only the recorded tool I/O can tell."""
+
+    def fetch(state: FetchState) -> dict:
+        try:
+            return {"raw": exploding_api.invoke({"query": state.get("query", "")})}
+        except Exception:
+            return {"raw": {"status": 200, "results": [{"id": "stale-cache"}]}}
+
+    verdict, record, _rows = _run(_fetch_pipeline(fetch), {"query": "recent orders"})
+
+    assert verdict.passed is False
+    assert "fetch" in verdict.failing_nodes
+    assert "fetch" in _finding_nodes(record, "tool_error")
+
+
+def test_a_tool_that_worked_stays_clean():
+    """The false-positive half of #86 — recorded tool I/O must not fail a good run."""
+    app = _fetch_pipeline(lambda s: {"raw": healthy_api.invoke({"query": s.get("query", "")})})
+    verdict, _record, rows = _run(app, {"query": "recent orders"})
+
+    assert verdict.passed is True
+    assert rows["fetch"].tools[0]["error"] is None
 
 
 # ── pipeline 5: degraded model output ────────────────────────────────────────
@@ -491,6 +522,37 @@ def test_a_keyerror_alone_is_enough_to_blame_upstream():
     assert "receipt" in reason, "the reason names the reader that crashed on it"
 
 
+def test_a_keyerror_on_a_nested_key_blames_whoever_wrote_the_container():
+    """`state["policy"]["number"]` — `number` is nobody's state field.
+
+    The commonest enterprise crash. Matching the key against top-level state
+    finds nothing, so the backward walk used to land on whichever node happened
+    to run before the crash site — a bystander.
+    """
+    class PolicyState(TypedDict, total=False):
+        order_id: str
+        policy: dict
+        notes: str
+        receipt: str
+
+    g = StateGraph(PolicyState)
+    g.add_node("load_order", lambda s: {"order_id": "ord-1"})
+    g.add_node("bill", lambda s: {"policy": {}})  # cache miss: key written empty
+    g.add_node("audit", lambda s: {"notes": "ran fine, wrote nothing anyone needs"})
+    g.add_node("receipt", lambda s: {"receipt": s["policy"]["number"]})
+    g.add_edge(START, "load_order")
+    g.add_edge("load_order", "bill")
+    g.add_edge("bill", "audit")
+    g.add_edge("audit", "receipt")
+    g.add_edge("receipt", END)
+
+    verdict, record, _rows = _run(g.compile(), {}, expect_raise=KeyError)
+
+    assert verdict.passed is False
+    assert "bill" in verdict.failing_nodes, "the node that wrote the empty container"
+    assert "audit" not in verdict.failing_nodes, "the bystander that merely ran last"
+
+
 # ── pipeline 7: subgraph ─────────────────────────────────────────────────────
 
 
@@ -524,6 +586,11 @@ def test_subgraph_steps_reach_the_ledger():
     )
 
     assert "normalize" in rows and "retrieve" in rows, "inner nodes are recorded by name"
+    assert "child" not in rows, (
+        "the subgraph parent's 'update' is the merged state of everything inside it — "
+        "recording it double-reports every inner finding and credits it with fields "
+        "it never wrote"
+    )
     assert rows["normalize"].update == {"query": "contracts"}
     assert rows["retrieve"].update == {}, "the inner no-op is faithfully on the notebook"
 

@@ -122,8 +122,8 @@ def _bare(node_id: str) -> str:
     return node_id.rsplit(":", 1)[-1]
 
 
-def _topology(app: Any) -> tuple[list[str], dict[str, list[str]], set[str]]:
-    """Node names, ``{node: [successors]}`` and conditional sources.
+def _topology(app: Any) -> tuple[list[str], dict[str, list[str]], set[str], set[str]]:
+    """Node names, ``{node: [successors]}``, conditional sources, subgraph parents.
 
     Read with ``xray=True`` so nodes *inside* a subgraph are known too. Without
     it a subgraph is one opaque ``child`` node, its inner nodes are absent from
@@ -131,17 +131,27 @@ def _topology(app: Any) -> tuple[list[str], dict[str, list[str]], set[str]]:
     — which silently exempts them from the ``empty_output`` rule. A silent
     no-op nested one level down then graded clean.
 
-    The un-x-rayed names are unioned back in so the subgraph's own parent step
-    (which the callbacks also report) stays a node we recognise.
+    A subgraph's *parent* (``documents`` in ``documents:ocr``) is reported by the
+    callbacks as a node in its own right, but its "update" is the subgraph's whole
+    merged state — a dozen keys other nodes wrote. That is the skinny-trace-posing-
+    as-fat shape (#82), produced by our own recorder: it double-reports every
+    inner finding on the parent, blames it for fields it never wrote, and makes
+    ``contextual._wrote()`` true for it on every field, which can hide a real
+    drop. So the parents come back as their own set — the recorder records the
+    inner nodes and skips the parent row. Their edges stay in the map: the node
+    before the subgraph still has a successor waiting on it.
     """
     try:
         graph = app.get_graph(xray=True)
     except Exception:  # pragma: no cover - older/patched LangGraph
         graph = app.get_graph()
 
-    names = [_bare(n) for n in graph.nodes if _bare(n) not in _SENTINELS]
+    parents = {n.split(":", 1)[0] for n in graph.nodes if ":" in n}
+    names = [
+        _bare(n) for n in graph.nodes if _bare(n) not in _SENTINELS and _bare(n) not in parents
+    ]
     for outer in app.get_graph().nodes:
-        if outer not in _SENTINELS and outer not in names:
+        if outer not in _SENTINELS and outer not in names and outer not in parents:
             names.append(outer)
 
     edge_map: dict[str, list[str]] = {}
@@ -153,7 +163,7 @@ def _topology(app: Any) -> tuple[list[str], dict[str, list[str]], set[str]]:
         edge_map.setdefault(source, []).append(target)
         if getattr(edge, "conditional", False):
             conditional_sources.add(source)
-    return names, edge_map, conditional_sources
+    return names, edge_map, conditional_sources, parents
 
 
 class ArgusRecorder(BaseCallbackHandler):
@@ -210,6 +220,7 @@ class ArgusRecorder(BaseCallbackHandler):
         self._attached = False
         # Set at attach; every per-run session is built from them.
         self._topology: tuple[list[str], dict[str, list[str]], set[str]] = ([], {}, set())
+        self._subgraphs: set[str] = set()
         self._reducers: dict[str, Any] = {}
         self._judge = False
 
@@ -225,7 +236,8 @@ class ArgusRecorder(BaseCallbackHandler):
         The returned app is reusable: every ``invoke`` / ``stream`` / ``batch``
         item gets its own session, its own run file and its own verdict.
         """
-        self._topology = _topology(app)
+        names, edges, conditionals, self._subgraphs = _topology(app)
+        self._topology = (names, edges, conditionals)
         self._reducers = _reducer_fields(app)
         self._judge = self._resolve_judge()
         self._attached = True
@@ -322,6 +334,11 @@ class ArgusRecorder(BaseCallbackHandler):
             # langgraph 0.6.11 / prebuilt react.
             enclosing = self._node_of.get(parent_run_id) if parent_run_id else None
             self._node_of[run_id] = node
+        if node in self._subgraphs:
+            # The subgraph's own parent chain — its "update" is the merged state
+            # of everything inside it (see _subgraph_parents). Its nodes are
+            # recorded individually; this row would only double-count them.
+            return
         if enclosing == node:
             # A chain nested inside the step we are already recording, carrying
             # that same node's name: LangGraph's own inner runnable, not a
@@ -395,18 +412,17 @@ class ArgusRecorder(BaseCallbackHandler):
             # than a fake empty one.
             output_snap = session.capture_output(outputs) if isinstance(outputs, dict) else None
 
+            # Tools go in with the step, not onto the event afterwards: the
+            # graders run inside on_node_end, so tools attached later were
+            # recorded and never read (#86).
             session.on_node_end(
                 node,
                 input_snap,
                 output_snap,
                 duration_ms,
                 exc=exc if isinstance(exc, Exception) else None,
+                tool_calls=tools,
             )
-            # Tools go on the event so they survive the run file's asdict
-            # round-trip. Only recorder callbacks append events, and this lock
-            # is held across on_node_end, so [-1] is the step just recorded.
-            if tools and session._events:
-                session._events[-1].tool_calls = tools
         return True
 
     # ── tool callbacks ──────────────────────────────────────────────────────
