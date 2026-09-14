@@ -219,6 +219,17 @@ def ingest_langsmith(
         names = list(edges["node_names"])
         edge_map = edges["edge_map"]
         conditional_sources = set(edges["conditional_sources"])
+        # An edges file from another graph — or one gone stale since the graph
+        # was refactored — is worse than none: a node whose successors it does
+        # not know is a node `empty_output` cannot fire on, so the silent step
+        # this trace was ingested to catch grades clean. Refuse instead.
+        unknown = sorted({str(_node_name(run)) for run in steps} - set(names))
+        if unknown:
+            raise ValueError(
+                f"{path} ran nodes the edges file does not describe: "
+                f"{', '.join(unknown)}. Re-export with `argus edges` from the "
+                "graph this trace came from."
+            )
     else:
         steps = node_runs(runs)
         names = list(dict.fromkeys(str(_node_name(run)) for run in steps))

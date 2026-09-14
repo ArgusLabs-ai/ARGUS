@@ -169,6 +169,62 @@ def test_the_edges_file_replaces_the_step_order_guess():
     assert _new_run_after(ingest).graph_edge_map == edges["edge_map"]
 
 
+def test_the_ingest_actually_uses_the_files_subgraph_parents():
+    """The wiring, not just `node_runs`.
+
+    The sibling unit test calls `node_runs(runs, parents)` directly, so it
+    stays green even if `ingest_langsmith` stops passing the file's
+    `subgraph_parents` at all. Naming a node the trace really contains is the
+    observable check: declared a subgraph parent, it must not become a step —
+    and since the named node here is the silent one, the run goes clean, which
+    step-order dropping could never produce.
+    """
+    edges = {
+        "edge_map": {"search": ["answer"]},
+        "conditional_sources": [],
+        "node_names": ["search", "answer"],
+        "subgraph_parents": ["summarize"],
+    }
+    Path("edges.json").write_text(json.dumps(edges))
+    runner = CliRunner()
+
+    def ingest():
+        result = runner.invoke(app, ["ingest", "langsmith", str(FIXTURE), "--edges", "edges.json"])
+        assert result.exit_code == 0, result.output
+
+    record = _new_run_after(ingest)
+    assert [s.node_name for s in record.steps] == ["search", "answer"], (
+        "the node the edges file calls a subgraph parent must not be a step"
+    )
+
+
+def test_an_edges_file_for_another_graph_refuses_instead_of_grading_clean():
+    """A stale or wrong edges file must not quietly turn a failure into a pass.
+
+    The map is well-formed but describes a different graph, so `summarize` has
+    no successors in it and `empty_output` — the whole reason this fixture
+    fails — cannot fire. Ingesting it graded the run **clean**, exit 0: the
+    "no findings, so it passed" outcome the brief bans, reached by pointing at
+    the wrong file. Easy to hit for real after a graph is refactored and
+    `edges.json` is not re-exported.
+    """
+    edges = {
+        "edge_map": {"alpha": ["beta"], "beta": ["gamma"]},
+        "conditional_sources": [],
+        "node_names": ["alpha", "beta", "gamma"],
+        "subgraph_parents": [],
+    }
+    Path("edges.json").write_text(json.dumps(edges))
+    result = CliRunner().invoke(
+        app, ["ingest", "langsmith", str(FIXTURE), "--edges", "edges.json"]
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "does not describe" in result.output
+    assert "argus edges" in result.output
+    assert not list_runs(), "a run we refused to grade must not be saved"
+
+
 def test_an_unreadable_edges_file_saves_nothing():
     Path("edges.json").write_text(json.dumps({"edge_map": {}}))
     result = CliRunner().invoke(
