@@ -433,6 +433,15 @@ pip install -e . && python -c "import langgraph, importlib.metadata as m; print(
 ```
 **Must not:** raise the floor above 0.6; change any test.
 
+**Done (2026-09-15).** Floor is `langgraph>=0.6` in both places pyproject
+declares it. CI matrix gained a `langgraph` axis, `~=0.6.0` and `>=1,<2`, with
+the 3.9 x 1.x leg excluded: 1.x requires Python 3.10+, which the spec missed.
+Five legs; the whole suite runs on each, not only pivot suites. `~=0.6.0`
+resolves to 0.6.11, so 0.6.0 itself is not pinned in CI. Locally on 3.12:
+0.6.11 and 1.2.11 each 1048 pass. `langgraph==0.2.74` with the new floor is
+refused at resolve by both uv and pip; the same install against the old
+`>=0.2.0` floor resolves, so the floor is what refuses. No test changed.
+
 ### S-11 — Crashed node runs keep crash blame
 
 **PR:** one.
