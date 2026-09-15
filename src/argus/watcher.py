@@ -206,7 +206,16 @@ class ArgusWatcher:
             )
 
         compile_kwargs: dict[str, Any] = {}
-        for attr in ("checkpointer", "interrupt_before", "interrupt_after"):
+        # Carry over every compile() kwarg the original app was built with —
+        # dropping store/cache silently breaks langgraph's runtime injection
+        # (nodes then receive store=None / cache=None).
+        for attr in (
+            "checkpointer",
+            "store",
+            "cache",
+            "interrupt_before",
+            "interrupt_after",
+        ):
             val = getattr(compiled_graph, attr, None)
             if val is not None:
                 compile_kwargs[attr] = val
