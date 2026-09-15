@@ -70,9 +70,14 @@ def cmd_ingest_langsmith(
         "--edges",
         help="Graph topology from `argus edges`; without it edges are guessed from step order.",
     ),
+    consumers: Optional[Path] = typer.Option(
+        None,
+        "--consumers",
+        help='JSON {"field": ["reader", ...]}: blame the step that dropped what a reader needs.',
+    ),
 ) -> None:
     """Grade a LangSmith export and save it as a run; then `argus check last`."""
-    ingest_langsmith_file(path, allow_cloud=allow_cloud, edges=edges)
+    ingest_langsmith_file(path, allow_cloud=allow_cloud, edges=edges, consumers=consumers)
 
 
 @app.command("edges")

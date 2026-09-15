@@ -10,9 +10,14 @@ end-of-run update carries no `outputs` at all (docs/prd_abhishek.md, BUG-1).
 
     PYTHONPATH=src python scripts/make_langsmith_fixture.py
     PYTHONPATH=src python scripts/make_langsmith_fixture.py --tool
+    PYTHONPATH=src python scripts/make_langsmith_fixture.py --drop
 
 ``--tool`` traces a second graph instead: its `fetch` node calls a tool that
 returns an HTTP 500 body, swallows it and returns a normal-looking update.
+
+``--drop`` traces a four-node graph: `lookup` writes `customer_id`, `enrich`
+nulls it, and `respond` reads it two steps later. Grade it with
+``--consumers`` naming `respond` as the reader, and `enrich` is blamed.
 """
 
 from __future__ import annotations
@@ -104,14 +109,52 @@ def build_tool_app():
     return graph.compile()
 
 
+class DropState(TypedDict, total=False):
+    query: str
+    customer_id: str | None
+    profile: str
+    draft: str
+    reply: str
+
+
+def build_drop_app():
+    def lookup(state: DropState) -> dict:
+        return {"customer_id": "c-42"}
+
+    def enrich(state: DropState) -> dict:
+        return {"profile": "gold tier", "customer_id": None}  # ← drops the id
+
+    def draft(state: DropState) -> dict:
+        return {"draft": f"Thanks for asking about: {state['query']}"}
+
+    def respond(state: DropState) -> dict:
+        return {"reply": f"{state['draft']} (customer {state.get('customer_id')})"}
+
+    graph = StateGraph(DropState)
+    for fn in (lookup, enrich, draft, respond):
+        graph.add_node(fn.__name__, fn)
+    graph.add_edge(START, "lookup")
+    graph.add_edge("lookup", "enrich")
+    graph.add_edge("enrich", "draft")
+    graph.add_edge("draft", "respond")
+    graph.add_edge("respond", END)
+    return graph.compile()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--tool", action="store_true", help="trace the tool graph instead")
+    which = parser.add_mutually_exclusive_group()
+    which.add_argument("--tool", action="store_true", help="trace the tool graph instead")
+    which.add_argument("--drop", action="store_true", help="trace the drop graph instead")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
-    name = "tool_graph.jsonl" if args.tool else "demo_graph.jsonl"
+    if args.tool:
+        name, app = "tool_graph.jsonl", build_tool_app()
+    elif args.drop:
+        name, app = "drop_graph.jsonl", build_drop_app()
+    else:
+        name, app = "demo_graph.jsonl", build_app()
     out = Path(args.out or REPO / "tests" / "fixtures" / "langsmith" / name)
-    app = build_tool_app() if args.tool else build_app()
 
     client = StubClient()
     tracer = LangChainTracer(client=client, project_name="argus-fixture")

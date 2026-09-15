@@ -397,6 +397,19 @@ PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k consumers
 ```
 **Must not:** infer consumers from source; that is a later step.
 
+**Done 2026-09-15 (branch `s7-consumers`).** Learned: `ingest_langsmith`
+already took `consumers=` from S-3, so the step is the flag, a loader that
+checks the file's shape, and the fixture. The option lives in
+`src/argus/cli/main.py`, not listed under Files above. Without the flag the
+drop fixture grades as not failing (two `enrich` warnings, no
+`missing_field`), which a test pins: the declared reader is what finds it.
+A bare-string reader (`{"customer_id": "respond"}`) would be iterated letter
+by letter, match no step and pass silently, so a wrong-shape file exits 2 and
+saves nothing. Proof by breaking: not passing the map to ingest fails
+`test_consumers_blame_the_step_that_dropped_the_field`; skipping the shape
+check fails `test_consumers_file_of_the_wrong_shape_saves_nothing`;
+restored, 1051 pass.
+
 ### S-8 — LLM rows: token accounting and truncation on both paths
 
 **PR:** one.

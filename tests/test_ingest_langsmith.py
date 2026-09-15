@@ -18,6 +18,7 @@ from argus.storage import list_runs, load_run
 REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "demo_graph.jsonl"
 TOOL_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "tool_graph.jsonl"
+DROP_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "drop_graph.jsonl"
 
 
 @pytest.fixture(autouse=True)
@@ -305,6 +306,51 @@ def test_not_skinny_when_only_one_node_has_empty_outputs():
     checked = runner.invoke(app, ["check", "last", "--format", "json"])
     assert checked.exit_code == 1, checked.output
     assert json.loads(checked.output)["first_failure_step"] == "summarize"
+
+
+def test_consumers_blame_the_step_that_dropped_the_field():
+    """`enrich` nulls `customer_id`; `respond` reads it two steps later.
+
+    Adjacent matching would blame `draft` (the step before the reader) or
+    `respond` (where the gap shows). The declared reader anchors the walk back.
+    """
+    Path("consumers.json").write_text(json.dumps({"customer_id": ["respond"]}))
+    runner = CliRunner()
+    ingested = runner.invoke(
+        app, ["ingest", "langsmith", str(DROP_FIXTURE), "--consumers", "consumers.json"]
+    )
+    assert ingested.exit_code == 0, ingested.output
+
+    checked = runner.invoke(app, ["check", "last", "--format", "json"])
+    assert checked.exit_code == 1, checked.output
+    payload = json.loads(checked.output)
+    assert payload["first_failure_step"] == "enrich"
+    [missing] = [f for f in payload["findings"] if f["type"] == "missing_field"]
+    assert missing["node"] == "enrich"
+    assert missing["severity"] == "critical"
+    assert "respond" in missing["reason"]
+
+
+def test_the_drop_without_consumers_does_not_fail():
+    # The drop is invisible without a declared reader: the flag is what finds it.
+    runner = CliRunner()
+    ingested = runner.invoke(app, ["ingest", "langsmith", str(DROP_FIXTURE)])
+    assert ingested.exit_code == 0, ingested.output
+
+    checked = runner.invoke(app, ["check", "last", "--format", "json"])
+    assert checked.exit_code == 0, checked.output
+    assert not [f for f in json.loads(checked.output)["findings"] if f["type"] == "missing_field"]
+
+
+def test_consumers_file_of_the_wrong_shape_saves_nothing():
+    # A bare string reader would be iterated letter by letter and match no step.
+    Path("consumers.json").write_text(json.dumps({"customer_id": "respond"}))
+    result = CliRunner().invoke(
+        app, ["ingest", "langsmith", str(DROP_FIXTURE), "--consumers", "consumers.json"]
+    )
+    assert result.exit_code == 2, result.output
+    assert "not a consumers file" in result.output
+    assert list(Path(".argus/runs").iterdir()) == []
 
 
 def test_the_ingest_module_imports_without_langgraph_or_langchain():
