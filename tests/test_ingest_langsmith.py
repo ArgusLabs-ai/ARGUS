@@ -272,6 +272,17 @@ def test_a_truncated_llm_call_warns_on_its_node_and_tokens_add_up():
     assert checked.exit_code == 0, "a cut-off answer warns; it does not fail the build"
 
 
+def test_a_reloaded_step_keeps_its_llm_calls():
+    ingested = CliRunner().invoke(app, ["ingest", "langsmith", str(LLM_FIXTURE)])
+    assert ingested.exit_code == 0, ingested.output
+
+    [run] = list_runs()
+    [write] = [e for e in load_run(run["run_id"]).steps if e.node_name == "write"]
+    assert write.llm_usage is not None, "the saved step carries its calls; reload must keep them"
+    assert write.llm_usage.calls[0].finish_reason == "length"
+    assert write.llm_usage.total_tokens == 40
+
+
 def test_the_ingest_module_imports_without_langgraph_or_langchain():
     blocker = (
         "import sys\n"

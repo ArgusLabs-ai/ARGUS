@@ -15,7 +15,9 @@ from argus.models import (
     FieldMismatch,
     Finding,
     InspectionResult,
+    LLMCallInfo,
     LLMInvestigationResult,
+    LLMUsage,
     NodeDiffSummary,
     NodeEvent,
     PropagationChain,
@@ -625,6 +627,11 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
         semantic_check = SemanticCheckResult(**sc)
     else:
         semantic_check = None
+    usage = data.get("llm_usage")
+    llm_usage = None
+    if usage:
+        calls = [LLMCallInfo(**c) for c in usage.get("calls", [])]
+        llm_usage = LLMUsage(**{**usage, "calls": calls})
     return NodeEvent(
         step_index=data.get("step_index", 0),
         node_name=data.get("node_name", ""),
@@ -644,4 +651,5 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
         semantic_check=semantic_check,
         total_iterations=data.get("total_iterations"),
         tool_calls=data.get("tool_calls", []),
+        llm_usage=llm_usage,
     )
