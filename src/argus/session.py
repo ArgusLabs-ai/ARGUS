@@ -119,6 +119,26 @@ _SECRET_PATTERNS: list[_re.Pattern[str]] = [
 _TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
 
 
+def _unreadable_update_signal(why: str) -> AnomalySignal:
+    """Critical: the capture did not preserve what this node wrote (#111).
+
+    Critical, not a warning, because "I could not read this node's update" and
+    "this node ran fine" must not be the same verdict — that equivalence is how
+    a silent no-op ships clean. ARGUS declines to grade the step rather than
+    passing it, the same line :func:`argus.ingest.langsmith._refuse_skinny`
+    takes for a whole trace: an incomplete recording is not a pass.
+    """
+    return AnomalySignal(
+        anomaly_id="unreadable_update",
+        severity="critical",
+        suspicion_score=1.0,
+        reason=why,
+        expected_behavior="a recorded update this node returned",
+        observed_behavior="the capture kept no readable update for this step",
+        field_path="",
+    )
+
+
 def _truncation_signals(llm_usage: LLMUsage | None) -> list[AnomalySignal]:
     """A ``truncated_llm_output`` warning when any call stopped at its token limit.
 
@@ -787,6 +807,7 @@ class ArgusSession:
         llm_usage: LLMUsage | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
         goto: list[str] | None = None,
+        unreadable_update: str | None = None,
     ) -> None:
         with self._lock:
             step_idx = self._step_index
@@ -911,6 +932,10 @@ class ArgusSession:
                 if any(a.severity == "critical" for a in anomaly_signals) and status == "pass":
                     status = "semantic_fail"
             anomaly_signals.extend(_truncation_signals(llm_usage))
+            if unreadable_update:
+                anomaly_signals.append(_unreadable_update_signal(unreadable_update))
+                if status == "pass":
+                    status = "semantic_fail"
 
             # Per-node LLM judge: fire in background thread, apply in _finalize.
             # Deterministic status is recorded now; LLM can refine it later.

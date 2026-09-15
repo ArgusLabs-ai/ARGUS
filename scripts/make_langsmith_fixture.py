@@ -13,6 +13,7 @@ end-of-run update carries no `outputs` at all (docs/prd_abhishek.md, BUG-1).
     PYTHONPATH=src python scripts/make_langsmith_fixture.py --drop
 
     PYTHONPATH=src python scripts/make_langsmith_fixture.py --crash
+    PYTHONPATH=src python scripts/make_langsmith_fixture.py --command
 
 ``--tool`` traces a second graph instead: its `fetch` node calls a tool that
 returns an HTTP 500 body, swallows it and returns a normal-looking update.
@@ -27,6 +28,11 @@ off at its token limit (`finish_reason: "length"`) on 40.
 
 ``--crash`` traces a graph that raises: `lookup` writes `{"policy": {}}`,
 `audit` runs in between and `price` reads `state["policy"]["number"]`.
+
+``--command`` traces a supervisor that hands off with `Command(goto=...)`.
+LangSmith keeps only the Command's *repr*, so the update is unreadable in the
+export — and the repr omits `update` when it is falsy, which makes the silent
+no-op (`update={}`) byte-identical to legitimate routing (#111).
 """
 
 from __future__ import annotations
@@ -45,6 +51,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_core.tracers.langchain import LangChainTracer
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "demo" / "fat_trace"))
@@ -216,6 +223,29 @@ class CrashState(TypedDict, total=False):
     price: float
 
 
+class CommandState(TypedDict, total=False):
+    query: str
+    plan: str
+    reply: str
+
+
+def build_command_app():
+    """`supervise` hands off with an empty update — the canonical silent no-op."""
+
+    def supervise(state: CommandState) -> Command:
+        return Command(goto="write", update={})  # ← writes nothing, routes on
+
+    def write(state: CommandState) -> dict:
+        return {"reply": f"drafted from {state.get('plan')}"}
+
+    graph = StateGraph(CommandState)
+    graph.add_node("supervise", supervise)
+    graph.add_node("write", write)
+    graph.add_edge(START, "supervise")
+    graph.add_edge("write", END)
+    return graph.compile()
+
+
 def build_crash_app():
     def lookup(state: CrashState) -> dict:
         return {"policy": {}}  # ← cache miss: the container is written empty
@@ -245,6 +275,7 @@ def main() -> None:
     which.add_argument("--drop", action="store_true", help="trace the drop graph instead")
     which.add_argument("--llm", action="store_true", help="trace the LLM graph instead")
     which.add_argument("--crash", action="store_true", help="trace the crash graph instead")
+    which.add_argument("--command", action="store_true", help="trace the Command handoff graph")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
     if args.tool:
@@ -255,6 +286,8 @@ def main() -> None:
         name, app = "llm_graph.jsonl", build_llm_app()
     elif args.crash:
         name, app = "crash_graph.jsonl", build_crash_app()
+    elif args.command:
+        name, app = "command_graph.jsonl", build_command_app()
     else:
         name, app = "demo_graph.jsonl", build_app()
     out = Path(args.out or REPO / "tests" / "fixtures" / "langsmith" / name)

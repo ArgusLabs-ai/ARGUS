@@ -19,6 +19,7 @@ REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "demo_graph.jsonl"
 TOOL_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "tool_graph.jsonl"
 DROP_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "drop_graph.jsonl"
+COMMAND_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "command_graph.jsonl"
 LLM_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "llm_graph.jsonl"
 CRASH_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "crash_graph.jsonl"
 
@@ -433,3 +434,46 @@ def test_the_ingest_module_imports_without_langgraph_or_langchain():
     )
     env = {**os.environ, "PYTHONPATH": str(REPO / "src")}
     subprocess.run([sys.executable, "-c", blocker], check=True, env=env)
+
+
+def test_a_command_step_is_not_graded_clean_on_its_repr():
+    """#111: LangSmith keeps only the Command's repr, so the update is unreadable.
+
+    The step used to be recorded with `{"output": "Command(goto='write')"}` — a
+    field the graph never wrote — which looks like a real update, so
+    `empty_output` could not fire and the canonical silent no-op shipped clean
+    from a trace file. ARGUS cannot know whether that node was fine: the repr
+    drops `update` when it is falsy, so `update={}` and routing-only are
+    byte-identical. Saying so is the verdict; passing it is not.
+    """
+    runner = CliRunner()
+    assert runner.invoke(app, ["ingest", "langsmith", str(COMMAND_FIXTURE)]).exit_code == 0
+
+    checked = runner.invoke(app, ["check", "last", "--format", "json"])
+    assert checked.exit_code == 1, checked.output
+    payload = json.loads(checked.output)
+    assert payload["first_failure_step"] == "supervise", payload["first_failure_step"]
+    [unreadable] = [f for f in payload["findings"] if f["type"] == "unreadable_update"]
+    assert unreadable["node"] == "supervise"
+    assert unreadable["severity"] == "critical"
+
+
+def test_the_command_repr_never_becomes_a_state_field():
+    """The phantom `output` key must not reach the ledger, `argus show` or the UI.
+
+    Recorded as an update it also makes `contextual._wrote()` true for a key
+    that is not in the state schema, so a declared consumer blames the wrong
+    node.
+    """
+    CliRunner().invoke(app, ["ingest", "langsmith", str(COMMAND_FIXTURE)])
+    [run] = list_runs()
+    step = next(s for s in load_run(run["run_id"]).steps if s.node_name == "supervise")
+    assert step.output_dict is None, step.output_dict
+
+
+def test_a_readable_step_beside_a_command_still_grades_normally():
+    """Only the unreadable step is affected — the rest of the trace is graded."""
+    CliRunner().invoke(app, ["ingest", "langsmith", str(COMMAND_FIXTURE)])
+    [run] = list_runs()
+    step = next(s for s in load_run(run["run_id"]).steps if s.node_name == "write")
+    assert step.output_dict == {"reply": "drafted from None"}, step.output_dict

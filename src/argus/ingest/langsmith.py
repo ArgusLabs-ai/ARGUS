@@ -168,6 +168,36 @@ def tool_calls_by_step(
     return tools
 
 
+def _command_repr(outputs: Any) -> str | None:
+    """Why this step's update is unreadable, when it is a serialised ``Command`` (#111).
+
+    LangGraph's modern handoff, ``Command(goto=..., update={...})``, is not a
+    dict, so LangSmith exports it as ``{"output": "<repr>"}`` — the repr, not
+    the data. Read as an update that is a field the graph never wrote, which
+    looks non-empty, so ``empty_output`` cannot fire and the canonical silent
+    no-op ships clean from a trace file.
+
+    The repr cannot be parsed back into the answer that matters: ``Command``
+    omits ``update`` when it is falsy, so ``update={}`` (the silent no-op) and
+    ``Command(goto=...)`` (legitimate routing) are byte-identical. Neither is
+    this recoverable from the merged state — that is the skinny-trace reading
+    the pivot rejects. So the step is marked unreadable and graded as such.
+
+    Discriminating on the ``Command(`` prefix of a lone ``output`` key keeps a
+    node whose state genuinely has an ``output`` field out of this.
+    """
+    if not (isinstance(outputs, dict) and list(outputs) == ["output"]):
+        return None
+    value = outputs["output"]
+    if not (isinstance(value, str) and value.startswith("Command(")):
+        return None
+    return (
+        "the export kept this node's `Command` handoff only as text "
+        f"(`{value[:60]}`), so what it wrote cannot be read — an empty update "
+        "and a routing-only handoff look identical once serialised"
+    )
+
+
 def _refuse_skinny(root: dict[str, Any], steps: list[dict[str, Any]]) -> None:
     """Raise :class:`IncompleteTraceError` when the trace is too thin to grade.
 
@@ -308,7 +338,8 @@ def ingest_langsmith(
         outputs = run.get("outputs")
         error = run.get("error")
         exc = TracedError(str(error)) if error else None
-        if exc is not None:
+        unreadable = _command_repr(outputs)
+        if exc is not None or unreadable is not None:
             output_snap = None
         elif isinstance(outputs, dict) and outputs:
             output_snap = session.capture_output(outputs)
@@ -324,6 +355,7 @@ def ingest_langsmith(
             exc=exc,
             llm_usage=usage_from_calls(llm_calls.get(str(run["id"]), [])),
             tool_calls=tools.get(str(run["id"]), []),
+            unreadable_update=unreadable,
         )
 
     finish(session, consumers)

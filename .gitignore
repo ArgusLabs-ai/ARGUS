@@ -85,3 +85,12 @@ argus_architecture.html
 
 # Merge-readiness stress suite (pivot architecture, local only)
 merge_readiness/
+
+# Internal pivot strategy briefs and their generators — deliberately untracked
+# (docs/PIVOT-BRANCH.md says so). Ignored so a stray `git add -A` cannot commit
+# them, which is exactly how they once reached a shared branch.
+docs/ARGUS-PIVOT*.pdf
+docs/ARGUS-PIVOT-FLOW.png
+docs/generate_pivot_brief.py
+docs/generate_pivot_plan.py
+docs/generate_contributor_brief.py

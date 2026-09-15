@@ -664,3 +664,67 @@ that explains *why* the next node ran was the one thing the trace did not keep.
 node that returned a plain update), and it survives the save/reload round trip.
 This is the column #88 suggested and deliberately deferred for having no
 consumer; #110 is the consumer.
+
+---
+
+## A `Command` handoff graded clean on the ingest path (#111)
+
+The recorder-path sibling of #88/#110, and the worst of the three: this one
+went out **clean**, with no overlapping anomaly carrying it.
+
+LangSmith exports a `Command` return as its **repr**, not as data:
+
+```json
+{"name": "supervise", "outputs": {"output": "Command(goto='write')"}}
+```
+
+Read as the node's update, that is a field the graph never wrote. It looks
+non-empty, so `empty_output` cannot fire; `contextual._wrote()` goes true for a
+key that is not in the state schema and false for everything the node really
+wrote, so a declared consumer blames the wrong node; and `argus show`, the
+ledger and the UI all display a field the pipeline never had.
+
+**Why it cannot simply be parsed back.** `Command`'s repr **omits `update` when
+it is falsy**:
+
+```
+Command(goto='w', update={})  ->  "Command(goto='w')"   ← the silent no-op
+Command(goto='w')             ->  "Command(goto='w')"   ← legitimate routing
+```
+
+Byte-identical. The one distinction #88 and #110 established as load-bearing is
+destroyed by the serialisation, and reconstructing the update from the merged
+state is the skinny-trace reading the pivot rejects. ARGUS genuinely cannot
+know whether that node was fine.
+
+**So it says so.** `_command_repr` recognises the shape — a lone `output` key
+whose string value starts with `Command(`, which keeps a node whose state
+really has an `output` field out of it — and the step is recorded with **no**
+update plus a critical `unreadable_update` signal. Critical, not a warning, on
+the rule that makes the whole product work: *"I could not read this node's
+update" and "this node ran fine" must not be the same verdict.* That is S-6's
+line (`an incomplete recording is not a pass`) scoped to one step instead of a
+whole trace. Only the unreadable step is affected; the rest of the trace grades
+normally.
+
+**Consequence to expect:** any trace containing a `Command` handoff now fails
+`argus check` until LangSmith exports the update structurally. That is the
+intended reading — those runs were previously passing without being graded.
+
+Wired through with it:
+
+- `docs/STATUS.md` claimed `semantic_fail` was "only possible when
+  `semantic_judge=True` and a provider key is configured". That has been wrong
+  since critical anomaly signals started setting it, and `argus ingest` never
+  runs the judge at all — so a user ingesting a Command trace saw a status the
+  vocabulary said required a judge they had not enabled. Corrected, along with
+  the warning/critical rules and the failure-type list.
+- `website/lib/types.ts` `NodeEvent` gained `goto` (from #110) and `tool_calls`
+  (missing since #86 — the interface documents itself as a mirror). `Finding.type`
+  is a free string there, so the new type needs no UI enumeration change.
+  Typecheck is unchanged at 8 pre-existing errors, all from an uninstalled
+  `@supabase/supabase-js`.
+
+Fixture: `scripts/make_langsmith_fixture.py --command`. Break proofs: not
+detecting the repr fails 2, downgrading the signal to a warning fails exactly
+the gate test, still recording the phantom field fails exactly the ledger test.

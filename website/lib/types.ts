@@ -134,6 +134,10 @@ export interface NodeEvent {
   behavior_type?: BehaviorType | null
   anomaly_signals?: AnomalySignal[]
   semantic_check?: SemanticCheckResult | null
+  /** Tool I/O recorded for this step: {name, input, output, error}. */
+  tool_calls?: Record<string, unknown>[]
+  /** Where the node routed itself with a `Command` handoff; empty otherwise. */
+  goto?: string[]
 }
 
 export interface PropagationLink {
