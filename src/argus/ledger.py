@@ -75,6 +75,8 @@ class LedgerRow:
     update: dict[str, Any] | None
     state_after: dict[str, Any]
     tools: list[dict[str, Any]] = field(default_factory=list)
+    # Where the node routed itself with a `Command` handoff; empty otherwise (#110).
+    goto: list[str] = field(default_factory=list)
     error: str | None = None
     # The event's own status (docs/STATUS.md). Carried so a consumer can tell a
     # retried attempt from a clean one; without it every non-update row looks
@@ -161,6 +163,7 @@ def build_ledger(
                 update=dict(update) if update is not None else None,
                 state_after=dict(running),
                 tools=list(getattr(event, "tool_calls", ()) or ()),
+                goto=list(getattr(event, "goto", ()) or ()),
                 error=event.exception,
                 status=event.status,
             )

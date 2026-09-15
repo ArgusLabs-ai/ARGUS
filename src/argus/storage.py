@@ -651,5 +651,6 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
         semantic_check=semantic_check,
         total_iterations=data.get("total_iterations"),
         tool_calls=data.get("tool_calls", []),
+        goto=data.get("goto", []),
         llm_usage=llm_usage,
     )

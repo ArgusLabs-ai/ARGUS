@@ -251,6 +251,11 @@ class NodeEvent:
     # Tool I/O recorded for this step: {name, input, output, error}. Set by
     # ArgusRecorder from LangGraph's tool callbacks; the ledger's tool column.
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Where the node routed itself, when it handed off with a `Command` (#110).
+    # The route actually taken, not the branches it could have taken — a
+    # dynamic `goto` is invisible to `get_graph`, so this is the only record
+    # of why the next node ran. Empty for a node that returned a plain update.
+    goto: list[str] = field(default_factory=list)
 
 
 # ── Replay comparison dataclasses ─────────────────────────────────────────────

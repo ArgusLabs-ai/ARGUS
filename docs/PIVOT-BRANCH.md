@@ -656,3 +656,11 @@ Eleven tests in `tests/test_shipped_shapes_matrix.py` section 6 now (#88 + #110)
 Each mechanism verified to fail when reverted: dropping the observed route fails
 4, dropping the known-nodes filter fails exactly the `goto=END` terminal guard,
 filtering on `names` alone fails exactly the subgraph-handoff test.
+
+**The route is now a ledger column.** `_observe_route` consumes the `goto` to
+repair the edge map, but the notebook had no place for it — so the one thing
+that explains *why* the next node ran was the one thing the trace did not keep.
+`NodeEvent.goto` / `LedgerRow.goto` hold the route actually taken (empty for a
+node that returned a plain update), and it survives the save/reload round trip.
+This is the column #88 suggested and deliberately deferred for having no
+consumer; #110 is the consumer.

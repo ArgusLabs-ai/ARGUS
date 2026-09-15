@@ -550,7 +550,8 @@ class ArgusRecorder(BaseCallbackHandler):
 
             # Before the step is graded, not after: `empty_output` reads the
             # edge map inside `on_node_end` (#110).
-            self._observe_route(session, node, _command_goto(outputs))
+            goto = _command_goto(outputs)
+            self._observe_route(session, node, goto)
 
             # Tools go in with the step, not onto the event afterwards: the
             # graders run inside on_node_end, so tools attached later were
@@ -563,6 +564,7 @@ class ArgusRecorder(BaseCallbackHandler):
                 exc=exc if isinstance(exc, Exception) else None,
                 llm_usage=usage_from_calls(llm_calls),
                 tool_calls=tools,
+                goto=goto,
             )
         return True
 

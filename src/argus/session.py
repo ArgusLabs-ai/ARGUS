@@ -786,6 +786,7 @@ class ArgusSession:
         is_interrupt: bool = False,
         llm_usage: LLMUsage | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
+        goto: list[str] | None = None,
     ) -> None:
         with self._lock:
             step_idx = self._step_index
@@ -985,6 +986,7 @@ class ArgusSession:
                 semantic_check=semantic_check_result,
                 disambiguation_results=disambiguation_results,
                 tool_calls=list(tool_calls or []),
+                goto=list(goto or []),
             )
 
             self._events.append(event)

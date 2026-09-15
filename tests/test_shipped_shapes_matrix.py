@@ -951,3 +951,35 @@ def test_the_destination_annotation_does_not_change_the_verdict():
 
     assert verdicts[True] == verdicts[False], verdicts
     assert verdicts[False] == (False, ("supervise",), ["supervise"]), verdicts
+
+
+def test_the_route_a_command_took_reaches_the_ledger():
+    """#110's other half: the routing decision is recorded, not just consumed.
+
+    `_observe_route` uses the `goto` to repair the edge map, but the notebook
+    had no column for it — so the one thing that explains *why* the next node
+    ran was the one thing the trace did not keep. It has to survive the save /
+    reload round trip like any other column, or `argus show` and the UI read a
+    route that only ever existed in memory.
+    """
+
+    def supervise(state: _HandoffState) -> Command:
+        return Command(goto="write", update={"plan": "outline"})
+
+    _, _, rows = _run(_handoff_graph(supervise), {})
+    assert rows["supervise"].goto == ["write"], rows["supervise"]
+    assert rows["write"].goto == [], rows["write"]
+
+
+def test_a_reloaded_step_keeps_the_route_it_took():
+    """The round trip, separately: `asdict` writes it, `load_run` must read it."""
+
+    def supervise(state: _HandoffState) -> Command:
+        return Command(goto="write", update={"plan": "outline"})
+
+    recorder = ArgusRecorder(semantic_judge=False)
+    recorder.attach(_handoff_graph(supervise)).invoke({})
+    reloaded = load_run(recorder.session.run_id)
+
+    step = next(s for s in reloaded.steps if s.node_name == "supervise")
+    assert step.goto == ["write"], step
