@@ -520,6 +520,23 @@ PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k crash
 **Must not:** change crash-blame rules; parse tracebacks inside `ingest/`
 beyond passing the string through.
 
+**Done (2026-09-15).** The recorded `error` on `price` contains
+`KeyError: 'number'` (full traceback text, then LangGraph's "During task with
+name 'price'" line), so S-3's pass-through was enough and no bug was logged.
+Two additions beyond the spec: (1) a bystander `audit` node sits between
+`lookup` and `price`. With only two nodes the fallback walk also lands on
+`lookup`, so the test could not tell nested-container blame from luck.
+(2) Traceback paths in `error` are rewritten to `<site-packages>` / `<repo>`,
+because the raw text carried this machine's home directory. Learned: `lookup`
+is also flagged by BA-006 (empty output), which alone makes it
+`first_failure_step`. The first break proof (ingest drops the error string)
+survived an assertion on `first_failure_step` only; the test now also requires
+the `missing_field` finding naming `number` and `price`. Break proofs:
+`exc = None` in ingest fails it; `nested = None` in `crash_origins` fails it
+(blame moves to `audit`). Each fails only this test. Full suite 1047 passed,
+6 skipped (environment: no API key, no `--argus`, no cloud pricing). No change
+to `inspector.py` or `ingest/`.
+
 ### S-12 — A reloaded step keeps its `llm_usage` (BUG-2)
 
 **PR:** one.
