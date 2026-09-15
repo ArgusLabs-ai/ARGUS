@@ -704,6 +704,12 @@ def test_attach_still_hands_back_the_graph_api():
 # consumer map blamed whoever came next. The run graded clean either way.
 
 
+class _SupervisorState(TypedDict, total=False):
+    todo: list
+    done: list
+    report: str
+
+
 class _HandoffState(TypedDict, total=False):
     plan: str
     reply: str
@@ -824,3 +830,124 @@ def test_odd_but_legal_command_shapes_never_take_the_graph_down():
     for label, (supervise, expected) in cases.items():
         _, _, rows = _run(_handoff_graph(supervise), {})
         assert rows["supervise"].update == expected, f"{label}: {rows['supervise'].update}"
+
+
+def test_an_unannotated_handoff_still_fires_empty_output():
+    """#110: the destination annotation is optional, so ARGUS cannot rely on it.
+
+    Without `-> Command[Literal["write"]]` LangGraph draws `supervise -> __end__`
+    and the node looks terminal, which exempts it from `empty_output`. The
+    route the graph actually took is in the `Command` itself, so the recorder
+    learns the edge at runtime instead of trusting a topology that cannot see
+    a dynamic `goto`.
+    """
+
+    def supervise(state: _HandoffState) -> Command:
+        _ = "planned, then dropped"
+        return Command(goto="write", update={})
+
+    verdict, record, _ = _run(_handoff_graph(supervise), {})
+    assert not verdict.passed, verdict
+    empty = [f for f in record.findings if f.type == "empty_output"]
+    assert [f.node for f in empty] == ["supervise"], record.findings
+
+
+def test_a_command_routing_to_end_stays_terminal():
+    """The false-positive guard: `goto=END` is not a successor.
+
+    A last node returning an empty update is exempt by design — nothing is
+    waiting on it. Treating every `goto` as an edge, sentinels included, would
+    invent a successor and fail terminal nodes everywhere.
+    """
+
+    def supervise(state: _HandoffState) -> Command:
+        return Command(goto=END, update={})
+
+    _, record, _ = _run(_handoff_graph(supervise), {})
+    assert [f for f in record.findings if f.type == "empty_output"] == [], record.findings
+
+
+def test_an_observed_goto_does_not_invent_nodes():
+    """A `Send` fan-out names a real node; nothing else may enter the edge map."""
+
+    def supervise(state: _HandoffState) -> Command:
+        return Command(goto=[Send("write", {"plan": "outline"})], update={})
+
+    _, record, _ = _run(_handoff_graph(supervise), {})
+    assert set(record.graph_edge_map.get("supervise", [])) <= {"write"}, record.graph_edge_map
+    empty = [f for f in record.findings if f.type == "empty_output"]
+    assert [f.node for f in empty] == ["supervise"], record.findings
+
+
+def test_a_handoff_into_a_subgraph_is_observed_too():
+    """A subgraph destination is a node the outer graph has, but not in `names`.
+
+    `_topology` returns subgraph *parents* separately from node names (their
+    rows are deliberately not recorded), so a known-nodes filter built from
+    `names` alone silently drops `supervise -> docs` and hands #110 straight
+    back for every graph that hands off into a subgraph.
+    """
+    inner = StateGraph(_HandoffState)
+    inner.add_node("ocr", lambda state: {"reply": "read"})
+    inner.add_edge(START, "ocr")
+    inner.add_edge("ocr", END)
+
+    def supervise(state: _HandoffState) -> Command:
+        _ = "planned, then dropped"
+        return Command(goto="docs", update={})
+
+    outer = StateGraph(_HandoffState)
+    outer.add_node("supervise", supervise)
+    outer.add_node("docs", inner.compile())
+    outer.add_edge(START, "supervise")
+    outer.add_edge("docs", END)
+
+    _, record, _ = _run(outer.compile(), {})
+    assert record.graph_edge_map.get("supervise") == ["docs"], record.graph_edge_map
+    empty = [f for f in record.findings if f.type == "empty_output"]
+    assert [f.node for f in empty] == ["supervise"], record.findings
+
+
+def test_the_destination_annotation_does_not_change_the_verdict():
+    """The whole contract of #110, stated once: annotating is a typing choice.
+
+    A supervisor loop built on `Command` handoffs grades the same whether or
+    not the author wrote `-> Command[Literal[...]]`. Before the observed route,
+    the un-annotated graph had no edges at all, every node looked terminal, and
+    the run went out clean while the annotated twin failed.
+
+    Both fail here, on `supervise`, because `Command(goto=..., update={})`
+    claims an empty update and a router is still a node — deliberate, and
+    unchanged by this fix. Write `Command(goto=...)` to claim no update.
+    """
+
+    def _loop(annotate):
+        def supervise(state: _SupervisorState):
+            todo = state.get("todo") or []
+            if todo:
+                return Command(goto="worker", update={"todo": todo[1:]})
+            return Command(goto="report", update={})
+
+        def worker(state: _SupervisorState):
+            return Command(goto="supervise", update={"done": (state.get("done") or []) + ["w"]})
+
+        if annotate:
+            supervise.__annotations__["return"] = Command[Literal["worker", "report"]]
+            worker.__annotations__["return"] = Command[Literal["supervise"]]
+
+        graph = StateGraph(_SupervisorState)
+        graph.add_node("supervise", supervise)
+        graph.add_node("worker", worker)
+        graph.add_node("report", lambda s: {"report": f"done {len(s.get('done') or [])}"})
+        graph.add_edge(START, "supervise")
+        graph.add_edge("report", END)
+        return graph.compile()
+
+    verdicts = {}
+    for annotate in (True, False):
+        verdict, record, _ = _run(_loop(annotate), {"todo": [1, 2]})
+        blamed = [f.node for f in record.findings if f.type == "empty_output"]
+        verdicts[annotate] = (verdict.passed, verdict.failing_nodes, blamed)
+
+    assert verdicts[True] == verdicts[False], verdicts
+    assert verdicts[False] == (False, ("supervise",), ["supervise"]), verdicts

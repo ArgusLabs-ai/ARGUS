@@ -601,3 +601,58 @@ as a routing column. No rule consumes it today, and it needs a model + storage
 round trip, so it is not in this change. Worth doing when something reads it —
 the obvious candidate is checking a `Command` route against the declared edge
 map, since a dynamic `goto` is invisible to `get_graph`.
+
+---
+
+## A dynamic `goto` was invisible, so `empty_output` stopped firing (#110)
+
+Follow-up to #88, and the reason the `goto` column it suggested was worth
+building after all.
+
+The destination annotation is **optional** in LangGraph. Without it,
+`get_graph` cannot see where a `Command` routes:
+
+```python
+def supervise(state) -> Command:                    # no annotation
+    return Command(goto="write", update={})
+# edges: [('__start__','supervise'), ('supervise','__end__')]   ← supervise -> write missing
+```
+
+`empty_output` is gated on `has_successors`, which comes from that map, so the
+node looked terminal and the rule did not fire — on exactly the handoff shape
+#88 was about. The annotated twin failed correctly. **Same graph, same
+behaviour at runtime, different verdict**, decided by a typing choice.
+
+**Fix.** `_command_goto` reads the route off the `Command`, and
+`_observe_route` merges it into the edge map *before* the step is graded —
+`empty_output` reads the map inside `on_node_end`, so after would be too late.
+Two things it deliberately does not do:
+
+- **Invent nodes.** Only destinations the graph declares are added. `__end__` is
+  not one, so `goto=END` adds no successor and a terminal node stays exempt.
+  That is the single filter — an earlier version also stripped sentinels inside
+  `_command_goto`, which no test could fail independently because the
+  known-nodes filter already covered it. One guard, in the place that has the
+  node list.
+- **Filter on `names` alone.** `_topology` returns subgraph *parents* separately
+  (their rows are not recorded), so a filter built from `names` silently drops
+  `supervise -> docs` and hands #110 straight back for any graph handing off
+  into a subgraph. The known set is `names | subgraphs`.
+
+An observed route is one branch, not all of them — an untaken branch stays
+unknown. That is the same bargain `ingest/langsmith._step_order_edges` already
+makes when a trace carries no graph, and "reaches something" beats "terminal".
+
+**Behaviour change worth knowing.** Un-annotated supervisors that were passing
+will now fail if they hand off with `Command(goto=..., update={})`, because
+that claims an *empty* update and a router is still a node (the gap-1 rule
+above). This is not new policy — the **annotated** form has always failed that
+way; #110 only makes the un-annotated form agree. Write `Command(goto=...)`
+with no `update` to claim no update. `test_the_destination_annotation_does_not_
+change_the_verdict` runs the same supervisor loop both ways and asserts the
+verdicts are identical.
+
+Eleven tests in `tests/test_shipped_shapes_matrix.py` section 6 now (#88 + #110).
+Each mechanism verified to fail when reverted: dropping the observed route fails
+4, dropping the known-nodes filter fails exactly the `goto=END` terminal guard,
+filtering on `names` alone fails exactly the subgraph-handoff test.

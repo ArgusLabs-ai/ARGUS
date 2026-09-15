@@ -95,6 +95,31 @@ def _node_update(outputs: Any) -> Any:
         return update
 
 
+def _command_goto(outputs: Any) -> list[str]:
+    """Node names a ``Command`` actually routed to — the edge `get_graph` misses (#110).
+
+    The destination annotation (``-> Command[Literal["write"]]``) is optional in
+    LangGraph, and without it the graph reports the node as going straight to
+    ``__end__``. A node that looks terminal is exempt from ``empty_output``, so
+    the rule stopped firing on exactly the handoff shape #88 was about. The
+    route taken is right there on the ``Command``, so it is observed rather
+    than inferred.
+
+    ``Send`` carries its target on ``.node``. Sentinels are not filtered here —
+    ``_observe_route`` keeps only nodes the graph declares, and ``__end__`` is
+    not one, so ``goto=END`` adds no successor and a terminal node stays exempt
+    from ``empty_output``. One filter, in the place that has the node list.
+    """
+    if Command is None or not isinstance(outputs, Command):
+        return []
+    goto = outputs.goto
+    if goto is None:
+        return []
+    targets = goto if isinstance(goto, (list, tuple)) else [goto]
+    names = [getattr(target, "node", target) for target in targets]
+    return [name for name in names if isinstance(name, str)]
+
+
 def _reducer_fields(app: Any) -> dict[str, Any]:
     """Reducers declared on the state schema, e.g. ``Annotated[list, operator.add]``.
 
@@ -523,6 +548,10 @@ class ArgusRecorder(BaseCallbackHandler):
             update = _node_update(outputs)
             output_snap = session.capture_output(update) if isinstance(update, dict) else None
 
+            # Before the step is graded, not after: `empty_output` reads the
+            # edge map inside `on_node_end` (#110).
+            self._observe_route(session, node, _command_goto(outputs))
+
             # Tools go in with the step, not onto the event afterwards: the
             # graders run inside on_node_end, so tools attached later were
             # recorded and never read (#86).
@@ -536,6 +565,30 @@ class ArgusRecorder(BaseCallbackHandler):
                 tool_calls=tools,
             )
         return True
+
+    def _observe_route(self, session: ArgusSession, node: str, targets: list[str]) -> None:
+        """Merge a route the graph actually took into the edge map (#110).
+
+        Only nodes this graph declares are added, so a ``goto`` can extend the
+        topology but never invent it. Subgraph *parents* count: ``_topology``
+        returns them apart from ``names`` because their rows are not recorded,
+        but they are real destinations, and filtering on ``names`` alone drops
+        ``supervise -> docs`` and hands #110 back for every graph that hands off
+        into a subgraph.
+
+        One observed route is not the full set of branches — an untaken one
+        stays unknown — but "reaches something" beats "terminal", and it is the
+        same bargain the trace-file path already makes when it guesses edges
+        from step order.
+        """
+        known = set(self._topology[0]) | self._subgraphs
+        edge_map = session.graph_edge_map or {}
+        fresh = [t for t in targets if t in known and t not in edge_map.get(node, [])]
+        if not fresh:
+            return
+        merged = {source: list(dests) for source, dests in edge_map.items()}
+        merged[node] = merged.get(node, []) + fresh
+        session.set_edges(merged)
 
     # ── tool callbacks ──────────────────────────────────────────────────────
 
