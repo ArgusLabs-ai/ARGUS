@@ -91,6 +91,7 @@ JSON, so it was not visible there.
 `load_run(...).total_tokens` with `total_tokens` in the saved JSON file.
 **Spec change:** S-8 reads the three run totals back (its acceptance cannot be
 observed without them). The per-step `llm_usage` reload is S-12.
+**Fixed:** run totals in S-8; per-step `llm_usage` in S-12.
 
 ## Options considered
 
@@ -519,7 +520,7 @@ PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k crash
 **Must not:** change crash-blame rules; parse tracebacks inside `ingest/`
 beyond passing the string through.
 
-### S-12 — A reloaded step keeps its `llm_usage` (BUG-2; queued next)
+### S-12 — A reloaded step keeps its `llm_usage` (BUG-2)
 
 **PR:** one.
 **Depends on:** S-8.
@@ -538,6 +539,14 @@ its `llm_usage.total_tokens` SHALL be 40.
 PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k llm
 ```
 **Must not:** change what is saved; touch `cmd_open_ui.py`.
+
+**Done (2026-09-15).** Built as specified: `_deserialize_event` rebuilds
+`LLMUsage` with `LLMCallInfo` calls and passes it to `NodeEvent`; a step
+saved without `llm_usage` still loads as `None`. The test is a new one,
+`test_a_reloaded_step_keeps_its_llm_calls`, not an extra assertion on the S-8
+test, so a break shows up as its own failure. Proof by breaking: not passing
+`llm_usage` to `NodeEvent`, or keeping calls as raw dicts, each fail only
+that test; restored, 1051 pass.
 
 ## After this milestone (not now)
 
