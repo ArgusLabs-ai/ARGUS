@@ -1,7 +1,7 @@
 # Pivot branch — contributor update
 
 Branch: **`pivot/fat-traces`**  
-Last updated: 12 Sep 2026 (second update: silent-failure stress matrix + six detection fixes).
+Last updated: 15 Sep 2026 (third update: `argus ingest langsmith` — grade a trace file with no app).
 
 Same product: silent failures, origin blame, CI gate (`argus check`).  
 Different capture: fat traces → ledger (notebook) → rules → judge last. No wrapping the graph engine.
@@ -510,3 +510,52 @@ the subgraph — inner steps read the outer notebook, so an inner node reading a
 sibling's inner-only key is not modelled. It costs nothing today (the row's own
 `input_state` is what the node really saw) and would need scoped running state
 to do properly.
+
+---
+
+## File ingest — grade a LangSmith export with no app (S-4 … S-12)
+
+The recorder needs your process. This path needs nothing but the trace: point
+`argus` at a LangSmith JSONL export and get the same verdict. Same inspector,
+same ledger, same `argus check`. `src/argus/ingest/langsmith.py` imports
+nothing from `langgraph` or `langchain_core` — a test pins that.
+
+```bash
+argus ingest langsmith trace.jsonl \
+  --edges edges.json \          # real topology; without it, guessed from step order
+  --consumers consumers.json    # {"field": ["reader", ...]} — who reads what, later
+argus check last                # exit 1 when the run was not clean
+```
+
+| Step | What it added | Why it matters |
+|---|---|---|
+| S-4 | Tool child runs land on the step's ledger row | A tool that 500s and gets swallowed is graded from a file, same as live |
+| S-5 | `argus edges` exports topology; `--edges` consumes it | A trace holds no graph. Without this, successors are guessed from step order and a fan-out reads as a chain |
+| S-6 | A skinny trace **refuses** instead of passing | `hide_outputs=True` makes every run look like `{}`. Grading that reports every node as a silent no-op. Refusing (exit 2, nothing saved) beats a confident wrong verdict |
+| S-7 | `--consumers` wires the contextual layer | Blames the node that **dropped** a field, not the node where the gap surfaces. Without the map the drop is invisible — a test pins exactly that |
+| S-8 | Model runs become `llm_usage`; `finish_reason` recorded | Token totals per run, and a `truncated_llm_output` **warning** when a call stopped at its limit. Warning, never critical: a cut-off answer may still be usable |
+| S-10 | `langgraph>=0.6` floor; CI matrix over the floor and 1.x | The recorder path needs 0.6+; on 0.2.74, 56 pivot tests fail before it runs. Five CI legs (3.9 excluded from 1.x, which needs 3.10+) |
+| S-11 | Crash fixture: a raised node keeps crash blame from a file | `lookup` writes `{"policy": {}}`, `price` reads `state["policy"]["number"]`. Blame stays on `lookup`, not the crash site and not the bystander in between |
+| S-12 | A reloaded step keeps its `llm_usage` (BUG-2) | `_deserialize_event` never read it back, so every reloaded run showed 0 tokens. S-8 fixed the run totals; this fixed the per-step calls |
+
+**One defect the merge itself found.** S-6's guard refuses a trace whose root
+run has no `outputs`. A graph that **raised** has no final state to export, so
+its root outputs are `{}` — and S-11's crash fixture was refused instead of
+graded. Each PR was green alone; together they dropped the run ARGUS most wants
+to grade. The guard now exempts a root carrying an `error` (the no-inputs check
+still runs for it), pinned by
+`test_a_crashed_root_is_not_read_as_a_hidden_outputs_export`. Worth
+generalising: **a refusal rule written against one shape of missing data will
+eventually refuse a real failure.** Ask what else produces the absence.
+
+Fixtures are generated, not hand-written, and carry no host details:
+`scripts/make_langsmith_fixture.py [--tool|--drop|--llm|--crash]` traces a real
+graph under LangChain's own tracer with a stub client, strips `extra.runtime`,
+and rewrites traceback paths to `<site-packages>` / `<repo>`. Regenerate rather
+than edit the JSONL by hand.
+
+**PRs on hold, on purpose:** #71 (UI redesign), #76 (batch coverage in the
+pytest plugin) and #84 (ledger reducer `state_after`) target the **wrap** path
+and are not being merged into this branch. They are not stale — they are the
+old architecture. Do not rebase them onto `pivot/fat-traces` without a ticket
+that says to.
