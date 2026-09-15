@@ -12,6 +12,8 @@ end-of-run update carries no `outputs` at all (docs/prd_abhishek.md, BUG-1).
     PYTHONPATH=src python scripts/make_langsmith_fixture.py --tool
     PYTHONPATH=src python scripts/make_langsmith_fixture.py --drop
 
+    PYTHONPATH=src python scripts/make_langsmith_fixture.py --crash
+
 ``--tool`` traces a second graph instead: its `fetch` node calls a tool that
 returns an HTTP 500 body, swallows it and returns a normal-looking update.
 
@@ -22,6 +24,9 @@ nulls it, and `respond` reads it two steps later. Grade it with
 ``--llm`` traces a graph whose two nodes each call a scripted chat model (no
 provider, no key): `outline` finishes normally on 20 tokens, `write` is cut
 off at its token limit (`finish_reason: "length"`) on 40.
+
+``--crash`` traces a graph that raises: `lookup` writes `{"policy": {}}`,
+`audit` runs in between and `price` reads `state["policy"]["number"]`.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import sysconfig
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -44,6 +50,8 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "demo" / "fat_trace"))
 
 from demo_graph import build_app  # noqa: E402
+
+SITE_PACKAGES = str(Path(sysconfig.get_paths()["purelib"]))
 
 FIELDS = (
     "id",
@@ -201,12 +209,42 @@ def build_llm_app():
     return graph.compile()
 
 
+class CrashState(TypedDict, total=False):
+    query: str
+    policy: dict
+    notes: str
+    price: float
+
+
+def build_crash_app():
+    def lookup(state: CrashState) -> dict:
+        return {"policy": {}}  # ← cache miss: the container is written empty
+
+    def audit(state: CrashState) -> dict:
+        # A bystander: runs last before the crash and writes a new field.
+        return {"notes": "audited"}
+
+    def price(state: CrashState) -> dict:
+        return {"price": state["policy"]["number"] * 1.0}
+
+    graph = StateGraph(CrashState)
+    graph.add_node("lookup", lookup)
+    graph.add_node("audit", audit)
+    graph.add_node("price", price)
+    graph.add_edge(START, "lookup")
+    graph.add_edge("lookup", "audit")
+    graph.add_edge("audit", "price")
+    graph.add_edge("price", END)
+    return graph.compile()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     which = parser.add_mutually_exclusive_group()
     which.add_argument("--tool", action="store_true", help="trace the tool graph instead")
     which.add_argument("--drop", action="store_true", help="trace the drop graph instead")
     which.add_argument("--llm", action="store_true", help="trace the LLM graph instead")
+    which.add_argument("--crash", action="store_true", help="trace the crash graph instead")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
     if args.tool:
@@ -215,13 +253,19 @@ def main() -> None:
         name, app = "drop_graph.jsonl", build_drop_app()
     elif args.llm:
         name, app = "llm_graph.jsonl", build_llm_app()
+    elif args.crash:
+        name, app = "crash_graph.jsonl", build_crash_app()
     else:
         name, app = "demo_graph.jsonl", build_app()
     out = Path(args.out or REPO / "tests" / "fixtures" / "langsmith" / name)
 
     client = StubClient()
     tracer = LangChainTracer(client=client, project_name="argus-fixture")
-    app.invoke({"query": "how do agents fail silently?"}, config={"callbacks": [tracer]})
+    try:
+        app.invoke({"query": "how do agents fail silently?"}, config={"callbacks": [tracer]})
+    except KeyError:
+        if not args.crash:
+            raise  # only the crash graph is meant to raise
     tracer.wait_for_futures()
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -230,6 +274,10 @@ def main() -> None:
             # The host's runtime details (OS, library versions) are not trace
             # content and have no place in a committed fixture.
             (row.get("extra") or {}).pop("runtime", None)
+            if row.get("error"):
+                # Tracebacks name this machine's paths; keep the text, not the host.
+                for prefix, label in ((SITE_PACKAGES, "<site-packages>"), (str(REPO), "<repo>")):
+                    row["error"] = row["error"].replace(prefix, label)
             fh.write(json.dumps(row, default=str, sort_keys=True) + "\n")
     print(f"wrote {len(client.runs)} runs to {out}")
 
