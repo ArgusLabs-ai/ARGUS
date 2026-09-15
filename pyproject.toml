@@ -22,7 +22,7 @@ classifiers = [
 dependencies = [
     "typer>=0.12.0",
     "rich>=13.0.0",
-    "langgraph>=0.2.0",
+    "langgraph>=0.6",
     # The fat-trace recorder rides langchain's callback stream directly, so it is
     # a declared dependency rather than something we borrow from langgraph.
     "langchain-core>=0.3.0",
@@ -36,7 +36,7 @@ cli = [
     "rich>=13.0.0",
 ]
 langgraph = [
-    "langgraph>=0.2.0",
+    "langgraph>=0.6",
 ]
 # Empty: LLM features use stdlib HTTP + `argus key set`. Kept so older
 # `pip install argus-agents[llm]` / `[all]` commands still resolve.
