@@ -78,6 +78,20 @@ by a PATCH without `outputs` (null or `{}`). Both are handled by the rule
 above. One real export of the demo graph closes this (needs Abhishek's
 LangSmith account; not a step).
 
+### BUG-2 — a reloaded run lost its token counts (found during S-8, 2026-09-15)
+
+**Seen:** a run ingested from `llm_graph.jsonl` is saved with
+`total_tokens: 60`, `total_llm_calls: 2` and each step's `llm_usage`, but
+`load_run` returned `total_tokens == 0`. `storage._deserialize_run` never read
+`total_llm_calls`, `total_tokens` or `total_cost_usd`, and
+`storage._deserialize_event` never reads a step's `llm_usage`. Pre-existing:
+every saved run on every path reloads with zero tokens. The UI reads the raw
+JSON, so it was not visible there.
+**Reproduce:** ingest `tests/fixtures/langsmith/llm_graph.jsonl`, then compare
+`load_run(...).total_tokens` with `total_tokens` in the saved JSON file.
+**Spec change:** S-8 reads the three run totals back (its acceptance cannot be
+observed without them). The per-step `llm_usage` reload is S-12.
+
 ## Options considered
 
 | | Option | Verdict |
@@ -434,6 +448,25 @@ PYTHONPATH=src pytest tests/test_recorder.py tests/test_ingest_langsmith.py -q -
 ```
 **Must not:** make truncation critical (warning only); call a real model.
 
+**Done 2026-09-15 (branch `s8-llm-rows`).** Learned: the model half already
+existed. `NodeEvent.llm_usage` holds a list of `LLMCallInfo`, `on_node_end`
+takes `llm_usage=`, and the session already sums `total_tokens`; a second
+`llm_calls` field would have been a duplicate, so `LLMCallInfo` gained
+`finish_reason` instead. The tracer exports an `llm` run as an `LLMResult` dict
+with each chat message serialized (`{"lc": 1, "kwargs": ...}`); the recorder
+rebuilds that shape with `dumpd`, so one parser,
+`llm_tracker.call_from_llm_outputs`, reads both paths. The warning is added in
+`session.on_node_end`, the one place both paths meet, so `session.py` and
+`llm_tracker.py` joined the file list. A model call inside `prompt | llm` has
+a chain as its parent, not the node step, so the recorder walks parents to
+find the step. `storage.py` too: the run totals were dropped on load (BUG-2).
+Fixture: `make_langsmith_fixture.py --llm` → `llm_graph.jsonl`, a scripted
+chat model with no provider; `outline` 20 tokens `stop`, `write` 40 tokens
+`length`. A truncated run still passes `argus check`. Proof by breaking: no
+parent walk fails only the recorder test; ingest not passing `llm_usage` fails
+only the ingest test; no truncation signal, totals not loaded, or severity
+`critical` each fail both; restored, 1050 pass.
+
 ### S-9 — Retired (shipped upstream)
 
 Was: an `ignored_tool_error` rule. Upstream `9eea6c9` added
@@ -485,6 +518,26 @@ PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k crash
 ```
 **Must not:** change crash-blame rules; parse tracebacks inside `ingest/`
 beyond passing the string through.
+
+### S-12 — A reloaded step keeps its `llm_usage` (BUG-2; queued next)
+
+**PR:** one.
+**Depends on:** S-8.
+**Files:** `src/argus/storage.py`, `tests/test_ingest_langsmith.py`.
+**Today:** `storage._deserialize_event` never reads `llm_usage`, so a step
+loaded with `load_run` has `llm_usage is None` even though the saved JSON
+carries its calls, tokens and `finish_reason`.
+**Change:** in `_deserialize_event`, rebuild `LLMUsage` from
+`data.get("llm_usage")`, with each call as `LLMCallInfo(**call)`; `None` stays
+`None`. Older records whose calls lack `finish_reason` load with `None`.
+**Acceptance:** WHEN `llm_graph.jsonl` is ingested and the run reloaded THEN
+the `write` step's `llm_usage.calls[0].finish_reason` SHALL be `"length"` and
+its `llm_usage.total_tokens` SHALL be 40.
+**Verify:**
+```
+PYTHONPATH=src pytest tests/test_ingest_langsmith.py -q -k llm
+```
+**Must not:** change what is saved; touch `cmd_open_ui.py`.
 
 ## After this milestone (not now)
 
