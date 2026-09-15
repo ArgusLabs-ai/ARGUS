@@ -19,6 +19,10 @@ from argus.storage import list_runs, load_run
 pytest.importorskip("langchain_core")
 pytest.importorskip("langgraph")
 
+from langchain_core.language_models import BaseChatModel  # noqa: E402
+from langchain_core.messages import AIMessage  # noqa: E402
+from langchain_core.outputs import ChatGeneration, ChatResult  # noqa: E402
+from langchain_core.runnables import RunnableConfig, RunnableLambda  # noqa: E402
 from langgraph.graph import END, START, StateGraph  # noqa: E402
 
 
@@ -398,3 +402,65 @@ def test_a_node_with_no_enclosing_run_refuses_rather_than_vanishing():
             parent_run_id=None,
             metadata={"langgraph_node": "n1"},
         )
+
+
+class _Scripted(BaseChatModel):
+    """A chat model with fixed text, usage and finish reason: no provider, no key."""
+
+    text: str
+    output_tokens: int
+    finish_reason: str
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        message = AIMessage(
+            content=self.text,
+            usage_metadata={
+                "input_tokens": 10,
+                "output_tokens": self.output_tokens,
+                "total_tokens": 10 + self.output_tokens,
+            },
+            response_metadata={"model_name": "scripted", "finish_reason": self.finish_reason},
+        )
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+
+class _L(TypedDict, total=False):
+    query: str
+    notes: str
+    reply: str
+
+
+@pytest.mark.integration
+def test_llm_calls_are_counted_and_a_truncated_one_warns(monkeypatch):
+    """Usage comes off on_llm_end: neither node's update carries any."""
+    _no_patching(monkeypatch)
+    short = _Scripted(text="three points", output_tokens=10, finish_reason="stop")
+    cut = _Scripted(text="The first point is", output_tokens=30, finish_reason="length")
+
+    def outline(state: _L, config: RunnableConfig) -> dict:
+        return {"notes": short.invoke(state["query"], config=config).content}
+
+    def write(state: _L, config: RunnableConfig) -> dict:
+        # Inside a chain, so the call's parent is not the node step itself.
+        chain = RunnableLambda(lambda text: text) | cut
+        return {"reply": chain.invoke(state["notes"], config=config).content}
+
+    g = StateGraph(_L)
+    g.add_node("outline", outline)
+    g.add_node("write", write)
+    g.add_edge(START, "outline")
+    g.add_edge("outline", "write")
+    g.add_edge("write", END)
+
+    recorder = ArgusRecorder(semantic_judge=False)
+    recorder.attach(g.compile()).invoke({"query": "q"})
+
+    record = load_run(recorder.session.run_id)
+    assert record.total_tokens == 60
+    truncated = [f for f in record.findings if f.type == "truncated_llm_output"]
+    assert [(f.node, f.severity) for f in truncated] == [("write", "warning")]
+    assert evaluate_run(record).passed, "a cut-off answer warns; it does not fail the build"

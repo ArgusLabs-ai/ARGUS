@@ -18,6 +18,7 @@ from argus.storage import list_runs, load_run
 REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "demo_graph.jsonl"
 TOOL_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "tool_graph.jsonl"
+LLM_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "llm_graph.jsonl"
 
 
 @pytest.fixture(autouse=True)
@@ -253,6 +254,22 @@ def test_edges_name_the_subgraph_parents_instead_of_nesting():
     ]
     # The nested parent stays (the file says it is no subgraph); the named one goes.
     assert sorted(r["id"] for r in node_runs(runs, {"report"})) == ["child", "parent"]
+
+
+def test_a_truncated_llm_call_warns_on_its_node_and_tokens_add_up():
+    runner = CliRunner()
+    ingested = runner.invoke(app, ["ingest", "langsmith", str(LLM_FIXTURE)])
+    assert ingested.exit_code == 0, ingested.output
+
+    [run] = list_runs()
+    record = load_run(run["run_id"])
+    # outline: 10 in + 10 out; write: 10 in + 30 out (scripts/make_langsmith_fixture.py --llm)
+    assert record.total_tokens == 60
+    truncated = [f for f in record.findings if f.type == "truncated_llm_output"]
+    assert [(f.node, f.severity) for f in truncated] == [("write", "warning")]
+
+    checked = runner.invoke(app, ["check", "last"])
+    assert checked.exit_code == 0, "a cut-off answer warns; it does not fail the build"
 
 
 def test_the_ingest_module_imports_without_langgraph_or_langchain():

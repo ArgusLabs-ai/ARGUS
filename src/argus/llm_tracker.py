@@ -309,6 +309,56 @@ def scan_output_for_tokens(output_dict: dict[str, Any] | None) -> list[LLMCallIn
     return results
 
 
+# ── LLMResult dict (recorder callback and LangSmith export) ─────────────────
+
+
+def call_from_llm_outputs(outputs: dict[str, Any], name: str = "") -> LLMCallInfo | None:
+    """One call's model, usage and finish reason from an ``LLMResult`` dict.
+
+    The shape LangChain's tracer exports for an ``llm`` run: ``generations`` with
+    each chat message serialized as ``{"lc": 1, "kwargs": {...}}``. The recorder
+    rebuilds that same shape, so both paths read one parser. ``None`` when the
+    run carries neither tokens nor a finish reason.
+    """
+    llm_output = outputs.get("llm_output") or {}
+    batches = outputs.get("generations") or []
+    first = batches[0][0] if batches and batches[0] else {}
+    message = first.get("message") or {}
+    message = message.get("kwargs", message)
+    meta = message.get("response_metadata") or {}
+    usage = (
+        message.get("usage_metadata")
+        or llm_output.get("token_usage")
+        or llm_output.get("usage")
+        or {}
+    )
+    prompt_tokens = _int_or_zero(usage.get("input_tokens") or usage.get("prompt_tokens"))
+    completion_tokens = _int_or_zero(usage.get("output_tokens") or usage.get("completion_tokens"))
+    total_tokens = _int_or_zero(usage.get("total_tokens")) or (prompt_tokens + completion_tokens)
+    finish_reason = (
+        (first.get("generation_info") or {}).get("finish_reason")
+        or meta.get("finish_reason")
+        or meta.get("stop_reason")
+    )
+    if total_tokens == 0 and not finish_reason:
+        return None
+    model_name = str(
+        llm_output.get("model_name")
+        or meta.get("model_name")
+        or meta.get("model")
+        or name
+        or "unknown"
+    )
+    return LLMCallInfo(
+        model_name=model_name,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cost_usd=calculate_cost(model_name, prompt_tokens, completion_tokens),
+        finish_reason=str(finish_reason) if finish_reason else None,
+    )
+
+
 # ── Combine both strategies ─────────────────────────────────────────────────
 
 
@@ -327,6 +377,11 @@ def extract_usage(
     if not all_calls:
         all_calls.extend(scan_output_for_tokens(output_snap))
 
+    return usage_from_calls(all_calls)
+
+
+def usage_from_calls(all_calls: list[LLMCallInfo]) -> LLMUsage | None:
+    """Sum calls into one ``LLMUsage``; ``None`` when there were none."""
     if not all_calls:
         return None
 

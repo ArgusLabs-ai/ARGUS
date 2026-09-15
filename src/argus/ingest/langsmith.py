@@ -12,6 +12,8 @@ as the ``{}`` update.
 
 Tool runs beneath a node step become that step's ``tool_calls``, in the dict
 shape the live recorder builds, so a tool's swallowed failure is graded.
+Model runs beneath a step become its ``llm_usage``: tokens add up into the
+run's total, and a call cut off at its token limit is a warning.
 
 A trace holds no graph. With an ``argus edges`` file the real edges,
 conditional sources and subgraph parents are used; without one, successors
@@ -28,12 +30,15 @@ from typing import Any
 
 from argus.contextual import ConsumerMap
 from argus.grading import finish, new_session
+from argus.llm_tracker import call_from_llm_outputs, usage_from_calls
+from argus.models import LLMCallInfo
 from argus.session import ArgusSession
 
 __all__ = [
     "CloudSyncRefused",
     "TracedError",
     "ingest_langsmith",
+    "llm_calls_by_step",
     "load_edges",
     "load_runs",
     "node_runs",
@@ -162,6 +167,28 @@ def tool_calls_by_step(
     return tools
 
 
+def llm_calls_by_step(
+    runs: list[dict[str, Any]], steps: list[dict[str, Any]]
+) -> dict[str, list[LLMCallInfo]]:
+    """Step run id → the model calls beneath it; a call belongs to its nearest step."""
+    by_id = {str(run["id"]): run for run in runs}
+    step_ids = {str(run["id"]) for run in steps}
+    calls: dict[str, list[LLMCallInfo]] = {}
+    for run in sorted(runs, key=lambda run: run.get("dotted_order") or ""):
+        if run.get("run_type") != "llm":
+            continue
+        parent = run.get("parent_run_id")
+        while parent is not None and str(parent) in by_id and str(parent) not in step_ids:
+            parent = by_id[str(parent)].get("parent_run_id")
+        outputs = run.get("outputs")
+        if parent is None or str(parent) not in step_ids or not isinstance(outputs, dict):
+            continue
+        call = call_from_llm_outputs(outputs, run.get("name") or "")
+        if call is not None:
+            calls.setdefault(str(parent), []).append(call)
+    return calls
+
+
 def _step_order_edges(steps: list[dict[str, Any]]) -> dict[str, list[str]]:
     """Each node → the nodes at the next step seen in this trace.
 
@@ -246,6 +273,7 @@ def ingest_langsmith(
         max_field_size=max_field_size,
     )
     tools = tool_calls_by_step(runs, steps)
+    llm_calls = llm_calls_by_step(runs, steps)
     root_inputs = roots[0].get("inputs")
     session.capture_state(root_inputs if isinstance(root_inputs, dict) else {})
 
@@ -270,6 +298,7 @@ def ingest_langsmith(
             output_snap,
             _duration_ms(run),
             exc=exc,
+            llm_usage=usage_from_calls(llm_calls.get(str(run["id"]), [])),
             tool_calls=tools.get(str(run["id"]), []),
         )
 

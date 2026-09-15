@@ -13,6 +13,10 @@ end-of-run update carries no `outputs` at all (docs/prd_abhishek.md, BUG-1).
 
 ``--tool`` traces a second graph instead: its `fetch` node calls a tool that
 returns an HTTP 500 body, swallows it and returns a normal-looking update.
+
+``--llm`` traces a graph whose two nodes each call a scripted chat model (no
+provider, no key): `outline` finishes normally on 20 tokens, `write` is cut
+off at its token limit (`finish_reason: "length"`) on 40.
 """
 
 from __future__ import annotations
@@ -23,6 +27,9 @@ import sys
 from pathlib import Path
 from typing import Any, TypedDict
 
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_core.tracers.langchain import LangChainTracer
@@ -104,14 +111,73 @@ def build_tool_app():
     return graph.compile()
 
 
+class ScriptedChatModel(BaseChatModel):
+    """Answers with fixed text, usage and finish reason: no network, no key."""
+
+    text: str
+    output_tokens: int
+    finish_reason: str
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        message = AIMessage(
+            content=self.text,
+            usage_metadata={
+                "input_tokens": 10,
+                "output_tokens": self.output_tokens,
+                "total_tokens": 10 + self.output_tokens,
+            },
+            response_metadata={"model_name": "scripted", "finish_reason": self.finish_reason},
+        )
+        info = {"finish_reason": self.finish_reason}
+        return ChatResult(
+            generations=[ChatGeneration(message=message, generation_info=info)],
+            llm_output={"model_name": "scripted"},
+        )
+
+
+class LLMState(TypedDict, total=False):
+    query: str
+    notes: str
+    reply: str
+
+
+def build_llm_app():
+    short = ScriptedChatModel(text="three points", output_tokens=10, finish_reason="stop")
+    cut = ScriptedChatModel(text="The first point is", output_tokens=30, finish_reason="length")
+
+    def outline(state: LLMState, config: RunnableConfig) -> dict:
+        return {"notes": short.invoke(state["query"], config=config).content}
+
+    def write(state: LLMState, config: RunnableConfig) -> dict:
+        return {"reply": cut.invoke(state["notes"], config=config).content}
+
+    graph = StateGraph(LLMState)
+    graph.add_node("outline", outline)
+    graph.add_node("write", write)
+    graph.add_edge(START, "outline")
+    graph.add_edge("outline", "write")
+    graph.add_edge("write", END)
+    return graph.compile()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--tool", action="store_true", help="trace the tool graph instead")
+    which = parser.add_mutually_exclusive_group()
+    which.add_argument("--tool", action="store_true", help="trace the tool graph instead")
+    which.add_argument("--llm", action="store_true", help="trace the LLM graph instead")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
-    name = "tool_graph.jsonl" if args.tool else "demo_graph.jsonl"
+    if args.tool:
+        name, app = "tool_graph.jsonl", build_tool_app()
+    elif args.llm:
+        name, app = "llm_graph.jsonl", build_llm_app()
+    else:
+        name, app = "demo_graph.jsonl", build_app()
     out = Path(args.out or REPO / "tests" / "fixtures" / "langsmith" / name)
-    app = build_tool_app() if args.tool else build_app()
 
     client = StubClient()
     tracer = LangChainTracer(client=client, project_name="argus-fixture")
