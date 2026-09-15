@@ -307,6 +307,15 @@ def test_skinny_trace_with_outputs_hidden_saves_nothing():
     assert list(Path(".argus/runs").iterdir()) == []
 
 
+def test_a_crashed_root_is_not_read_as_a_hidden_outputs_export():
+    # A graph that raised has no final state to export, so the root's empty
+    # outputs is the crash. Refusing it would drop the run ARGUS most wants.
+    rows = [json.loads(line) for line in CRASH_FIXTURE.read_text().splitlines() if line.strip()]
+    assert [r["outputs"] for r in rows if r["parent_run_id"] is None] == [{}]
+    result = CliRunner().invoke(app, ["ingest", "langsmith", str(CRASH_FIXTURE)])
+    assert result.exit_code == 0, result.output
+
+
 def test_skinny_node_run_without_inputs_saves_nothing():
     def drop_search_inputs(row):
         if row.get("name") == "search":

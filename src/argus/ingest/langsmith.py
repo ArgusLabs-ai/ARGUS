@@ -172,11 +172,13 @@ def _refuse_skinny(root: dict[str, Any], steps: list[dict[str, Any]]) -> None:
     """Raise :class:`IncompleteTraceError` when the trace is too thin to grade.
 
     One node's empty ``outputs`` is a silent node, not a thin trace: the root's
-    merged final state proves outputs were exported.
+    merged final state proves outputs were exported. A root that raised has no
+    final state to export, so its empty ``outputs`` is the crash, not a hidden
+    one — and a crash is the last thing to refuse to grade.
     """
     why = None
     root_outputs = root.get("outputs")
-    if not (isinstance(root_outputs, dict) and root_outputs):
+    if not root.get("error") and not (isinstance(root_outputs, dict) and root_outputs):
         why = "the root run has no outputs (was the trace exported with outputs hidden?)"
     else:
         blind = [str(_node_name(run)) for run in steps if not isinstance(run.get("inputs"), dict)]
