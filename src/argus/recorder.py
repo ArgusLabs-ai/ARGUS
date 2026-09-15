@@ -37,16 +37,19 @@ from uuid import UUID
 
 from argus.contextual import ConsumerMap
 from argus.grading import IncompleteTraceError, finish, new_session
-from argus.models import ToolFailure
+from argus.llm_tracker import call_from_llm_outputs, usage_from_calls
+from argus.models import LLMCallInfo, ToolFailure
 from argus.session import ArgusSession
 
 try:  # pragma: no cover - exercised only when langchain-core is absent
     from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.load import dumpd
     from langchain_core.runnables.base import RunnableBinding
 
     _HAS_LANGCHAIN = True
 except ImportError:  # pragma: no cover
     BaseCallbackHandler = object  # type: ignore[assignment,misc]
+    dumpd = None  # type: ignore[assignment]
     RunnableBinding = None  # type: ignore[assignment,misc]
     _HAS_LANGCHAIN = False
 
@@ -212,6 +215,11 @@ class ArgusRecorder(BaseCallbackHandler):
         self._tools: dict[UUID, list[dict[str, Any]]] = {}
         # tool run_id -> that tool's own record, so concurrent tools don't cross
         self._tool_owner: dict[UUID, dict[str, Any]] = {}
+        # node chain run_id -> model calls made anywhere beneath it
+        self._llm: dict[UUID, list[LLMCallInfo]] = {}
+        # chain run_id -> its parent, so a model call inside `prompt | llm`
+        # still finds the node step it ran under
+        self._parent_of: dict[UUID, UUID] = {}
         # One session per graph run, keyed by that run's root callback id, plus
         # every callback id's route back to its root. `.batch()` runs its items
         # on separate threads with interleaved callbacks; without this they fold
@@ -334,6 +342,8 @@ class ArgusRecorder(BaseCallbackHandler):
             return  # an outer chain that is not ours — someone else's callback
         with self._lock:
             self._root_of[run_id] = root
+            if parent_run_id is not None:
+                self._parent_of[run_id] = parent_run_id
 
         if node is None:
             # The graph run itself (no node name, no parent) — the run boundary.
@@ -439,6 +449,7 @@ class ArgusRecorder(BaseCallbackHandler):
         with self._lock:
             root = self._root_of.pop(run_id, None)
             self._node_of.pop(run_id, None)
+            self._parent_of.pop(run_id, None)
         if root is None:
             return
         session = self._roots.get(root)
@@ -461,6 +472,7 @@ class ArgusRecorder(BaseCallbackHandler):
         with self._lock:
             entry = self._pending.pop(run_id, None)
             tools = self._tools.pop(run_id, [])
+            llm_calls = self._llm.pop(run_id, [])
             if entry is None:
                 return False
 
@@ -482,6 +494,7 @@ class ArgusRecorder(BaseCallbackHandler):
                 output_snap,
                 duration_ms,
                 exc=exc if isinstance(exc, Exception) else None,
+                llm_usage=usage_from_calls(llm_calls),
                 tool_calls=tools,
             )
         return True
@@ -524,6 +537,38 @@ class ArgusRecorder(BaseCallbackHandler):
                 return
             record["output"] = output
             record["error"] = error
+
+    # ── LLM callbacks ───────────────────────────────────────────────────────
+
+    def on_llm_end(
+        self,
+        response: Any,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """File one model call's usage and finish reason under its node step.
+
+        The node's own output rarely carries usage, so reading it there records
+        zero tokens and never sees a truncation. The call is rebuilt in the shape
+        LangChain's tracer exports, so ingest and this path share one parser.
+        """
+        outputs = response.model_dump()
+        for i, batch in enumerate(response.generations):
+            for j, generation in enumerate(batch):
+                message = getattr(generation, "message", None)
+                if message is not None:
+                    outputs["generations"][i][j]["message"] = dumpd(message)
+        call = call_from_llm_outputs(outputs, kwargs.get("name") or "")
+        if call is None:
+            return
+        with self._lock:
+            step = parent_run_id
+            while step is not None and step not in self._pending:
+                step = self._parent_of.get(step)
+            if step is not None:
+                self._llm.setdefault(step, []).append(call)
 
     # ── the layer chain ─────────────────────────────────────────────────────
 

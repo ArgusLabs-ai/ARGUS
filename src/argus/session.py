@@ -115,6 +115,39 @@ _SECRET_PATTERNS: list[_re.Pattern[str]] = [
 ]
 
 
+# Finish reasons meaning the model hit its token limit mid-answer.
+_TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def _truncation_signals(llm_usage: LLMUsage | None) -> list[AnomalySignal]:
+    """A ``truncated_llm_output`` warning when any call stopped at its token limit.
+
+    Warning, never critical: a cut-off answer can still be usable, and nothing
+    in the trace says whether this one was.
+    """
+    cut = [
+        call
+        for call in (llm_usage.calls if llm_usage else [])
+        if call.finish_reason in _TRUNCATED_FINISH_REASONS
+    ]
+    if not cut:
+        return []
+    return [
+        AnomalySignal(
+            anomaly_id="truncated_llm_output",
+            severity="warning",
+            suspicion_score=1.0,
+            reason=(
+                f"`{cut[0].model_name}` stopped at its token limit "
+                f"(finish_reason={cut[0].finish_reason}), so its output is cut off"
+            ),
+            expected_behavior="an LLM call that finishes its answer",
+            observed_behavior=", ".join(f"finish_reason={c.finish_reason}" for c in cut),
+            field_path="",
+        )
+    ]
+
+
 def _looks_like_secret(value: Any) -> bool:
     """Return True if a string value matches common secret token shapes."""
     if not isinstance(value, str) or len(value) < 20:
@@ -876,6 +909,7 @@ class ArgusSession:
                 )
                 if any(a.severity == "critical" for a in anomaly_signals) and status == "pass":
                     status = "semantic_fail"
+            anomaly_signals.extend(_truncation_signals(llm_usage))
 
             # Per-node LLM judge: fire in background thread, apply in _finalize.
             # Deterministic status is recorded now; LLM can refine it later.

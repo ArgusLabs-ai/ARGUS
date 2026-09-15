@@ -19,6 +19,7 @@ REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "demo_graph.jsonl"
 TOOL_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "tool_graph.jsonl"
 DROP_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "drop_graph.jsonl"
+LLM_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "llm_graph.jsonl"
 
 
 @pytest.fixture(autouse=True)
@@ -351,6 +352,22 @@ def test_consumers_file_of_the_wrong_shape_saves_nothing():
     assert result.exit_code == 2, result.output
     assert "not a consumers file" in result.output
     assert list(Path(".argus/runs").iterdir()) == []
+
+
+def test_a_truncated_llm_call_warns_on_its_node_and_tokens_add_up():
+    runner = CliRunner()
+    ingested = runner.invoke(app, ["ingest", "langsmith", str(LLM_FIXTURE)])
+    assert ingested.exit_code == 0, ingested.output
+
+    [run] = list_runs()
+    record = load_run(run["run_id"])
+    # outline: 10 in + 10 out; write: 10 in + 30 out (scripts/make_langsmith_fixture.py --llm)
+    assert record.total_tokens == 60
+    truncated = [f for f in record.findings if f.type == "truncated_llm_output"]
+    assert [(f.node, f.severity) for f in truncated] == [("write", "warning")]
+
+    checked = runner.invoke(app, ["check", "last"])
+    assert checked.exit_code == 0, "a cut-off answer warns; it does not fail the build"
 
 
 def test_the_ingest_module_imports_without_langgraph_or_langchain():

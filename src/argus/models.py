@@ -198,6 +198,8 @@ class LLMCallInfo:
     completion_tokens: int
     total_tokens: int
     cost_usd: float | None = None
+    # Why the model stopped: "stop", "length" (OpenAI), "max_tokens" (Anthropic)...
+    finish_reason: str | None = None
 
 
 @dataclass
