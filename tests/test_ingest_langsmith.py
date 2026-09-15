@@ -18,6 +18,7 @@ from argus.storage import list_runs, load_run
 REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "demo_graph.jsonl"
 TOOL_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "tool_graph.jsonl"
+CRASH_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "crash_graph.jsonl"
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +58,36 @@ def test_a_swallowed_tool_500_fails_the_node_that_called_the_tool():
         and "500" in f["reason"]
     ]
     assert critical, payload["findings"]
+
+
+def test_a_crash_from_the_file_blames_whoever_wrote_the_empty_container():
+    # `price` raised on state["policy"]["number"]; `lookup` wrote {"policy": {}}
+    # and `audit` merely ran in between.
+    price = next(r for r in load_runs(CRASH_FIXTURE) if r["name"] == "price")
+    assert "KeyError: 'number'" in price["error"]
+
+    runner = CliRunner()
+    ingested = runner.invoke(app, ["ingest", "langsmith", str(CRASH_FIXTURE)])
+    assert ingested.exit_code == 0, ingested.output
+
+    checked = runner.invoke(app, ["check", "last", "--format", "json"])
+    assert checked.exit_code == 1, checked.output
+    payload = json.loads(checked.output)
+    assert payload["first_failure_step"] == "lookup"
+    # `lookup` also trips the empty-output rule; this finding is the crash blame.
+    blame = [
+        f
+        for f in payload["findings"]
+        if f["node"] == "lookup"
+        and f["type"] == "missing_field"
+        and "`number`" in f["reason"]
+        and "`price`" in f["reason"]
+    ]
+    assert blame, payload["findings"]
+    audit = [
+        f for f in payload["findings"] if f["node"] == "audit" and f["severity"] == "critical"
+    ]
+    assert not audit, payload["findings"]
 
 
 def test_a_tool_result_is_unwrapped_to_what_the_recorder_hears():
