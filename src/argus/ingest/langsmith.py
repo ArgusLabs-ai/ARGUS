@@ -8,7 +8,8 @@ It imports nothing from ``langgraph`` or ``langchain_core``.
 
 A silent node arrives with ``outputs`` absent or ``{}`` (the tracer drops an
 empty update on its end-PATCH — ``docs/prd_abhishek.md`` BUG-1), so both read
-as the ``{}`` update.
+as the ``{}`` update. That reading holds only when the root run kept its
+outputs: an export with outputs hidden has ``{}`` on every run, and is refused.
 
 Tool runs beneath a node step become that step's ``tool_calls``, in the dict
 shape the live recorder builds, so a tool's swallowed failure is graded.
@@ -27,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from argus.contextual import ConsumerMap
-from argus.grading import finish, new_session
+from argus.grading import IncompleteTraceError, finish, new_session
 from argus.session import ArgusSession
 
 __all__ = [
@@ -162,6 +163,24 @@ def tool_calls_by_step(
     return tools
 
 
+def _refuse_skinny(root: dict[str, Any], steps: list[dict[str, Any]]) -> None:
+    """Raise :class:`IncompleteTraceError` when the trace is too thin to grade.
+
+    One node's empty ``outputs`` is a silent node, not a thin trace: the root's
+    merged final state proves outputs were exported.
+    """
+    why = None
+    root_outputs = root.get("outputs")
+    if not (isinstance(root_outputs, dict) and root_outputs):
+        why = "the root run has no outputs (was the trace exported with outputs hidden?)"
+    else:
+        blind = [str(_node_name(run)) for run in steps if not isinstance(run.get("inputs"), dict)]
+        if blind:
+            why = f"node runs have no inputs: {', '.join(blind)}"
+    if why is not None:
+        raise IncompleteTraceError(f"{why}. An incomplete recording is not a pass.")
+
+
 def _step_order_edges(steps: list[dict[str, Any]]) -> dict[str, list[str]]:
     """Each node → the nodes at the next step seen in this trace.
 
@@ -196,7 +215,9 @@ def ingest_langsmith(
     Raises :class:`CloudSyncRefused` when logged in to ARGUS cloud without
     ``allow_cloud`` (saving would upload the trace), ``ValueError`` when the
     file does not hold exactly one root run, and
-    :class:`argus.grading.IncompleteTraceError` when there is nothing to grade.
+    :class:`argus.grading.IncompleteTraceError` when the trace is too thin to
+    grade (outputs hidden, no node runs, or a node run without inputs); nothing
+    is saved then. No node runs is refused by :func:`argus.grading.finish`.
     ``edges`` is a :func:`load_edges` result; without it successors are
     guessed from step order. The LLM judge stays off: grading a file spends
     nothing.
@@ -235,6 +256,7 @@ def ingest_langsmith(
         names = list(dict.fromkeys(str(_node_name(run)) for run in steps))
         edge_map = _step_order_edges(steps)
         conditional_sources = set()
+    _refuse_skinny(roots[0], steps)
     session = new_session(
         names,
         edge_map,
