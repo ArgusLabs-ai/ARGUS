@@ -53,10 +53,46 @@ except ImportError:  # pragma: no cover
     RunnableBinding = None  # type: ignore[assignment,misc]
     _HAS_LANGCHAIN = False
 
+try:  # pragma: no cover - exercised only when langgraph is absent
+    from langgraph.types import Command
+except ImportError:  # pragma: no cover
+    Command = None  # type: ignore[assignment,misc]
+
 __all__ = ["ArgusRecorder", "IncompleteTraceError"]
 
 # LangGraph's graph sentinels — not nodes anyone wrote.
 _SENTINELS = ("__start__", "__end__")
+
+
+def _node_update(outputs: Any) -> Any:
+    """What the node actually wrote, unwrapping a ``Command`` handoff (#88).
+
+    ``Command(goto=..., update={...})`` is the modern handoff idiom — every
+    supervisor and multi-agent example emits it — and it is not a dict, so it
+    used to fall into the "unreadable shape" branch below and lose the update
+    entirely. The step reached the ledger with no update, ``empty_output``
+    could not fire, and a declared consumer blamed whoever ran next.
+
+    ``update=None`` (``Command(goto="next")``, routing and nothing else) stays
+    ``None``: the node claimed no update, which is not the same as claiming an
+    empty one, and flagging it would fail every working supervisor.
+
+    LangGraph also accepts the update as a sequence of key/value pairs. That is
+    the same real update wearing a different shape, so it is folded into a dict
+    rather than lost the way the ``Command`` itself was. Anything that will not
+    fold is returned untouched and lands in the unreadable branch — never an
+    exception, because a recorder that raises takes the user's graph down with
+    it.
+    """
+    if Command is None or not isinstance(outputs, Command):
+        return outputs
+    update = outputs.update
+    if update is None or isinstance(update, dict):
+        return update
+    try:
+        return dict(update)
+    except (TypeError, ValueError):
+        return update
 
 
 def _reducer_fields(app: Any) -> dict[str, Any]:
@@ -482,8 +518,10 @@ class ArgusRecorder(BaseCallbackHandler):
             # `{}` must only ever mean "the node really returned an empty update"
             # — that is the signal. Anything that is not a dict is not an update
             # we can read, so it becomes None (the crash/unknown shape) rather
-            # than a fake empty one.
-            output_snap = session.capture_output(outputs) if isinstance(outputs, dict) else None
+            # than a fake empty one. A `Command` is unwrapped to the update it
+            # carries first, so a handoff is read, not discarded (#88).
+            update = _node_update(outputs)
+            output_snap = session.capture_output(update) if isinstance(update, dict) else None
 
             # Tools go in with the step, not onto the event afterwards: the
             # graders run inside on_node_end, so tools attached later were

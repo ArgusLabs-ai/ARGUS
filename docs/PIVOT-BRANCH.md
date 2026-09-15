@@ -559,3 +559,45 @@ pytest plugin) and #84 (ledger reducer `state_after`) target the **wrap** path
 and are not being merged into this branch. They are not stale — they are the
 old architecture. Do not rebase them onto `pivot/fat-traces` without a ticket
 that says to.
+
+---
+
+## `Command` handoffs were losing their update (#88)
+
+`Command(goto=..., update={...})` is the modern LangGraph handoff — what every
+supervisor and multi-agent example emits. It is not a dict, and `_close_step`
+read the update as `outputs if isinstance(outputs, dict) else None`, so the
+whole update was discarded and the step filed as "unreadable shape".
+
+That is three misses at once, and the run graded **clean** through all of them:
+
+| | Before | After |
+|---|---|---|
+| Ledger | `update=None` — the notebook had no record of what the node wrote | The update is on the row |
+| `empty_output` | Could not fire; `Command(goto=..., update={})` — a silent no-op — read as "no update we can read" | Fires, critical, on that node |
+| Consumer map | `contextual._wrote()` was False for every field the node actually wrote, so blame went to whoever ran next | Blame lands on the writer |
+
+**The distinction that carries the fix:** `update=None` (`Command(goto="next")`
+— routing and nothing else) is *not* the same as `update={}`. The first claims
+no update; the second claims an empty one. Collapsing them (`outputs.update or
+{}`) is the tempting wrong fix — it fails every working supervisor, and there
+is a test that fails on exactly that and nothing else.
+
+A pair-sequence update (LangGraph also accepts `[("k", v), ...]`) is folded to a
+dict rather than lost the same way. Anything that will not fold is returned
+untouched and lands in the unreadable branch — never an exception, because **a
+recorder that raises takes the user's graph down with it.**
+
+Seven tests in `tests/test_shipped_shapes_matrix.py` (section 6), including one
+on the annotated `-> Command[Literal["write"]]` form, which is the only one
+running against a *true* edge map — without the annotation LangGraph cannot
+draw the `supervise -> write` edge and reports `supervise -> __end__`. Each
+mechanism was verified to fail when reverted: dropping the unwrap fails 6,
+collapsing `None` into `{}` fails exactly the false-positive guard, and letting
+an unfoldable update raise fails exactly the crash-resistance guard.
+
+**Left out, deliberately:** the issue also suggests putting `goto` on the ledger
+as a routing column. No rule consumes it today, and it needs a model + storage
+round trip, so it is not in this change. Worth doing when something reads it —
+the obvious candidate is checking a `Command` route against the declared edge
+map, since a dynamic `goto` is invisible to `get_graph`.

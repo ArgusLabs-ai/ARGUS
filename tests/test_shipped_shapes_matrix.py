@@ -27,7 +27,7 @@ CI and lives outside this suite.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -47,6 +47,7 @@ from langchain_core.runnables import RunnableLambda  # noqa: E402
 from langchain_core.tools import tool  # noqa: E402
 from langgraph.graph import END, START, MessagesState, StateGraph  # noqa: E402
 from langgraph.prebuilt import create_react_agent  # noqa: E402
+from langgraph.types import Command, Send  # noqa: E402
 from typing_extensions import TypedDict  # noqa: E402
 
 pytestmark = pytest.mark.integration
@@ -692,3 +693,134 @@ def test_attach_still_hands_back_the_graph_api():
 
     for attr in ("nodes", "get_graph", "invoke", "stream", "batch"):
         assert hasattr(attached, attr), f"attach() dropped `{attr}`"
+
+
+# ── 6. Command handoffs ──────────────────────────────────────────────────────
+#
+# `Command(goto=..., update={...})` is the modern LangGraph handoff idiom and
+# what every multi-agent / supervisor example now emits. It is not a dict, so
+# `_close_step` used to discard the update and file the step as "unreadable"
+# (#88): `empty_output` could not fire, the ledger row had no `update`, and the
+# consumer map blamed whoever came next. The run graded clean either way.
+
+
+class _HandoffState(TypedDict, total=False):
+    plan: str
+    reply: str
+
+
+def _handoff_graph(supervise):
+    """`supervise` hands off with a Command; `write` reads `plan` and answers."""
+
+    def write(state: _HandoffState) -> dict:
+        return {"reply": f"written from {state.get('plan') or 'nothing'}"}
+
+    graph = StateGraph(_HandoffState)
+    graph.add_node("supervise", supervise)
+    graph.add_node("write", write)
+    graph.add_edge(START, "supervise")
+    graph.add_edge("write", END)
+    return graph.compile()
+
+
+def test_a_command_update_reaches_the_ledger():
+    """The load-bearing one: what the node wrote must be in the notebook."""
+
+    def supervise(state: _HandoffState) -> Command:
+        return Command(goto="write", update={"plan": "outline"})
+
+    verdict, _, rows = _run(_handoff_graph(supervise), {})
+    assert rows["supervise"].update == {"plan": "outline"}, rows["supervise"].update
+    assert verdict.passed, verdict
+
+
+def test_a_command_with_an_empty_update_is_blamed():
+    """`Command(goto=..., update={})` is the canonical silent no-op."""
+
+    def supervise(state: _HandoffState) -> Command:
+        _ = "planned, then dropped"
+        return Command(goto="write", update={})
+
+    verdict, record, _ = _run(_handoff_graph(supervise), {})
+    assert not verdict.passed, verdict
+    assert verdict.failing_nodes == ("supervise",), verdict
+    assert record.first_failure_step == "supervise"
+
+
+def test_a_routing_only_command_is_not_blamed():
+    """A supervisor that only routes wrote nothing on purpose — not a failure.
+
+    The false-positive half, and deliberately the *same* graph and payload as
+    the test above: the only difference is `update={}` versus no update at all.
+    `update=None` is "I claim no update", which is not "I claim an empty one",
+    and every supervisor pattern emits it. Collapsing the two (`update or {}`)
+    is the tempting wrong fix — it fails this test and nothing else.
+    """
+
+    def supervise(state: _HandoffState) -> Command:
+        return Command(goto="write")
+
+    verdict, _, rows = _run(_handoff_graph(supervise), {})
+    assert verdict.passed, verdict
+    assert rows["supervise"].update is None, rows["supervise"].update
+
+
+def test_consumers_blame_the_command_node_that_dropped_the_field():
+    """The consequence the issue names: blame lands on the writer, not the reader."""
+
+    def supervise(state: _HandoffState) -> Command:
+        return Command(goto="write", update={"reply": "", "plan": ""})
+
+    verdict, record, _ = _run(
+        _handoff_graph(supervise), {}, consumers={"plan": ["write"]}
+    )
+    assert not verdict.passed, verdict
+    assert record.first_failure_step == "supervise", record.first_failure_step
+
+
+def test_a_command_fan_out_keeps_its_update():
+    """`Command(goto=[Send(...)])` — the fan-out shape — must not lose its update."""
+
+    def supervise(state: _HandoffState) -> Command:
+        return Command(goto=[Send("write", {"plan": "outline"})], update={"plan": "outline"})
+
+    _, _, rows = _run(_handoff_graph(supervise), {})
+    assert rows["supervise"].update == {"plan": "outline"}, rows["supervise"].update
+
+
+def test_an_annotated_handoff_is_blamed_by_empty_output_itself():
+    """The shape real supervisors ship: `-> Command[Literal["write"]]`.
+
+    The annotation is what lets LangGraph draw the `supervise -> write` edge, so
+    this is the one Command test running against a *true* edge map rather than
+    the degenerate `supervise -> __end__` one. Asserting the finding by name
+    stops the test passing for some incidental reason.
+    """
+
+    def supervise(state: _HandoffState) -> Command[Literal["write"]]:
+        _ = "planned, then dropped"
+        return Command(goto="write", update={})
+
+    verdict, record, _ = _run(_handoff_graph(supervise), {})
+    assert not verdict.passed, verdict
+    empty = [f for f in record.findings if f.type == "empty_output"]
+    assert [f.node for f in empty] == ["supervise"], record.findings
+
+
+def test_odd_but_legal_command_shapes_never_take_the_graph_down():
+    """A recorder that raises takes the user's pipeline with it.
+
+    Each of these is accepted by LangGraph, so ARGUS will meet them in the
+    wild. The contract is narrow on purpose: record a run, do not raise. A
+    pair-sequence update is a real update in a different shape and is folded;
+    the rest may legitimately read as "no update", but never as a traceback.
+    """
+    cases = {
+        "pairs": (lambda s: Command(goto="write", update=[("plan", "x")]), {"plan": "x"}),
+        "no goto": (lambda s: Command(update={"plan": "x"}), {"plan": "x"}),
+        "returns None": (lambda s: None, None),
+        "unfoldable update": (lambda s: Command(goto="write", update=["plan"]), None),
+    }
+    for label, (supervise, expected) in cases.items():
+        _, _, rows = _run(_handoff_graph(supervise), {})
+        assert rows["supervise"].update == expected, f"{label}: {rows['supervise'].update}"
