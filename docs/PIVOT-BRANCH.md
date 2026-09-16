@@ -728,3 +728,47 @@ Wired through with it:
 Fixture: `scripts/make_langsmith_fixture.py --command`. Break proofs: not
 detecting the repr fails 2, downgrading the signal to a warning fails exactly
 the gate test, still recording the phantom field fails exactly the ledger test.
+
+---
+
+## The judge was blind across steps — it now gets the ledger (#85)
+
+`check_semantic_coherence(node_name, input_state, output_dict)` judged one node
+at a time, so it was structurally blind to the failure the contextual layer
+exists for: a field written early, legitimately emptied partway through, still
+needed much later.
+
+```
+search  -> {"docs": ["doc-1", "doc-2"]}
+clean   -> {"docs": []}                 a filter that matched nothing — locally fine
+summarize -> "summary of 0 docs"        honest about nothing — locally fine
+```
+
+Node-by-node, nothing here is wrong. The failure only exists in one field's
+history, which the judge could not see.
+
+**What changed.** The judge now also receives `prior_rows` — the `LedgerRow`s
+for the steps before the one being judged, the same shape `build_ledger`
+already produces — plus the declared `consumers` map. `ArgusSession.consumers`
+carries the map that previously only reached `grading.finish`; `new_session`
+sets it, the recorder and the LangSmith ingest both pass it.
+
+**Scoped, not "pass the LLM everything".** `_tracked_fields` keeps the history
+to the node's own I/O keys plus the fields `consumers` says it reads, and
+`_history_lines` emits one line per prior step that *wrote* one of them. The
+prompt grows with a node's contract, not with the run, and evidence about
+fields the node never touches — the thing that makes a judge invent failures —
+never reaches it.
+
+**Still last, still not the verdict.** Opt-in (`semantic_judge`, auto-on only
+when a key exists), still after the rules, still unable to override a critical,
+and the new prompt clause tells it to report an upstream emptying as
+`empty_or_missing` — a kind that already requires a corroborating rule finding,
+so the added sight cannot gate CI on its own. `JUDGE_STANDALONE_FAILURE_KINDS`
+is untouched.
+
+Break proofs in `tests/test_judge_last.py`: not passing the rows fails
+`test_the_judge_is_shown_the_step_that_emptied_the_field`; letting the judge
+clear the dropper fails `test_history_does_not_let_a_judge_pass_clear_the_dropper`;
+widening the scope to every field fails
+`test_history_is_scoped_to_the_fields_the_node_touches`.

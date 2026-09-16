@@ -67,6 +67,7 @@ def new_session(
     strict: bool,
     max_field_size: int,
     state_keys: list[str] | None = None,
+    consumers: ConsumerMap | None = None,
 ) -> ArgusSession:
     """A session for one graph run, ready for ``on_node_start`` / ``on_node_end``.
 
@@ -74,6 +75,10 @@ def new_session(
     subgraph's inner-only field out of the ledger's running state, where it
     would otherwise look available to a node that can never read it
     (:class:`argus.models.RunRecord`). A caller with no schema omits it.
+
+    ``consumers`` is the same map :func:`finish` grades with. The session keeps
+    it so the judge can scope the run history it is shown to the fields a node
+    declares it reads (#85); blame itself still happens in :mod:`argus.contextual`.
     """
     session = ArgusSession(
         max_field_size=max_field_size,
@@ -93,6 +98,7 @@ def new_session(
     session.node_fn_registry = {name: _placeholder_node(name) for name in node_names}
     session.reducer_fields = reducer_fields
     session.state_keys = list(state_keys or ())
+    session.consumers = dict(consumers or {})
     # The caller owns finalize: the ledger and contextual layers run over the
     # complete trace, before the run is graded and saved.
     session._defer_auto_finalize = True

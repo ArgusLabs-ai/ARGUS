@@ -325,6 +325,7 @@ def ingest_langsmith(
         validators={},
         strict=False,
         max_field_size=max_field_size,
+        consumers=consumers,
     )
     tools = tool_calls_by_step(runs, steps)
     llm_calls = llm_calls_by_step(runs, steps)

@@ -82,6 +82,14 @@ _SYSTEM_PROMPT = (
     "is missing). You MUST weigh these heavily — if a validator flagged a "
     "missing required field and you can confirm it is absent from the output, "
     "FAIL the node regardless of how reasonable the text looks.\n"
+    "- EARLIER STEPS: If an 'Earlier steps' section is provided, it is the run's "
+    "history for the fields this node cares about — what each prior step wrote "
+    "and whether the field was still populated after it. Use it only to explain "
+    "an empty or missing value in THIS node's input or output: if a field this "
+    "node needed was populated earlier and an earlier step emptied or dropped "
+    'it, fail with failure_kind "empty_or_missing" and name that step in the '
+    "reason. Never fail a node for what an earlier step did to a field this "
+    "node neither reads nor writes.\n"
     "- DISAMBIGUATION: If 'Ambiguous Heuristic Matches' are provided, these are "
     "pattern matches with borderline confidence. For each, determine if the matched "
     "pattern represents a real problem (placeholder text, corrupted output, semantic "
@@ -274,6 +282,45 @@ def _is_tool_call_turn(output_dict: dict[str, Any]) -> bool:
     )
 
 
+def _tracked_fields(
+    node_name: str,
+    consumers: dict[str, list[str]] | None,
+    input_state: dict[str, Any],
+    output_dict: dict[str, Any],
+) -> set[str]:
+    """Which state fields this node's verdict can legitimately turn on.
+
+    Its own I/O, plus every field the consumer map says this node reads. Wider
+    than that is every field of every prior row — the trace-size blow-up #85
+    rules out, and evidence about fields the node never touches is exactly what
+    makes a judge invent failures.
+    """
+    declared = {f for f, readers in (consumers or {}).items() if node_name in (readers or ())}
+    return declared | set(input_state) | set(output_dict)
+
+
+def _history_lines(
+    prior_rows: list[Any],
+    fields: set[str],
+) -> list[str]:
+    """One line per prior step that wrote a tracked field.
+
+    ``prior_rows`` are :class:`argus.ledger.LedgerRow`s for the steps *before*
+    this one. A step that wrote nothing relevant is not a line: the judge needs
+    the field's history, not the run's.
+    """
+    lines: list[str] = []
+    for row in prior_rows:
+        update = row.update if isinstance(row.update, dict) else {}
+        wrote = {k: v for k, v in update.items() if k in fields}
+        if not wrote:
+            continue
+        for key, value in wrote.items():
+            state = "now empty" if _is_blank(value) else "populated"
+            lines.append(f'  - "{row.node}" wrote {key} = {_truncate(value)} ({state})')
+    return lines
+
+
 def _is_blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip()) or value == []
 
@@ -354,11 +401,20 @@ def check_semantic_coherence(
     anomaly_signals: list[Any] | None = None,
     inspection: Any | None = None,
     ambiguous_signals: list[SemanticSignal] | None = None,
+    prior_rows: list[Any] | None = None,
+    consumers: dict[str, list[str]] | None = None,
 ) -> tuple[SemanticCheckResult, list[DisambiguationResult]]:
     """Check coherence and disambiguate heuristic signals in one LLM call.
 
     Returns (coherence_result, disambiguation_results).
     On error returns a passing result and empty disambiguation list.
+
+    ``prior_rows`` are the ledger rows for the steps *before* this node (#85).
+    Without them the judge sees one node's I/O and is structurally blind to the
+    commonest silent failure in a shared-state graph: a field written early,
+    emptied legitimately partway through, still needed here. Scoped to the
+    fields this node reads or writes (``consumers`` declares the rest), so the
+    prompt grows with the node's contract, not with the run.
     """
     t0 = time.perf_counter()
 
@@ -381,6 +437,15 @@ def check_semantic_coherence(
         f"Input: {json.dumps(compact_in, default=str)}\n"
         f"Output: {json.dumps(compact_out, default=str)}"
     )
+
+    history = _history_lines(
+        prior_rows or [],
+        _tracked_fields(node_name, consumers, input_state, output_dict),
+    )
+    if history:
+        user_msg += "\n\nEarlier steps (the run so far, fields this node reads or writes):\n" + (
+            "\n".join(history)
+        )
 
     evidence_lines: list[str] = []
 

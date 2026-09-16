@@ -350,6 +350,7 @@ class ArgusRecorder(BaseCallbackHandler):
             strict=self._strict,
             max_field_size=self._max_field_size,
             state_keys=sorted(self._outer_keys),
+            consumers=self._consumers,
         )
 
     def _resolve_judge(self) -> bool:
