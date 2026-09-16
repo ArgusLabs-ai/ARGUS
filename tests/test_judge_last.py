@@ -13,6 +13,7 @@ import pytest
 from argus.check import evaluate_run
 from argus.models import SemanticCheckResult
 from argus.recorder import ArgusRecorder
+from argus.semantic_checker import _history_lines, _tracked_fields
 from argus.storage import load_run
 
 pytest.importorskip("langchain_core")
@@ -80,6 +81,110 @@ def _run(monkeypatch, *, summarize_returns: dict, **recorder_kw):
     recorder = ArgusRecorder(**recorder_kw)
     recorder.attach(g.compile()).invoke({"query": "q"})
     return load_run(recorder.session.run_id)
+
+
+def _filter_run(monkeypatch, *, judge_passes: bool, **recorder_kw):
+    """search writes docs → clean filters them all away → summarize needs them.
+
+    The shape #85 is about: every step looks locally reasonable, and the failure
+    only exists in the history of one field.
+    """
+    calls: list[dict] = []
+
+    def _fake(**kwargs):
+        calls.append(kwargs)
+        return (
+            SemanticCheckResult(
+                passed=judge_passes,
+                reason="stubbed verdict",
+                confidence=1.0,
+                model="stub",
+                prompt_tokens=0,
+                completion_tokens=0,
+                duration_ms=0.0,
+            ),
+            [],
+        )
+
+    monkeypatch.setattr("argus.semantic_checker.check_semantic_coherence", _fake)
+
+    def search(state: _S) -> dict:
+        return {"docs": ["doc-1", "doc-2"]}
+
+    def clean(state: _S) -> dict:
+        return {"docs": []}  # a filter that matched nothing — locally fine
+
+    def summarize(state: _S) -> dict:
+        return {"summary": f"summary of {len(state.get('docs', []))} docs"}
+
+    g = StateGraph(_S)
+    for name, fn in (("search", search), ("clean", clean), ("summarize", summarize)):
+        g.add_node(name, fn)
+    g.add_edge(START, "search")
+    g.add_edge("search", "clean")
+    g.add_edge("clean", "summarize")
+    g.add_edge("summarize", END)
+
+    recorder = ArgusRecorder(
+        semantic_judge=True,
+        consumers={"docs": ["summarize"]},
+        **recorder_kw,
+    )
+    recorder.attach(g.compile()).invoke({"query": "q"})
+    return load_run(recorder.session.run_id), calls
+
+
+@pytest.mark.integration
+def test_the_judge_is_shown_the_step_that_emptied_the_field(monkeypatch):
+    """#85: judging `summarize` alone is blind — it must see `clean` empty docs."""
+    _no_patching(monkeypatch)
+    record, calls = _filter_run(monkeypatch, judge_passes=True)
+
+    asked = {c["node_name"]: c for c in calls}
+    assert "summarize" in asked, "the judge must have been asked about the reader"
+
+    rows = asked["summarize"]["prior_rows"]
+    assert [r.node for r in rows] == ["search", "clean"], "only the steps before it"
+
+    # And the prompt actually carries that history, scoped to `docs`.
+    history = _history_lines(
+        rows,
+        _tracked_fields("summarize", asked["summarize"]["consumers"], {}, {}),
+    )
+    assert any('"search"' in line and "populated" in line for line in history)
+    assert any('"clean"' in line and "now empty" in line for line in history)
+
+    # Both layers land on the same origin: the rules blame `clean`, and the
+    # judge is now looking at the row that says `clean` is where docs went.
+    verdict = evaluate_run(record)
+    assert verdict.passed is False
+    assert "clean" in verdict.failing_nodes
+    assert "summarize" not in verdict.failing_nodes, "the reader is the victim"
+
+
+@pytest.mark.integration
+def test_history_does_not_let_a_judge_pass_clear_the_dropper(monkeypatch):
+    """The judge sees more, and still cannot flip a contextual critical to pass."""
+    _no_patching(monkeypatch)
+    record, _ = _filter_run(monkeypatch, judge_passes=True)
+
+    missing = [f for f in record.findings if f.type == "missing_field"]
+    assert missing and missing[0].node == "clean"
+    assert evaluate_run(record).passed is False
+
+
+@pytest.mark.integration
+def test_history_is_scoped_to_the_fields_the_node_touches(monkeypatch):
+    """Trace size must not grow with the run — unrelated fields stay out."""
+    rows = [
+        type("R", (), {"node": "a", "update": {"docs": ["x"], "trace_id": "abc"}})(),
+        type("R", (), {"node": "b", "update": {"trace_id": "def"}})(),
+    ]
+    fields = _tracked_fields("summarize", {"docs": ["summarize"]}, {}, {"summary": ""})
+    lines = _history_lines(rows, fields)
+
+    assert len(lines) == 1 and "docs" in lines[0]
+    assert all("trace_id" not in line for line in lines)
 
 
 @pytest.mark.integration

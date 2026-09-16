@@ -46,6 +46,7 @@ from argus.inspector import (
     inspect_transition,
     is_legitimate_field_handoff,
 )
+from argus.ledger import build_ledger
 from argus.ledger import reducer_kinds as _reducer_kinds
 from argus.llm_tracker import create_tracker, extract_usage, install_handler, remove_handler
 from argus.models import (
@@ -355,6 +356,9 @@ class ArgusSession:
         self.state_keys: list[str] = []
         self.graph_edge_map: dict[str, list[str]] = {}
         self.node_fn_registry: dict[str, Any] = {}
+        # Declared consumer map (argus.contextual). Read by the judge to scope
+        # the run history it is shown to the fields a node actually reads (#85).
+        self.consumers: dict[str, list[str]] = {}
 
         self._strict = strict
         self._redact_keys: frozenset[str] = frozenset(redact_keys or ())
@@ -950,7 +954,19 @@ class ArgusSession:
                 and status not in ("crashed", "interrupted")
             )
             _deferred_judge = False
+            prior_rows: list[Any] = []
             if _should_run_judge:
+                # The run so far, as the ledger sees it (#85). Built here, under
+                # the lock and before this step's event is appended, so the sync
+                # and background paths judge against the same history.
+                # ponytail: rebuilt per judged step — O(n²) over a run, and a run
+                # is tens of steps. Cache the fold on the session if that bites.
+                prior_rows = build_ledger(
+                    list(self._events),
+                    self._initial_state,
+                    self.reducer_kinds,
+                    list(self.state_keys),
+                )
                 ambiguous_signals: list[SemanticSignal] = []
                 if (
                     inspection is not None
@@ -976,6 +992,7 @@ class ArgusSession:
                         anomaly_signals,
                         inspection,
                         ambiguous_signals,
+                        prior_rows,
                     )
                     status = self._apply_judge_verdict(
                         status,
@@ -1031,6 +1048,7 @@ class ArgusSession:
                     anomaly_signals,
                     inspection,
                     ambiguous_signals,
+                    prior_rows,
                 )
                 with self._pending_judges_lock:
                     self._pending_judges.append(
@@ -1101,6 +1119,7 @@ class ArgusSession:
         anomaly_signals: list[AnomalySignal],
         inspection: InspectionResult | None,
         ambiguous_signals: list[SemanticSignal],
+        prior_rows: list[Any] | None = None,
     ) -> tuple[SemanticCheckResult | None, list[DisambiguationResult]]:
         """Run the LLM semantic judge synchronously (with retries)."""
         _judge_exc: Exception | None = None
@@ -1121,6 +1140,8 @@ class ArgusSession:
                     anomaly_signals=anomaly_signals,
                     inspection=inspection,
                     ambiguous_signals=ambiguous_signals or None,
+                    prior_rows=prior_rows or None,
+                    consumers=self.consumers or None,
                 )
                 return result, dis_results
             except Exception as _e:
