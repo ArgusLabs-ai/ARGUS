@@ -302,7 +302,7 @@ which is a different and more dangerous thing to leave undocumented.
 | **Real LLM nodes in CI** | Both matrices use deterministic stubs. Live-model runs were exercised by hand against OpenAI (healthy pipelines clean, sabotaged pipelines blamed on the sabotaged node, stable over three runs) but no live test runs in CI |
 | **A terminal node returning `{}`** | `empty_output` is gated on having successors, and an edge to `END` is not one. Defensible — a terminal `send_email` node legitimately returns nothing — but it is also the last chance to notice the answer was never produced. Workaround: declare `consumers={"answer": ["finalize"]}` |
 | **A silent early iteration of a loop** | `_apply_loop_retries` relabels every earlier iteration `retried` when the final one passes, and the gate skips `retried`. Right for a genuine retry, wrong for an accumulating field where round 1's empty contribution is never superseded. Pinned by a test; **the one open product decision** |
-| **Custom reducers** | Round-trip as `"overwrite"` (see `ledger.reducer_kinds`). Blame is unaffected — verified — but the folded state is approximate |
+| **Custom reducers, at fan-in** | Still round-trip as `"overwrite"` (`ledger.reducer_kinds`), and no single successor's recorded input can show what a merge did, so a custom fan-in reads as the last branch winning. The *sequential* case is fixed — see "The notebook believes the trace" below |
 | **`add_messages` id de-duplication** | Folded as plain concatenation, so an updated message counts twice. Pinned by a test |
 | **Token accounting** | `llm_tracker` reads usage off the node's output dict, so a node returning `{"category": "..."}` records none. Verified identical on the old wrap path — pre-existing, not a pivot regression. `on_llm_end` would fix it on this path |
 | **A victim flagged alongside the origin** | When an upstream `{}` starves a downstream model node, both are flagged. `first_failure_step` is still the origin, so the verdict is right and the extra finding is noise: `degraded_input` covers present-and-bad fields, not absent ones |
@@ -800,3 +800,78 @@ Break proofs in `tests/test_judge_last.py`: not passing the rows fails
 clear the dropper fails `test_history_does_not_let_a_judge_pass_clear_the_dropper`;
 widening the scope to every field fails
 `test_history_is_scoped_to_the_fields_the_node_touches`.
+
+---
+
+## The notebook believes the trace, not its own arithmetic (#80)
+
+**What a contributor needs to know:** `LedgerRow.state_after` is a *reconstruction*,
+and reconstructions can disagree with what really happened. When they do, the
+recording wins.
+
+### Why the fold can be wrong at all
+
+LangGraph merges a node's update into state using the reducer declared on the
+field — `Annotated[list, operator.add]` and friends. `build_ledger` has to redo
+that merge to know what the state looked like after each step, and it cannot: a
+reducer is a **callable**, and callables do not survive `.argus/runs/<id>.json`.
+So the run file stores a *kind* per field (`reducer_kinds`, a string), and the
+fold handles the kinds it recognises:
+
+```
+add        ->  running[k] = running[k] + value      # operator.add, add_messages
+overwrite  ->  running[k] = value                   # everything else
+```
+
+Everything it does not recognise is `"overwrite"`. For a custom reducer — a
+last-good-wins keeper, a dict merge, a max — that is a guess, and it was wrong
+in the one direction that matters:
+
+```python
+def keep_best(old, new): return new if new else old   # docs: Annotated[list, keep_best]
+
+search  -> {"docs": ["seed"]}
+clean   -> {"docs": []}       # the real reducer keeps ["seed"]
+```
+
+```
+REAL final docs                    : ['seed']
+`summarize` input_state, as recorded: ['seed']     <- the run file's own answer
+LEDGER state_after['clean']        : []            <- the fold's guess
+```
+
+The notebook contradicted the very file it was built from, and reported `clean`
+as having emptied a field that was never empty.
+
+### The repair
+
+`_believe_the_trace` compares the fold against the **next step's recorded
+`input_state`** — which is the merged state LangGraph really handed that step,
+reducers already applied — and prefers the recording. Two properties make this
+safe to rely on:
+
+- **One-directional.** A correction only fires where the fold says empty and the
+  recording says otherwise. It can restore a value; it can never invent an
+  emptiness, so it cannot hide a genuine drop. `test_the_repair_never_invents_a_value_the_trace_does_not_show`
+  pins both halves.
+- **Built from recorded data only.** Nothing is imported, nothing is re-executed,
+  so a live notebook and one rebuilt from the run file stay identical — the spike-2
+  property, still guarded by `test_ledger_from_live_steps_matches_the_reloaded_one`.
+
+The row's `update` is untouched: it still reports exactly what the node returned
+(`{"docs": []}`). Only the reconstructed running state is repaired.
+
+### What was rejected
+
+Persisting each reducer's import path and re-resolving it on load. That makes
+grading import the user's code — precisely what #79 decided replay must never
+do. A grader that imports what it grades is a grader that can crash on, or be
+changed by, the thing under test.
+
+### Ceiling
+
+Under fan-out the next step to run may be a sibling that never saw this step's
+update, so a branch that really did empty a field can read as still holding the
+pre-fan-out value, and a custom fan-in merge is still invisible. Blame anchors on
+the reader's own recorded `input_state` (`contextual.py`), which this never edits,
+so the cost is a row's display rather than a verdict.
