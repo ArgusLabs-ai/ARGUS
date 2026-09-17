@@ -89,7 +89,9 @@ _SYSTEM_PROMPT = (
     "node needed was populated earlier and an earlier step emptied or dropped "
     'it, fail with failure_kind "empty_or_missing" and name that step in the '
     "reason. Never fail a node for what an earlier step did to a field this "
-    "node neither reads nor writes.\n"
+    "node neither reads nor writes, and never fail a node for a change it made "
+    "itself — consuming a queue, filtering a list or replacing a value it "
+    "writes is the node doing its job.\n"
     "- DISAMBIGUATION: If 'Ambiguous Heuristic Matches' are provided, these are "
     "pattern matches with borderline confidence. For each, determine if the matched "
     "pattern represents a real problem (placeholder text, corrupted output, semantic "
@@ -288,15 +290,25 @@ def _tracked_fields(
     input_state: dict[str, Any],
     output_dict: dict[str, Any],
 ) -> set[str]:
-    """Which state fields this node's verdict can legitimately turn on.
+    """Which fields this node's *history* can legitimately turn on.
 
-    Its own I/O, plus every field the consumer map says this node reads. Wider
-    than that is every field of every prior row — the trace-size blow-up #85
-    rules out, and evidence about fields the node never touches is exactly what
-    makes a judge invent failures.
+    What the node reads — its input keys, plus every field the consumer map
+    declares it reads. Wider than that is every field of every prior row: the
+    trace-size blow-up #85 rules out, and evidence about fields the node never
+    touches is what makes a judge invent failures.
+
+    Fields the node **writes** are removed, even when it also reads them. The
+    node's update is the authority on their current value and is already in the
+    prompt; adding "this used to be fuller" turns every legitimate consumption
+    into an accusation. Measured, not theorised: on a supervisor loop draining a
+    work queue (`{"pending": [...]}` → `[]` as workers consume it), showing the
+    writer its own field's history failed the worker on 6 of 6 live runs, a
+    pipeline the blind judge passed. A node that empties what it writes is doing
+    its job; a node that *reads* a field someone else emptied is #85's case, and
+    that is the one this keeps.
     """
     declared = {f for f, readers in (consumers or {}).items() if node_name in (readers or ())}
-    return declared | set(input_state) | set(output_dict)
+    return (declared | set(input_state)) - set(output_dict)
 
 
 def _history_lines(

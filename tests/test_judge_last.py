@@ -174,6 +174,30 @@ def test_history_does_not_let_a_judge_pass_clear_the_dropper(monkeypatch):
 
 
 @pytest.mark.integration
+def test_a_node_is_never_shown_the_history_of_a_field_it_writes():
+    """A worker draining its own queue must not be handed "it used to be fuller".
+
+    Found live, not theorised: on a supervisor loop consuming
+    ``{"pending": [...]}`` down to ``[]``, showing the writer its own field's
+    history failed the worker on 6 of 6 runs against gpt-4o-mini — a pipeline
+    the pre-#85 judge passed. The node's update is the authority on what that
+    field holds now, and it is already in the prompt.
+    """
+    rows = [
+        type("R", (), {"node": "triage", "update": {"pending": ["a", "b"], "ticket": "t-1"}})(),
+    ]
+    fields = _tracked_fields(
+        "worker",
+        {"pending": ["worker"]},           # declared reader *and* writer
+        {"pending": ["a", "b"]},           # it reads the queue
+        {"pending": ["b"], "done": ["a"]},  # and it consumes from it
+    )
+
+    assert "pending" not in fields, "a field the node writes is its own business"
+    assert _history_lines(rows, fields) == []
+
+
+@pytest.mark.integration
 def test_history_is_scoped_to_the_fields_the_node_touches(monkeypatch):
     """Trace size must not grow with the run — unrelated fields stay out."""
     rows = [
