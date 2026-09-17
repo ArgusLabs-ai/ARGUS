@@ -92,12 +92,26 @@ def _make_llm_inv_config():
 class ReplayEngine:
     """Loads a saved run's state at a specific node and re-runs the pipeline from there.
 
-    Supports two modes:
-      1. Factory-free (preferred): uses stored node_fn_refs to import each node
-         function directly and replays via ArgusSession — no factory needed.
-      2. Factory mode (fallback): uses an app_factory callable to rebuild the
-         full LangGraph graph. Required only when node_fn_refs are missing
-         (e.g., old runs recorded before auto-capture was added).
+    **Where the code comes from is decided, not guessed (#79).** A rerun needs
+    two halves: the state, which the run file always has, and the functions,
+    which it may not. The state half is the ledger row in every mode. For the
+    code half there are exactly two sources:
+
+      1. **The caller's graph** — ``replay_live(..., app=...)`` reads the node
+         off a compiled graph the caller passes, and ``app_factory`` rebuilds
+         one. This is the path for trace runs (:class:`argus.recorder.ArgusRecorder`)
+         and the only one the pivot endorses: a fix in the user's code is what
+         gets exercised, and nothing is imported behind their back.
+      2. **References the run recorded about itself** — ``node_fn_refs``, captured
+         at record time by :class:`argus.watcher.ArgusWatcher`. Legacy wrap-path
+         runs keep working from these.
+
+    What is deliberately gone is a third: replay used to *manufacture* the
+    references it lacked, scanning the project (with an LLM) to guess where each
+    node's function lived, then importing it. That is "re-import live functions
+    as the default", which the pivot brief §5 rules out — and it failed opaquely,
+    since a wrong guess re-runs the wrong function and reports it as your node.
+    A trace with no ``--app`` is now an error pointing at ``argus check``.
     """
 
     def __init__(self, max_field_size: int = 50_000) -> None:
@@ -155,13 +169,12 @@ class ReplayEngine:
         row = _row(record, node_name)
 
         if not record.node_fn_refs or node_name not in record.node_fn_refs:
-            # Auto-locate source files before giving up
-            record = self._auto_locate(record)
-            if not record.node_fn_refs or node_name not in record.node_fn_refs:
-                raise ValueError(
-                    f"No stored function reference for node '{node_name}'. "
-                    "Re-record the run with the latest argus to enable single-node replay."
-                )
+            raise ValueError(
+                f"No stored function reference for node '{node_name}'. This run was "
+                f"recorded as a trace, which holds state and not code — pass the graph "
+                f"it came from (`--app module:factory`) to re-run the node, or grade "
+                f"the saved run with: argus check {run_id}"
+            )
 
         raw_state = self._patch_input(row.input_state, patch, create_missing, node_name)
         state = safe_deserialize(raw_state, state_type)
@@ -280,12 +293,9 @@ class ReplayEngine:
         raw_state = self._patch_input(row.input_state, patch, create_missing, from_node)
         state = safe_deserialize(raw_state, state_type)
 
-        # Try factory-free replay first, fall back to factory mode
-        if record.node_fn_refs:
-            return self._replay_direct(record, from_node, state, frozen_map, patch)
-
-        # Auto-locate source files before requiring a factory
-        record = self._auto_locate(record)
+        # A run that recorded its own function references (the watcher path)
+        # replays from them. A trace did not, and replay does not go looking:
+        # the code has to come from the caller (#79).
         if record.node_fn_refs:
             return self._replay_direct(record, from_node, state, frozen_map, patch)
 
@@ -300,30 +310,10 @@ class ReplayEngine:
             )
 
         raise ValueError(
-            "Cannot replay: this run has no stored node function references "
-            "and no app_factory was provided. Re-record the run with the "
-            "latest argus version to enable factory-free replay."
+            f"Cannot replay '{from_node}': this run was recorded as a trace, which "
+            f"holds state and not code. Pass the graph it came from "
+            f"(`--app module:factory`), or grade the saved run with: argus check {run_id}"
         )
-
-    @staticmethod
-    def _auto_locate(record: RunRecord) -> RunRecord:
-        """Attempt post-hoc source resolution and update the record."""
-        try:
-            from argus.source_locator import derive_node_fn_refs, locate_node_sources
-            from argus.storage import save_run
-        except ImportError:
-            return record
-
-        resolved = locate_node_sources(record, use_llm=True)
-        if not resolved:
-            return record
-
-        record.node_fn_paths = resolved
-        refs = derive_node_fn_refs(resolved)
-        if refs:
-            record.node_fn_refs = refs
-            save_run(record)
-        return record
 
     def _replay_direct(
         self,

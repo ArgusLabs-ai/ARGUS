@@ -218,12 +218,23 @@ Pipelines with loops (LLM -> compiler -> if fail, retry) get special treatment:
 Fix a bug, re-run from the failing node. Skip upstream nodes entirely:
 
 ```bash
-argus replay <run-id> node_7          # re-run from node_7 onward
-argus replay <run-id> node_7 --only   # just that one node
-argus diff <rerun-id>                 # compare vs original
+argus replay <run-id> node_7 --only --app mypkg.graph:build   # re-run that node against your graph
+argus replay <run-id> node_7                                  # re-run from node_7 onward
+argus diff <rerun-id>                                         # compare vs original
 ```
 
-External API calls (OpenAI, etc.) are recorded by default — replays are free and deterministic.
+**A rerun takes the state from the run file and the code from you.** The input is the state
+node_7 really saw, rebuilt from the steps that already passed — they are never re-executed. The
+function comes from the compiled graph you pass with `--app` (a zero-arg callable returning it),
+so the fix you just made is what runs. ARGUS never goes looking for your source to import it.
+
+Runs recorded the older way (`ArgusWatcher`) stored references to their own node functions and
+still replay without `--app`; those are labelled `(legacy refs)` in the header, and external API
+calls made during them were recorded to cassettes, so their replays are free and deterministic.
+On the trace path there are no cassettes — external calls execute live, and the command says so
+before it runs.
+
+To grade a saved run with no graph at all, that's `argus check <id>`, not replay.
 
 ### Time-Travel: edit the state, then resume
 
@@ -236,7 +247,9 @@ argus replay <run-id> node_7 --patch fix.json         # a full patch document
 argus replay <run-id> node_7 --set status=OK --dry-run  # preview, run nothing
 ```
 
-Upstream nodes stay frozen, so only the resumed trajectory changes. Paths are dotted with list
+The same rule applies: a trace run needs `--app` alongside these, `--dry-run` included — the
+graph is required before the patch is previewed. Upstream nodes stay frozen, so only the resumed
+trajectory changes. Paths are dotted with list
 indices — `items[0].name` — and match the `field_path` ARGUS reports on a failing signal, so you
 can paste one straight in. A patch file takes the same three ops:
 
@@ -361,7 +374,7 @@ argus check last --format json       # same verdict as one JSON object (run_id, 
 argus check last --fail-on crashed,silent_failure   # only these run statuses fail the gate
 argus inspect <id> --step <node>     # dump raw input/output for a node
 argus fix <id>                       # fix prompt for the root cause, ready to paste
-argus replay <id> <node>             # re-run from a node
+argus replay <id> <node> --app m:fn  # re-run from a node, against the graph you pass
 argus diff <id-a> <id-b>             # compare two runs
 argus stats                          # signature hit stats, disable/enable/dispute signatures
 argus ui                             # web dashboard
