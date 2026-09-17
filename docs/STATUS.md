@@ -97,6 +97,25 @@ walking `steps[].inspection / validator_results / anomaly_signals / semantic_che
 | `DegradationOrigin.event_type` | `node_ok` \| `degradation_onset` \| `propagation` \| `crash` | `correlator.py` — note `crash` here is an *event type*, not a status |
 | Failure types | `placeholder_detected`, `semantic_degradation`, `empty_output`, `unreadable_update`, `json_in_string`, … | `inspector.py` / `registry.py` — the *reason* a status was assigned; listed in `CLAUDE.md` |
 
+## What a replayed run is (#79)
+
+A rerun needs state and code. The state half is always the **ledger row** — the input
+that node really saw. The code half has exactly two legal sources, and replay never
+invents a third:
+
+| Run kind | `argus replay <id> <node>` | Where the code comes from |
+|---|---|---|
+| Trace (`ArgusRecorder`, the pivot path) | needs `--only --app module:factory` | the caller's compiled graph |
+| Trace, no `--app` given | **exit 1**, pointing at both routes | — nothing is imported |
+| Legacy wrap (`ArgusWatcher`) | works as before, header says `(legacy refs)` | `node_fn_refs` the run recorded about itself |
+
+A replayed run is a normal `RunRecord` with `parent_run_id` set, graded by the same
+pipeline as any other — replay is not a status and produces no status of its own.
+
+**Not a re-score.** Grading a saved run with no graph is `argus check <id>`, which
+rebuilds the ledger and re-runs every check. `replay` means *execute again*; if there is
+no code to execute, it says so instead of printing a verdict that looks like a rerun.
+
 ## Changing this vocabulary
 
 Adding or renaming a status is a public-API change. In the same PR update: this file,

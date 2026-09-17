@@ -943,16 +943,28 @@ def _render(
 
     # 8 — Verify.
     parts.append("## Verify")
-    parts.append(f"```bash\nargus replay {record.run_id} {target}\n```")
+    # A trace holds state, not code, so its rerun needs the graph handed to it
+    # (#79). Print the command that works rather than one that exits 1 with a
+    # hint — the whole point of this section is to be pasteable.
+    is_trace = not record.node_fn_refs and not record.app_factory_ref
+    command = (
+        f"argus replay {record.run_id} {target} --only --app module.path:factory_fn"
+        if is_trace
+        else f"argus replay {record.run_id} {target}"
+    )
+    parts.append(f"```bash\n{command}\n```")
     verify_note = (
         "This re-runs the pipeline from this node using the recorded input and "
         "reports whether the failure is gone."
     )
-    if not record.node_fn_refs and not record.app_factory_ref:
-        verify_note += (
-            " This run has no stored factory-free replay refs — if the command "
-            "above asks for one, add `--app module.path:factory_fn` (a zero-arg "
-            "callable returning your graph)."
+    if is_trace:
+        verify_note = (
+            "This re-runs the node with the input the ledger recorded for it, "
+            "against your current code, and reports whether the failure is gone. "
+            "Replace `module.path:factory_fn` with a zero-arg callable returning "
+            "your compiled graph — this run was recorded as a trace, so it holds "
+            "the state but not the code. To grade the saved run without a graph, "
+            f"use `argus check {record.run_id}` instead."
         )
     parts.append(verify_note)
 

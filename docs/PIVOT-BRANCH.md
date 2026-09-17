@@ -317,6 +317,34 @@ which is a different and more dangerous thing to leave undocumented.
 
 These are known. They do **not** block pushing this branch. They **do** block deleting the old wrap and merging a “replacement” PR into `master`.
 
+### 0. What `replay` means — decided (#79)
+
+**A rerun's state comes from the ledger; its code comes from the caller, or from
+references the run recorded about itself. There is no third source.**
+
+| Run kind | `argus replay` | Code from |
+|---|---|---|
+| Trace (`ArgusRecorder`) | `--only --app module:factory` | the caller's compiled graph |
+| Trace, no `--app` | exit 1, naming `--app` *and* `argus check <id>` | nothing is imported |
+| Legacy wrap (`ArgusWatcher`) | unchanged, labelled `(legacy refs)` | `node_fn_refs`, captured at record time |
+
+What went away is the path that *manufactured* the references it lacked: `_auto_locate`
+scanned the project — with an LLM — to guess where each node's function lived, imported
+it and saved the guess back into the run file. That is "re-import live functions as the
+default" (brief §5), and it failed opaquely: a wrong guess re-runs some other function
+and reports it as your node.
+
+Two options were on the table and both were rejected. *"Replay means re-score"* makes it
+an alias of `argus check <id>`, which already reloads the run file, rebuilds the ledger
+and re-runs every check — and it leaves `--set` / `--patch` meaningless, since patching
+state only means something if something then executes. *"Drop re-execution entirely"*
+would delete `replay_live`, which is the one piece of this that already works the way the
+pivot wants; the issue's version of it also deleted `derive_node_fn_refs`, which
+`argus locate`, `argus fix` and the UI all still use. `source_locator` stays for them.
+
+Tests: `tests/test_replay_semantics.py`, one per branch, including a guard that replay
+never reaches for `source_locator` again.
+
 ### 1. Replay does not continue the graph after the fixed node
 
 You can rerun `rerank` from the notebook. You cannot yet say “rerank is fixed — now also run summarize and answer on the new docs.” `--only` is the live path. Full resume still needs the old wrap’s function pointers.

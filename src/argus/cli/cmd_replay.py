@@ -163,10 +163,16 @@ def replay_run(
                 "it has no stored node references."
             )
             if record.schema_version >= "2" and not record.node_fn_paths:
-                # Trace-recorded run (ArgusRecorder): re-execution was never the
-                # plan for these. Re-scoring the saved run is, and already ships.
+                # Trace-recorded run (ArgusRecorder). A trace holds state, not
+                # code, and replay does not go hunting for the code (#79) — so
+                # say both things the user can actually do: hand over the graph,
+                # or grade the run they already have.
                 console.print(
-                    f"\n  It was recorded as a trace. Grade it from the run file instead:"
+                    "\n  It was recorded as a trace, which holds state and not code."
+                    "\n  Re-run the node against the graph it came from:"
+                    f"\n    [bold]argus replay {run_id} {from_step} --only "
+                    "--app module:factory_fn[/bold]"
+                    "\n\n  Or grade the saved run with no graph at all:"
                     f"\n    [bold]argus check {run_id}[/bold]\n"
                 )
             else:
@@ -193,6 +199,11 @@ def replay_run(
     header.append(from_step, style="bold")
     if only:
         header.append("  (isolated)", style="italic dim")
+    if has_node_refs:
+        # The wrap path recorded where its own functions live, and replay still
+        # imports them for those runs. Labelled because it is the legacy route:
+        # new runs are traces and get their code from `--app` (#79).
+        header.append("  (legacy refs)", style="italic dim")
     if patch is not None:
         header.append("  + patch", style="italic yellow")
     console.print(f"  {header}")
