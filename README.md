@@ -198,6 +198,13 @@ Runs in order, each more expensive — only fires when needed. Every status a la
 2. **Validators** — custom per-node business-logic constraints. Deterministic.
 3. **Anomaly detector** — statistical checks for output size anomalies, timing outliers. Deterministic.
 4. **Correlator** — traces failure propagation across nodes. Points at the *origin*, not the crash site.
+
+   Blame is decided against the state each node really saw, read off the recording. Where ARGUS
+   has to reconstruct that state — it replays your reducers from a saved *name*, since a reducer
+   callable cannot be stored in a run file — and its reconstruction disagrees with what the run
+   actually recorded, the recording wins. A custom reducer (anything that is not `operator.add`
+   or `add_messages`) is therefore approximated, never trusted over the trace, so a node whose
+   `[]` your reducer discards is not reported as having dropped anything.
 5. **LLM semantic judge** — evidence-aware final ruling. Receives all signals from layers 1–4 before deciding. Cannot override validator failures or critical anomalies.
 6. **LLM investigator** — root cause explanations and debugging suggestions. Only on ambiguous failures.
 

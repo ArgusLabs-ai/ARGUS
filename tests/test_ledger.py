@@ -209,3 +209,135 @@ def test_an_unknown_reducer_falls_back_to_overwrite():
     assert build_ledger(steps, {}, {"docs": "overwrite"})[-1].state_after["docs"] == ["y"]
     assert build_ledger(steps, {}, {"docs": "add"})[-1].state_after["docs"] == ["x", "y"]
     assert build_ledger(steps, {})[-1].state_after["docs"] == ["y"]
+
+
+def _keep_best(old: list, new: list) -> list:
+    """Last-good-wins: a perfectly ordinary custom reducer, unknown to us by name."""
+    return new if new else old
+
+
+class _C(TypedDict, total=False):
+    query: str
+    docs: Annotated[list, _keep_best]
+    summary: str
+
+
+def _custom_reducer_app():
+    """search fills `docs`; clean returns `[]`; the reducer keeps the old value."""
+
+    def search(s: _C) -> dict:
+        return {"docs": ["seed"]}
+
+    def clean(s: _C) -> dict:
+        return {"docs": []}
+
+    def summarize(s: _C) -> dict:
+        return {"summary": f"{len(s.get('docs', []))} docs"}
+
+    g = StateGraph(_C)
+    for name, fn in (("search", search), ("clean", clean), ("summarize", summarize)):
+        g.add_node(name, fn)
+    g.add_edge(START, "search")
+    g.add_edge("search", "clean")
+    g.add_edge("clean", "summarize")
+    g.add_edge("summarize", END)
+    return g.compile()
+
+
+@pytest.mark.integration
+def test_an_added_field_folds_to_what_the_graph_really_holds():
+    """#80's repro: `docs: Annotated[list, operator.add]`, one node returning `[]`."""
+
+    class _A(TypedDict, total=False):
+        docs: Annotated[list, operator.add]
+
+    def a(s: _A) -> dict:
+        return {"docs": ["seed"]}
+
+    def b(s: _A) -> dict:
+        return {"docs": []}
+
+    g = StateGraph(_A)
+    g.add_node("a", a)
+    g.add_node("b", b)
+    g.add_edge(START, "a")
+    g.add_edge("a", "b")
+    g.add_edge("b", END)
+
+    recorder = ArgusRecorder()
+    final = recorder.attach(g.compile()).invoke({})
+    loaded = load_run(recorder.session.run_id)
+    rows = build_ledger(loaded.steps, loaded.initial_state, loaded.reducer_kinds)
+
+    assert final["docs"] == ["seed"], "adding [] to ['seed'] changes nothing"
+    assert {r.node: r.state_after["docs"] for r in rows} == {"a": ["seed"], "b": ["seed"]}
+
+
+@pytest.mark.integration
+def test_a_custom_reducer_is_read_off_the_trace_not_emulated():
+    """The fold cannot know `_keep_best`, so it must not contradict the recording.
+
+    Fails without the fix: the overlay writes `[]` into the running state and the
+    notebook reports `clean` as having emptied a field the reducer preserved —
+    while the very same run file records `summarize` being handed `['seed']`.
+    """
+    recorder = ArgusRecorder()
+    final = recorder.attach(_custom_reducer_app()).invoke({"query": "q"})
+
+    loaded = load_run(recorder.session.run_id)
+    rows = build_ledger(loaded.steps, loaded.initial_state, loaded.reducer_kinds)
+    by_node = {r.node: r for r in rows}
+
+    assert final["docs"] == ["seed"], "the real reducer kept the earlier value"
+    # The trace's own answer for what ran next...
+    assert by_node["summarize"].input_state["docs"] == ["seed"]
+    # ...and the notebook now agrees with it.
+    assert by_node["clean"].state_after["docs"] == ["seed"]
+    # The row still reports what the node returned — only the fold was repaired.
+    assert by_node["clean"].update == {"docs": []}
+
+
+@pytest.mark.integration
+def test_a_custom_reducer_ledger_reads_the_same_live_and_reloaded():
+    """The hard constraint: the repair uses recorded data, so it survives a reload."""
+    recorder = ArgusRecorder()
+    recorder.attach(_custom_reducer_app()).invoke({"query": "q"})
+    session = recorder.session
+
+    loaded = load_run(session.run_id)
+    live = build_ledger(session._events, session._initial_state, session.reducer_kinds)
+    reloaded = build_ledger(loaded.steps, loaded.initial_state, loaded.reducer_kinds)
+
+    assert [r.state_after for r in live] == [r.state_after for r in reloaded]
+
+
+@pytest.mark.unit
+def test_the_repair_never_invents_a_value_the_trace_does_not_show():
+    """One-directional by design: it restores, it never hides a real drop."""
+    from argus.models import NodeEvent
+
+    def _ev(i, node, inp, update):
+        return NodeEvent(
+            step_index=i,
+            node_name=node,
+            status="pass",
+            input_state=inp,
+            output_dict=update,
+            duration_ms=1.0,
+            timestamp_utc="2026-01-01T00:00:00Z",
+        )
+
+    # A genuine drop: the next step really was handed the empty value.
+    dropped = [
+        _ev(0, "a", {}, {"docs": ["x"]}),
+        _ev(1, "b", {"docs": ["x"]}, {"docs": []}),
+        _ev(2, "c", {"docs": []}, {"summary": "none"}),
+    ]
+    assert build_ledger(dropped, {})[1].state_after["docs"] == []
+
+    # A field the next step never carried is left exactly as the fold had it.
+    unseen = [
+        _ev(0, "a", {}, {"docs": []}),
+        _ev(1, "b", {"other": 1}, {"summary": "s"}),
+    ]
+    assert build_ledger(unseen, {})[0].state_after["docs"] == []

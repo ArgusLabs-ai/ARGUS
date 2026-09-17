@@ -31,6 +31,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from argus.inspector import _is_empty
+
 __all__ = ["LedgerRow", "build_ledger", "reducer_kinds"]
 
 # Reducer callables do not survive the run file, so the notebook folds by *kind*
@@ -101,6 +103,50 @@ def _fold(
     return merged
 
 
+def _believe_the_trace(
+    running: dict[str, Any], ran: list[Any], position: int
+) -> dict[str, Any]:
+    """Undo a fold that says "empty" where the trace says otherwise (#80).
+
+    The fold emulates reducers from a *name* (``reducer_kinds``), because
+    callables do not survive the run file. Anything it does not recognise —
+    a custom merge, a last-good-wins keeper, a domain-specific combine — folds
+    as overwrite, so a step returning ``{"docs": []}`` leaves the notebook
+    claiming ``docs`` is empty when the real reducer kept the previous value.
+    That is the notebook contradicting the same run file it was built from:
+    the *next* step's recorded ``input_state`` is the merged state LangGraph
+    actually handed it, reducers already applied.
+
+    So where the two disagree, the recording wins. Deliberately one-directional:
+    a correction only ever restores a value the next step really received, and
+    can never invent an emptiness the trace does not show. That keeps the one
+    failure this could otherwise cause — blaming a node for dropping a field
+    the reducer preserved — without letting the repair hide a genuine drop.
+
+    Resolving reducers by import path was the other candidate, and it is the
+    one #79 just ruled out: grading must not import the user's code.
+
+    Ceiling: under fan-out the next step to run may be a sibling that never saw
+    this step's update, so a branch that really did empty a field can read as
+    still holding the pre-fan-out value. Blame anchors on the reader's own
+    recorded input (:mod:`argus.contextual`), which this never edits, so that
+    costs a row's display rather than a verdict.
+    """
+    nxt = ran[position + 1] if position + 1 < len(ran) else None
+    if nxt is None:
+        return running
+    recorded = getattr(nxt, "input_state", None)
+    if not isinstance(recorded, dict):
+        return running
+
+    corrected: dict[str, Any] | None = None
+    for key, value in recorded.items():
+        if key in running and _is_empty(running[key]) and not _is_empty(value):
+            corrected = running if corrected is not None else dict(running)
+            corrected[key] = value
+    return corrected if corrected is not None else running
+
+
 def build_ledger(
     steps: list[Any],
     initial_state: dict[str, Any] | None = None,
@@ -129,9 +175,14 @@ def build_ledger(
     # ponytail: dict overlay, last write wins, except for fields `reducers` says
     # accumulate. Kinds are strings on purpose — a callable would not survive the
     # run file, and a live-only fix would make the reloaded notebook disagree
-    # with the live one. Remaining ceiling: a custom reducer round-trips as
-    # "overwrite", so its fan-in still reads as the last branch winning. Widen
-    # `_ADD_REDUCERS`, or persist something richer than a name, if that bites.
+    # with the live one.
+    #
+    # A custom reducer still round-trips as "overwrite", because its name tells
+    # us nothing. Rather than emulate it, `_believe_the_trace` repairs the fold
+    # from the next step's recorded `input_state` where the two disagree in the
+    # one direction that causes false blame (#80). Remaining ceiling: a fan-in
+    # folded by a custom reducer still reads as the last branch winning, since
+    # no single successor's input can show what the merge did.
     kinds = reducers or {}
     # A subgraph node writes into the subgraph's schema. A key that exists only
     # there is invisible to every node outside it, so carrying it in the running
@@ -143,15 +194,15 @@ def build_ledger(
     running: dict[str, Any] = dict(initial_state or {})
     rows: list[LedgerRow] = []
 
-    for event in steps:
-        if event.status == "skipped":
-            continue
+    ran = [e for e in steps if e.status != "skipped"]
+    for position, event in enumerate(ran):
         update = event.output_dict
         if update:
             # Fold the outward-visible part; the row still reports the update
             # the node actually returned.
             visible = {k: v for k, v in update.items() if k in outer} if outer else update
             running = _fold(running, visible, kinds)
+        running = _believe_the_trace(running, ran, position)
         rows.append(
             LedgerRow(
                 step_index=event.step_index,
