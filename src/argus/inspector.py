@@ -176,7 +176,50 @@ _MAX_TOOL_SCAN_DEPTH = 5
 _RETRIEVAL_LIST_KEYS = frozenset({"documents", "docs", "results", "hits", "sources", "items"})
 
 # Main LLM text fields — truncated output here is a node failure.
-_MAIN_LLM_OUTPUT_KEYS = frozenset({"answer", "draft", "summary", "reply", "content"})
+# The field a node's *deliverable* lives in. Drives whole-value placeholder
+# promotion and truncation severity. Was five names; `{"memo": "TBD"}` and
+# `{"report": "TODO"}` graded clean while `{"answer": "TODO"}` failed, so the
+# verdict depended on what the author called the field. `text` / `message` are
+# deliberately absent: they hold the *user's* words as often as the model's,
+# and a customer ticket reading "I cannot reset my password" is not a refusal.
+_MAIN_LLM_OUTPUT_KEYS = frozenset(
+    {
+        "answer",
+        "draft",
+        "summary",
+        "reply",
+        "content",
+        "memo",
+        "report",
+        "response",
+        "result",
+        "final",
+        "final_answer",
+        "output",
+        "completion",
+    }
+)
+
+# A failure *word* in a status-like field. HTTP codes and `error` keys were
+# vocabulary; `{"status": "declined"}` from a payment provider was not, so goods
+# shipped on a declined card. `cancelled` is left out on purpose — it is a
+# legitimate business state, not a tool failure.
+_STATUS_WORD_KEYS = frozenset({"status", "state", "outcome", "result_status", "payment_status"})
+_FAILURE_STATUS_WORDS = frozenset(
+    {
+        "declined",
+        "failed",
+        "failure",
+        "rejected",
+        "error",
+        "errored",
+        "timeout",
+        "timed_out",
+        "denied",
+        "unauthorized",
+        "unavailable",
+    }
+)
 
 # Intermediate fields whose copy into a differently named output is a handoff,
 # not "the model echoed the user prompt."
@@ -233,6 +276,23 @@ def _leaf_key(field_path: str) -> str:
     """Last path component, without list-index suffixes."""
     leaf = field_path.rsplit(".", 1)[-1]
     return re.sub(r"\[\d+\]$", "", leaf)
+
+
+def _signature_is_builtin(sig_id: str) -> bool:
+    """Is this signature one ARGUS ships, as opposed to learned or shared?
+
+    Unknown ids (a test double, a signature removed since the run) count as
+    builtin so the promotion path keeps its historical behaviour for them.
+    """
+    try:
+        from argus.registry import get_registry  # noqa: PLC0415
+
+        for sig in get_registry():
+            if sig.get("id") == sig_id:
+                return sig.get("source", "builtin") == "builtin"
+    except Exception:
+        return True
+    return True
 
 
 def _is_the_whole_answer(output_dict: dict[str, Any] | None, field_path: str) -> bool:
@@ -353,6 +413,22 @@ def _apply_tool_shape_rules(
         if status is not None and 400 <= status <= 599:
             _add_http_status_failure(add, field_path, status, nested)
             return
+
+    # Rule 2d — a failure word in a status-like field (`status: "declined"`)
+    if (
+        key_l in _STATUS_WORD_KEYS
+        and isinstance(value, str)
+        and value.strip().lower().replace(" ", "_") in _FAILURE_STATUS_WORDS
+    ):
+        add(
+            ToolFailure(
+                failure_type="error_response",
+                field_name=field_path,
+                severity="critical",
+                evidence=(f"{'nested ' if nested else ''}status field '{key}' is {value!r}"),
+            )
+        )
+        return
 
     # Rule 2b — boolean success field set to False
     if key_l in _SUCCESS_KEYS and isinstance(value, bool) and not value:
@@ -627,13 +703,21 @@ def inspect_tool_outputs(
         severity = signal.severity
         if signal.confidence < 0.7:
             severity = "warning"  # ambiguous — force warning regardless of sig severity
-        if severity == "warning" and _is_the_whole_answer(output_dict, signal.dotted_path):
+        if (
+            severity == "warning"
+            and _signature_is_builtin(signal.sig_id)
+            and _is_the_whole_answer(output_dict, signal.dotted_path)
+        ):
             # "TODO" / "N/A" *as the entire value of the answer field* is not a
             # suspicious phrase inside real prose — it is the node having
             # produced nothing, which is a silent failure and must gate CI.
             # Most placeholder signatures are warning-severity because they
             # usually match inside a longer body; that calibration is right
-            # there and wrong here.
+            # there and wrong here. Bundled signatures only: a learned or
+            # community one keeps the severity its author gave it — `^\d+$`
+            # ("numeric instead of JSON", warning) from the shared cache was
+            # promoted the same way and failed every pipeline whose answer
+            # was a number.
             severity = "critical"
         _add(
             ToolFailure(
@@ -1518,7 +1602,10 @@ def _build_predecessor_map(
 
 
 def _nested_container_origin(
-    steps_so_far: list[Any], crashed: Any, missing_key: str
+    steps_so_far: list[Any],
+    crashed: Any,
+    missing_key: str,
+    state_keys: list[str] | None = None,
 ) -> Any | None:
     """Who wrote the dict that was missing `missing_key`, if that is the story.
 
@@ -1528,11 +1615,28 @@ def _nested_container_origin(
     one is the classic (`{"policy": {}}` from a cache miss) and wins. Blame goes
     to the last step that *wrote* that field before the crash.
 
+    "Not a state field" cannot be read off the crashed node's input alone: a
+    top-level field nobody ever wrote is absent from that input too, and state
+    almost always holds *some* dict (`account`, `metadata`, `config`), so the
+    container story used to fire on ``state["reply"]`` and blame whoever wrote
+    ``account``. The graph schema (``state_keys``) settles it when known; when
+    it is not, an upstream literal ``{}`` update is the canonical silent no-op
+    and owns a never-written key ahead of any container guess.
+
     Returns None when nothing fits — no blame beats blaming a bystander.
     """
+    if state_keys and missing_key in state_keys:
+        return None  # a real state field; the top-level walk handles it
     state = crashed.input_state or {}
     if missing_key in state:
         return None  # a real state field; the top-level walk handles it
+    if any(
+        prev.output_dict == {}
+        and prev.step_index < crashed.step_index
+        and prev.status not in ("crashed", "skipped")
+        for prev in steps_so_far
+    ):
+        return None  # a no-op upstream is the likelier story; the walk blames it
 
     candidates = [
         field
@@ -1563,6 +1667,7 @@ def _nested_container_origin(
 def crash_origins(
     steps_so_far: list[Any],
     edge_map: dict[str, list[str]] | None = None,
+    state_keys: list[str] | None = None,
 ) -> list[tuple[Any, str, Any]]:
     """Who is answerable for each crash: ``[(origin_event, key, crashed_event)]``.
 
@@ -1604,7 +1709,7 @@ def crash_origins(
         # top-level walk below cannot find it anywhere, so it falls through to
         # "whoever ran last and wasn't a passthrough" and blames a bystander.
         # Blame the node that wrote the container instead.
-        nested = _nested_container_origin(steps_so_far, event, missing_key)
+        nested = _nested_container_origin(steps_so_far, event, missing_key, state_keys)
         if nested is not None:
             found.append((nested, missing_key, event))
             continue
@@ -1627,6 +1732,12 @@ def crash_origins(
             out = prev.output_dict
             inp = prev.input_state or {}
             if missing_key in out and not _is_empty(out.get(missing_key)):
+                break
+            if out == {}:
+                # A literal empty update while a later node waits on a field
+                # nobody wrote: the no-op is the origin, not the last node that
+                # happened to add some unrelated key.
+                origin = prev
                 break
             dropped = (
                 missing_key in inp
@@ -1710,6 +1821,13 @@ def build_root_cause_chain(
             continue
 
         insp = event.inspection
+
+        # A node that *passed* is not an origin. Warning-level tool findings
+        # (`shallow_context`, `rate_limit`, `empty_result` on a scanner that
+        # found nothing) used to qualify here, so the headline named a healthy
+        # `retrieve` while the failing node was `rerank`.
+        if event.status == "pass" and not (insp is not None and insp.severity == "critical"):
+            continue
 
         # Check for LLM semantic checker failure (semantic_check.passed == False)
         has_semantic_check_failure = (

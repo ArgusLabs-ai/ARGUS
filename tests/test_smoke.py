@@ -922,7 +922,9 @@ def test_warning_severity_signal_does_not_fail_node():
     def node(state):
         # PH-001 (placeholder_outputs, warning severity, exact_ci — fixed
         # 1.0 match confidence): literal TODO placeholder left in output.
-        return {"result": "TODO"}
+        # On a side field — `result` is a deliverable (_MAIN_LLM_OUTPUT_KEYS),
+        # where a whole-value placeholder is rightly promoted to critical.
+        return {"result": "The document covers Q3 revenue.", "notes": "TODO"}
 
     wrapped = session.wrap("summarize", node)
     wrapped({"input": "doc"})

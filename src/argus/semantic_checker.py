@@ -286,7 +286,7 @@ def _is_tool_call_turn(output_dict: dict[str, Any]) -> bool:
 
 def _tracked_fields(
     node_name: str,
-    consumers: dict[str, list[str]] | None,
+    consumers: dict[str, Any] | None,
     input_state: dict[str, Any],
     output_dict: dict[str, Any],
 ) -> set[str]:
@@ -307,8 +307,15 @@ def _tracked_fields(
     its job; a node that *reads* a field someone else emptied is #85's case, and
     that is the one this keeps.
     """
-    declared = {f for f, readers in (consumers or {}).items() if node_name in (readers or ())}
+    declared = {f for f, spec in (consumers or {}).items() if node_name in _readers_of(spec)}
     return (declared | set(input_state)) - set(output_dict)
+
+
+def _readers_of(spec: Any) -> tuple[str, ...]:
+    """Readers from either consumer-map shape: a list, or a dict with ``readers``."""
+    if isinstance(spec, dict):
+        return tuple(spec.get("readers") or ())
+    return tuple(spec or ())
 
 
 def _history_lines(
@@ -414,7 +421,7 @@ def check_semantic_coherence(
     inspection: Any | None = None,
     ambiguous_signals: list[SemanticSignal] | None = None,
     prior_rows: list[Any] | None = None,
-    consumers: dict[str, list[str]] | None = None,
+    consumers: dict[str, Any] | None = None,
 ) -> tuple[SemanticCheckResult, list[DisambiguationResult]]:
     """Check coherence and disambiguate heuristic signals in one LLM call.
 

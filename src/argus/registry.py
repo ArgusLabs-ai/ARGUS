@@ -5,6 +5,7 @@ import json
 import re
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -21,6 +22,16 @@ class SignatureMatch:
 
 
 # ── Singleton registry load ───────────────────────────────────────────────────
+
+
+def _argus_dir() -> Path:
+    """``<project-root>/.argus`` by the run store's rule; cwd's if that fails."""
+    try:
+        from argus.storage import argus_dir  # noqa: PLC0415
+
+        return argus_dir()
+    except Exception:
+        return Path(".argus")
 
 
 def _load_registry() -> list[dict[str, Any]]:
@@ -40,10 +51,13 @@ def _load_registry() -> list[dict[str, Any]]:
         if sig["match_strategy"] == "regex":
             sig["_compiled"] = re.compile(sig["pattern"], re.IGNORECASE)
 
-    # Append custom (learned, private) signatures if present
-    from pathlib import Path  # noqa: PLC0415
+    # Append custom (learned, private) signatures if present. Resolved through
+    # the same project-root rule as the run store (`ARGUS_DIR`, then the repo
+    # root) — a bare `Path(".argus")` made the signature set, and so the
+    # verdict, depend on the directory `pytest` happened to be launched from.
+    argus_root = _argus_dir()
 
-    custom_path = Path(".argus/custom_signatures.json")
+    custom_path = argus_root / "custom_signatures.json"
     if custom_path.exists():
         try:
             custom_data = json.loads(custom_path.read_text(encoding="utf-8"))
@@ -58,7 +72,7 @@ def _load_registry() -> list[dict[str, Any]]:
 
     # Append shared (community) signatures from Supabase if logged in.
     # Uses a cached local copy to avoid blocking on network calls.
-    shared_cache = Path(".argus/shared_signatures_cache.json")
+    shared_cache = argus_root / "shared_signatures_cache.json"
     if shared_cache.exists():
         try:
             shared_data = json.loads(
@@ -103,8 +117,6 @@ def sync_shared_signatures() -> int:
     Returns the number of shared signatures cached. Runs synchronously
     — call from a background thread if needed.
     """
-    from pathlib import Path  # noqa: PLC0415
-
     try:
         from argus.cloud import pull_shared_signatures  # noqa: PLC0415
 
@@ -115,7 +127,7 @@ def sync_shared_signatures() -> int:
     if not sigs:
         return 0
 
-    cache_path = Path(".argus/shared_signatures_cache.json")
+    cache_path = _argus_dir() / "shared_signatures_cache.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(sigs, indent=2), encoding="utf-8")
     reload_registry()

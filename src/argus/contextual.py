@@ -35,6 +35,23 @@ history backward:
 A node that returned a literal ``{}`` is not this layer's business —
 ``inspector.empty_output`` already blames it. When such a row sits between the
 start and the reader, stay quiet rather than add a second, worse-aimed finding.
+
+**Every** declared reader is checked, not only the first one that ran. A field
+declared for ``[price, ship]`` can be present when ``price`` reads it and
+emptied before ``ship`` does; anchoring on ``price`` alone let an order ship
+with no line items.
+
+**Victims are not origins.** ``retrieve`` returns ``[]``; ``rerank`` therefore
+writes ``ranked: []``; ``generate`` therefore writes ``citations: []``. Each
+"wrote it empty" is true, but only the first is a cause. A row that is itself a
+declared reader starved of some field is a victim and is not blamed for what it
+went on to write empty.
+
+**Presence-only fields.** A declared consumer means "present and non-empty".
+Some fields are legitimately empty on the good path — a PR review's
+``issues: []`` *is* the LGTM. Declare them with
+``{"issues": {"readers": ["summarize"], "allow_empty": True}}`` and only
+absence (or ``None``) is a failure.
 """
 
 from __future__ import annotations
@@ -47,7 +64,9 @@ from argus.models import Finding
 
 __all__ = ["contextual_findings"]
 
-ConsumerMap = dict[str, list[str]]
+# ``{"field": ["reader", ...]}`` or
+# ``{"field": {"readers": ["reader", ...], "allow_empty": True}}``
+ConsumerMap = dict[str, Any]
 
 
 def contextual_findings(ledger: list[Any], consumers: ConsumerMap | None) -> list[Finding]:
@@ -61,41 +80,69 @@ def contextual_findings(ledger: list[Any], consumers: ConsumerMap | None) -> lis
     if not consumers or not ledger:
         return []
 
-    out: list[Finding] = []
-    for field, readers in consumers.items():
-        reader_at = _first_reader_index(ledger, readers)
-        if reader_at is None:
-            continue  # no declared reader actually ran — nothing to require
-        finding = _blame(ledger, field, reader_at)
-        if finding is not None:
-            out.append(finding)
-    return out
+    found: list[tuple[Finding, str]] = []  # (finding, reader that was starved)
+    seen: set[tuple[str, str]] = set()
+    for field, spec in consumers.items():
+        readers, allow_empty = _normalise(spec)
+        for reader_at in _reader_indices(ledger, readers):
+            result = _blame(ledger, field, reader_at, allow_empty=allow_empty)
+            if result is None:
+                continue
+            finding, reader = result
+            key = (finding.node, field)
+            if key in seen:
+                continue  # one finding per origin+field, however many readers it starved
+            seen.add(key)
+            found.append((finding, reader))
+
+    # A row that was itself starved is a victim of whatever starved it, not the
+    # origin of what it then wrote empty. Keep the findings that name it as the
+    # reader; drop the ones that name it as the origin.
+    victims = {reader for _finding, reader in found}
+    return [f for f, _reader in found if f.node not in victims]
 
 
-def _blame(ledger: list[Any], field: str, reader_at: int) -> Finding | None:
-    """Who is answerable for `field` being missing when its reader ran."""
+def _normalise(spec: Any) -> tuple[list[str], bool]:
+    if isinstance(spec, dict):
+        return list(spec.get("readers") or []), bool(spec.get("allow_empty", False))
+    return list(spec or []), False
+
+
+def _blame(
+    ledger: list[Any], field: str, reader_at: int, *, allow_empty: bool = False
+) -> tuple[Finding, str] | None:
+    """Who is answerable for `field` being missing when its reader ran.
+
+    Returns ``(finding, reader_node)`` or None.
+    """
+    lacks = _absent if allow_empty else _lacks
     before = ledger[:reader_at]
     reader = ledger[reader_at]
     if not before:
         return None  # the reader ran first — nobody upstream to blame
 
     # The reader produces the field it consumes (accumulator, initialiser). It
-    # is not missing — the reader is where it comes from.
-    if _wrote(reader, field):
+    # is not missing — the reader is where it comes from. Unless it had nothing
+    # to read *and* wrote the field empty: `validate` turning an absent
+    # `line_items` into `[]` is a filter over a missing input, not a producer,
+    # and exempting it hid the node upstream that never produced the field.
+    if _wrote(reader, field) and (
+        not lacks(reader.input_state, field) or not lacks(reader.update, field)
+    ):
         return None
 
     # Anchor on the reader. Not yet written is not a failure.
-    if not _lacks(reader.input_state, field):
+    if not lacks(reader.input_state, field):
         return None
 
     # Index the field's history over the rows that ran before the reader.
-    held = [i for i, row in enumerate(before) if not _lacks(row.state_after, field)]
+    held = [i for i, row in enumerate(before) if not lacks(row.state_after, field)]
     wrote = [i for i, row in enumerate(before) if _wrote(row, field)]
 
     if held:
         # Present, then lost: blame the row that lost it.
         origin_at = next(
-            (i for i in range(held[-1] + 1, len(before)) if _lacks(before[i].state_after, field)),
+            (i for i in range(held[-1] + 1, len(before)) if lacks(before[i].state_after, field)),
             None,
         )
         if origin_at is None:
@@ -118,7 +165,7 @@ def _blame(ledger: list[Any], field: str, reader_at: int) -> Finding | None:
         why = "no step wrote it"
 
     origin = before[origin_at]
-    return _mk(
+    finding = _mk(
         node=origin.node,
         type_="missing_field",
         severity="critical",
@@ -127,15 +174,21 @@ def _blame(ledger: list[Any], field: str, reader_at: int) -> Finding | None:
         field_path=field,
         origin_node=origin.node,
     )
+    return finding, reader.node
 
 
-def _first_reader_index(ledger: list[Any], readers: list[str]) -> int | None:
+def _reader_indices(ledger: list[Any], readers: list[str]) -> list[int]:
     names = set(readers)
-    return next((i for i, row in enumerate(ledger) if row.node in names), None)
+    return [i for i, row in enumerate(ledger) if row.node in names]
 
 
 def _wrote(row: Any, field: str) -> bool:
     return isinstance(row.update, dict) and field in row.update
+
+
+def _absent(state: dict[str, Any], field: str) -> bool:
+    """Missing or ``None`` — the presence-only rule for ``allow_empty`` fields."""
+    return state.get(field) is None
 
 
 def _lacks(state: dict[str, Any], field: str) -> bool:

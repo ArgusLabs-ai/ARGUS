@@ -358,7 +358,7 @@ class ArgusSession:
         self.node_fn_registry: dict[str, Any] = {}
         # Declared consumer map (argus.contextual). Read by the judge to scope
         # the run history it is shown to the fields a node actually reads (#85).
-        self.consumers: dict[str, list[str]] = {}
+        self.consumers: dict[str, Any] = {}
 
         self._strict = strict
         self._redact_keys: frozenset[str] = frozenset(redact_keys or ())
@@ -1400,7 +1400,7 @@ class ArgusSession:
         existing roll-up and ``findings.collect_findings`` turn it into a
         ``missing_field`` finding with no new plumbing.
         """
-        for origin, key, crashed in crash_origins(events, self.graph_edge_map):
+        for origin, key, crashed in crash_origins(events, self.graph_edge_map, self.state_keys):
             insp = origin.inspection
             if insp is None or key in insp.missing_fields:
                 continue
@@ -1616,8 +1616,22 @@ class ArgusSession:
                 "crashed",
             ):
                 top = correlation.degradation_origins[0]
-                if top.confidence >= 0.8:
-                    corr_chain = [o.node_name for o in correlation.degradation_origins]
+                # The correlator may only move the headline onto a node that
+                # actually failed. It scores input→output degradation, so a
+                # healthy `retrieve` carrying a warning could outrank the
+                # `rerank` that emptied the field — and `argus show` then led
+                # with a node `argus check` never named.
+                failing = {
+                    e.node_name
+                    for e in record.steps
+                    if e.status in ("fail", "crashed", "semantic_fail", "degraded_input")
+                }
+                if top.confidence >= 0.8 and top.node_name in failing:
+                    corr_chain = [
+                        o.node_name
+                        for o in correlation.degradation_origins
+                        if o.node_name in failing
+                    ]
                     record.root_cause_chain = corr_chain
                     record.first_failure_step = corr_chain[0]
         except Exception:
