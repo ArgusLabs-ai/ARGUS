@@ -13,7 +13,7 @@ together.
 | `pass` | Node returned output and no layer flagged it. | default | no |
 | `fail` | A hard signal fired: a validator returned `False`, or the structural inspector found a critical problem (missing required field, `empty_output`, critical tool failure). | `session.py` node pipeline | **yes** — run becomes `silent_failure` |
 | `crashed` | Node raised an exception. | `session.py` exception path | **yes** — run becomes `crashed` |
-| `semantic_fail` | Either the LLM semantic judge returned `pass: false`, **or** a critical anomaly signal fired on a step that was otherwise `pass` — `unreadable_update` (the capture kept no readable update, #111) and the behavioural `BA-*` criticals get here with the judge off and no key configured, which is how `argus ingest` produces it at all (file grading never calls the judge). Validator failures and critical anomalies cannot be overridden by the judge, so a `fail` never downgrades to `semantic_fail`. | `session.py` `on_node_end` (anomalies) / `_apply_judge_verdict` (judge) | **yes** — run becomes `silent_failure` |
+| `semantic_fail` | A **critical anomaly** fired on a step that was otherwise `pass` — `unreadable_update` (#111) and the behavioural `BA-*` criticals. The LLM judge does **not** assign this on its own: it only reviews soft rule flags and cannot originate a fail. File grading (`argus ingest`) never calls the judge, so ingest still reaches `semantic_fail` via those critical anomalies. Validator failures and hard rule fails cannot be overridden, so a `fail` never downgrades to `semantic_fail`. | `session.py` `on_node_end` (anomalies) | **yes** — run becomes `silent_failure` |
 | `degraded_input` | Node produced syntactically valid output, but an upstream node it depends on dropped or degraded a field it consumed (`inspection.degraded_upstream_node`). The blame belongs upstream; this status marks the downstream victim. | `session.py` `_check_degraded_input` | **yes** — run becomes `silent_failure` |
 | `interrupted` | Execution was cut off before the node finished (e.g. `KeyboardInterrupt`, LangGraph interrupt). | `session.py` interrupt path | **yes** — run becomes `interrupted` |
 | `retried` | An earlier iteration of a node inside a loop, where the **final** iteration of that node passed. Not a failure: the pipeline self-corrected. | `session.py` `_mark_retried_iterations` at finalize | no — excluded from roll-up |
@@ -27,7 +27,9 @@ Rules that follow from the table:
   `RunRecord.root_cause_chain[0]` for the origin.
 - **Warnings do not change status.** Warning-severity signals (`json_in_string`, `shallow_output`,
   `truncated_llm_output`, warning-level tool failures such as HTTP 429) are recorded on the event
-  but leave it `pass`. A strictness knob to escalate them is planned (see `visual/PRD.md` US-1.4).
+  but leave it `pass`. A warning-level **signature** (placeholder / refusal-like text) is the one
+  soft flag the LLM judge may review — and drop, if it is a false positive. Shape warnings are
+  not a reason to call the judge. A strictness knob to escalate them is planned (see `visual/PRD.md` US-1.4).
 - **Critical anomaly signals do.** A critical signal on a `pass` step makes it `semantic_fail`,
   judge or no judge. `unreadable_update` is deliberately one of these: "I could not read this
   node's update" and "this node ran fine" must not be the same verdict, or a silent no-op ships

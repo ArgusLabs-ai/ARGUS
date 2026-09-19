@@ -293,11 +293,9 @@ def _event_findings(event: NodeEvent) -> list[Finding]:
 
     sc = event.semantic_check
     if sc is not None and sc.evaluated and not sc.passed:
-        # The judge's opinion is critical only when it moved the status. An
-        # uncorroborated fail (no rule agreed, or a coherence verdict that did
-        # not survive the second look) is kept so `argus show` can display it,
-        # but as a warning: the run is clean, and a critical finding on a clean
-        # run is a contradiction the gate and the report must not carry.
+        # The judge's opinion is critical only when it moved the status.
+        # It no longer originates a fail, so this is almost always a warning
+        # kept so `argus show` can display the review.
         stands = event.status == "semantic_fail"
         out.append(
             _mk(

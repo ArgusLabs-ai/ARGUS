@@ -23,6 +23,7 @@ class PipelineState(TypedDict, total=False):
     answer: str
     score: float
     sources: list[str]
+    notes: str
 
 
 # ── Helper nodes ────────────────────────────────────────────────────────────
@@ -226,10 +227,10 @@ class TestAsyncJudgeWithMockedLLM:
                 assert e.semantic_check.passed is True
 
     def test_async_judge_applies_fail_verdict(self, monkeypatch):
-        """A judge fail gates the run when a deterministic layer also flagged it.
+        """A whole-value placeholder on `answer` is a hard rule fail.
 
-        `generate_answer_placeholder` trips the rules, so the judge is ruling on
-        evidence rather than inventing a verdict — that is the case it may fail.
+        The judge is not asked — hard fails are the cop's. The mock that
+        always votes fail must not be able to change that.
         """
         self._enable_llm(monkeypatch)
         monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _mock_llm_fail)
@@ -243,15 +244,10 @@ class TestAsyncJudgeWithMockedLLM:
         assert [e for e in events if e.status in ("fail", "semantic_fail")]
 
     def test_an_uncorroborated_judge_fail_does_not_gate_the_run(self, monkeypatch):
-        """The judge may not fail a step no deterministic layer flagged.
+        """The judge is not asked about a step the rules cleared.
 
-        BEHAVIOUR CHANGE — this previously produced `semantic_fail`. Left free
-        to originate failures, the judge made the gate nondeterministic: the
-        same healthy `create_react_agent` failed two runs in three at
-        confidence 1.0, with contradictory reasons. "Judge last, never first"
-        means it rules on evidence; with no evidence it annotates and nothing
-        more. The verdict is still recorded on the event and shown by
-        `argus show` — it just does not move the status.
+        Walking every node is how a healthy `create_react_agent` failed two
+        runs in three at confidence 1.0. No soft flag → no call → no gate.
         """
         self._enable_llm(monkeypatch)
         monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _mock_llm_fail)
@@ -263,12 +259,10 @@ class TestAsyncJudgeWithMockedLLM:
         })
         assert record.overall_status == "clean", record.overall_status
         assert not [e for e in events if e.status == "semantic_fail"]
-        judged = [e for e in events if e.semantic_check is not None]
-        assert judged, "the verdict must still be recorded, just not gating"
-        assert any(not e.semantic_check.passed for e in judged)
+        assert all(e.semantic_check is None for e in events)
 
     def test_async_judge_concurrent_calls(self, monkeypatch):
-        """Verify multiple LLM calls fire and complete."""
+        """Several soft flags → several background judge calls."""
         self._enable_llm(monkeypatch)
         call_count = {"n": 0}
 
@@ -279,14 +273,23 @@ class TestAsyncJudgeWithMockedLLM:
 
         monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _counting_llm)
 
+        def fetch_flagged(state: PipelineState) -> PipelineState:
+            return {**fetch_context(state), "notes": "TODO"}
+
+        def generate_flagged(state: PipelineState) -> PipelineState:
+            return {**generate_answer(state), "notes": "TODO"}
+
+        def score_flagged(state: PipelineState) -> PipelineState:
+            return {**score_answer(state), "notes": "TODO"}
+
         _, events, record = _build_and_run({
-            "fetch": fetch_context,
-            "generate": generate_answer,
-            "score": score_answer,
+            "fetch": fetch_flagged,
+            "generate": generate_flagged,
+            "score": score_flagged,
         })
-        # 3 per-node judge calls + 1 per-run investigator call = 4
         assert call_count["n"] >= 3, f"Expected ≥3 LLM calls, got {call_count['n']}"
         assert all(e.semantic_check is not None for e in events)
+        assert record.overall_status == "clean"
 
     def test_judge_failure_warn_doesnt_crash(self, monkeypatch):
         self._enable_llm(monkeypatch)

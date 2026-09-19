@@ -44,14 +44,11 @@ from argus.inspector import (
     crash_origins,
     inspect_tool_calls,
     inspect_transition,
-    is_legitimate_field_handoff,
 )
 from argus.ledger import build_ledger
 from argus.ledger import reducer_kinds as _reducer_kinds
 from argus.llm_tracker import create_tracker, extract_usage, install_handler, remove_handler
 from argus.models import (
-    JUDGE_STANDALONE_FAILURE_KINDS,
-    JUDGE_STANDALONE_MIN_CONFIDENCE,
     AnomalySignal,
     ArgusConfig,
     BehaviorConfig,
@@ -258,6 +255,21 @@ def _output_makes_a_claim(obj: Any) -> bool:
     if isinstance(obj, (list, tuple)):
         return any(_output_makes_a_claim(v) for v in obj)
     return False
+
+
+def _has_soft_rule_flags(inspection: InspectionResult | None) -> bool:
+    """Did the rules leave a *reviewable* flag on this step?
+
+    Soft = a warning-level **signature** ("this looks like a refusal" /
+    a `TODO` on a side field). Shape warnings (`shallow_output` on a
+    24-char summary, `json_in_string`, BA-005 on every flat dict) are
+    the cop noting a shape; counting them would send the judge back to
+    walking the whole graph. Hard fails never reach here — the caller
+    requires ``status == "pass"``.
+    """
+    if inspection is None:
+        return False
+    return any(s.severity == "warning" for s in inspection.semantic_signals)
 
 
 def _merge_candidate(
@@ -978,7 +990,11 @@ class ArgusSession:
                 and self._llm_investigation_config
                 and self._llm_investigation_config.enabled
                 and self._llm_investigation_config.semantic_check
-                and status not in ("crashed", "interrupted")
+                # Only a *passing* step with a warning-level signature.
+                # Clean → no call. Hard fail (`{}`, 404, contextual miss)
+                # → the cop already decided; not up for debate.
+                and status == "pass"
+                and _has_soft_rule_flags(inspection)
             )
             _deferred_judge = False
             prior_rows: list[Any] = []
@@ -1196,29 +1212,10 @@ class ArgusSession:
         validator_results: list[ValidatorResult],
         anomaly_signals: list[AnomalySignal],
     ) -> bool:
-        """Did any deterministic layer flag this step at all?
+        """Unused. The originate-fail path that called this is closed.
 
-        The judge runs **last** and rules on evidence — it is not a detector in
-        its own right. Left free to fail a step the rules were silent about, it
-        made the gate nondeterministic: the same healthy ``create_react_agent``
-        failed two runs in three, at confidence 1.0, with contradictory reasons
-        ("the output contains a valid response but is missing a required
-        field"). A gate that red-lights working pipelines at random gets turned
-        off, which costs more than the failures it might have caught.
-
-        So a judge verdict can still confirm, explain, sharpen or overturn what
-        the rules found — it just cannot be the only thing failing a build. An
-        uncorroborated fail is still recorded on the event and shown by
-        ``argus show``; it just does not move the status.
-
-        Only **critical** rule findings corroborate. A warning is the rules
-        saying "noted, not a failure" — `empty_result` on a test scanner that
-        found nothing, `unused_result`, `shallow_context` — and letting the
-        judge upgrade it to a failure meant the judge overrode a calibration
-        the rules made on purpose. Measured on the enterprise suite: a PR
-        review bot's `tests: {"findings": []}` (the good outcome) failed as
-        `empty_or_missing` on two runs in three, corroborated by nothing but
-        that warning.
+        Kept so a revert has the old corroboration test in one place. A judge
+        verdict no longer moves status; only the rules fail a build.
         """
         if inspection is not None and (
             any(t.severity == "critical" for t in inspection.tool_failures)
@@ -1295,7 +1292,7 @@ class ArgusSession:
                     inspection.is_silent_failure or inspection.has_tool_failure
                 )
                 _has_placeholder = inspection and any(
-                    tf.failure_type == "placeholder_detected"
+                    tf.failure_type == "placeholder_detected" and tf.severity == "critical"
                     for tf in (inspection.tool_failures or [])
                 )
                 _has_validator_failures = any(r.is_blocking for r in validator_results)
@@ -1306,92 +1303,86 @@ class ArgusSession:
                     and not _has_validator_failures
                     and not _has_critical_anomalies
                 )
-                if _can_override and status != "pass":
-                    status = "pass"
-                    try:
-                        from argus.feedback_store import record_override  # noqa: PLC0415
-
-                        record_override(
-                            run_id=self.run_id,
-                            node_name=node_name,
-                            override_type="llm_full_override",
-                            anomaly_ids=[
-                                a.anomaly_id for a in anomaly_signals if a.severity == "critical"
-                            ],
-                            anomaly_reasons=[
-                                a.reason for a in anomaly_signals if a.severity == "critical"
-                            ],
-                            llm_reason=semantic_check_result.reason,
-                            llm_confidence=semantic_check_result.confidence,
-                            behavior_type=behavior_type_val or "unknown",
-                            output_shape={
-                                "key_count": len(output_snap) if output_snap else 0,
-                                "depth": _measure_output_depth(output_snap),
-                                "total_chars": len(json.dumps(output_snap, default=str))
-                                if output_snap
-                                else 0,
-                            },
-                            auto_approve_threshold=(
-                                self._llm_investigation_config.false_positive_auto_approve_threshold
-                                if self._llm_investigation_config
-                                else 0.0
-                            ),
+                if _can_override and inspection is not None:
+                    # The judge was asked because of these warnings and said
+                    # they are wrong. Drop them so `argus show` does not keep
+                    # a flag the reviewer dismissed.
+                    dismissed_ids = {
+                        s.sig_id for s in inspection.semantic_signals if s.severity == "warning"
+                    }
+                    if dismissed_ids:
+                        inspection.semantic_signals = [
+                            s
+                            for s in inspection.semantic_signals
+                            if s.sig_id not in dismissed_ids
+                        ]
+                        inspection.tool_failures = [
+                            tf
+                            for tf in inspection.tool_failures
+                            if not any(d_id in (tf.evidence or "") for d_id in dismissed_ids)
+                        ]
+                        inspection.has_tool_failure = any(
+                            tf.severity == "critical" for tf in inspection.tool_failures
                         )
-                    except Exception:
-                        pass
-            elif not sc_passed and sc_confident:
-                if (
-                    status == "pass"
-                    and not is_legitimate_field_handoff(input_snap, output_snap)
-                    and self._judge_may_fail_this_step(
-                        semantic_check_result,
-                        inspection,
-                        validator_results,
-                        anomaly_signals,
-                        output_snap,
-                        step_index,
-                    )
-                ):
-                    status = "semantic_fail"
+                        inspection.is_silent_failure = bool(
+                            inspection.missing_fields or inspection.has_tool_failure
+                        )
+                    if status != "pass":
+                        status = "pass"
+                        try:
+                            from argus.feedback_store import record_override  # noqa: PLC0415
+
+                            record_override(
+                                run_id=self.run_id,
+                                node_name=node_name,
+                                override_type="llm_full_override",
+                                anomaly_ids=[
+                                    a.anomaly_id
+                                    for a in anomaly_signals
+                                    if a.severity == "critical"
+                                ],
+                                anomaly_reasons=[
+                                    a.reason for a in anomaly_signals if a.severity == "critical"
+                                ],
+                                llm_reason=semantic_check_result.reason,
+                                llm_confidence=semantic_check_result.confidence,
+                                behavior_type=behavior_type_val or "unknown",
+                                output_shape={
+                                    "key_count": len(output_snap) if output_snap else 0,
+                                    "depth": _measure_output_depth(output_snap),
+                                    "total_chars": len(json.dumps(output_snap, default=str))
+                                    if output_snap
+                                    else 0,
+                                },
+                                auto_approve_threshold=(
+                                    self._llm_investigation_config.false_positive_auto_approve_threshold
+                                    if self._llm_investigation_config
+                                    else 0.0
+                                ),
+                            )
+                        except Exception:
+                            pass
+            # A fail with no soft-flag review is ignored. The judge does not
+            # originate blame: that is how a healthy node went red on one run
+            # in a hundred. Soft flags it agrees with stay as the rules wrote
+            # them (usually a warning, which does not move the gate).
 
         return status
 
     def _judge_may_fail_this_step(
         self,
-        sc: SemanticCheckResult,
+        _sc: SemanticCheckResult,
         inspection: InspectionResult | None,
         validator_results: list[ValidatorResult],
         anomaly_signals: list[AnomalySignal],
         output_snap: dict | None,
         step_index: int | None,
     ) -> bool:
-        """May this judge verdict move a step the rules cleared?
+        """Unused. The originate-fail path that called this is closed.
 
-        One policy, in one place. Every clause below was a false positive
-        measured on real pipelines, and each new special case was a sign the
-        policy was missing rather than incomplete: the judge was being asked to
-        *originate* blame, which is the one thing it is worst at.
-
-        A judge verdict may fail a step only when it is the **origin** of
-        something. It is never the origin when:
-
-        1. An earlier step already failed. A node fed a bad answer will
-           restate it, and the judge will call that a contradiction — of the
-           consequence, not the cause. `notify` after a rejected ERP post,
-           `summarize` after `aggregate` nulled the issues, `generate` after
-           the reranker emptied the context: all true statements, none the
-           origin, and each one buried the node actually worth fixing. This is
-           the same rule `build_root_cause_chain` applies to `degraded_input`
-           and `contextual` applies to starved readers.
-        2. The output makes no claim. `{"sent": True}` cannot contradict
-           anything (see `_output_makes_a_claim`).
-        3. The verdict is "unrelated" on an output the rules saw echoing its
-           input. An echo is the same subject by construction, so the two
-           readings contradict each other.
-
-        Past those, a coherence verdict (`unrelated` / `contradiction`) at high
-        confidence stands alone — nothing deterministic can see incoherence.
-        Any other kind still needs a critical rule finding to agree.
+        The judge reviews soft flags on a passing step; it does not move
+        status. Blame still cannot land downstream of an existing origin —
+        that is enforced at finalize by ``_demote_consequential_judge_fails``.
         """
         if not _output_makes_a_claim(output_snap):
             return False
@@ -1402,17 +1393,7 @@ class ArgusSession:
         ):
             return False
 
-        echoes_input = inspection is not None and any(
-            t.failure_type == "input_echo" for t in inspection.tool_failures
-        )
-        stands_alone = (
-            sc.failure_kind in JUDGE_STANDALONE_FAILURE_KINDS
-            and sc.confidence >= JUDGE_STANDALONE_MIN_CONFIDENCE
-            and not (sc.failure_kind == "unrelated" and echoes_input)
-        )
-        return stands_alone or self._corroborating_signal(
-            inspection, validator_results, anomaly_signals
-        )
+        return self._corroborating_signal(inspection, validator_results, anomaly_signals)
 
     @staticmethod
     def _demote_consequential_judge_fails(events: list[NodeEvent]) -> None:

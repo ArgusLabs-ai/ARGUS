@@ -2,6 +2,17 @@
 
 Thanks for your interest in contributing. ARGUS is a production readiness platform for AI agent pipelines — there's a lot of surface area and we welcome help across the board.
 
+## How detection works (read this before touching the judge)
+
+Two roles. Do not mix them.
+
+1. **Rules (the cop)** — `inspector.py`, `contextual.py`, signatures, validators. These fail `argus check`. Empty `{}`, dropped fields, HTTP 4xx, a tool that raised.
+2. **LLM judge (the reviewer)** — `semantic_checker.py`, applied in `session.py`. Called **only** when the rules left a *soft* flag on that step (a warning-level signature — "this looks like a refusal"). If it says the flag is wrong, the flag is dropped. If it agrees, the cop's answer stands. Shape warnings (`shallow_output`, `BA-005`) are not a reason to call it.
+
+The judge does **not** walk a clean graph looking for hallucinations. That path failed healthy pipelines at random. It also cannot clear a hard fail.
+
+Tests that pin this: `tests/test_judge_last.py`. Detection changes also need both matrices (`tests/test_silent_failure_matrix.py`, `tests/test_shipped_shapes_matrix.py`).
+
 ## Discord
 
 **Join the [ARGUS Discord](https://discord.gg/67XTFTDSgd) before opening a PR.**
