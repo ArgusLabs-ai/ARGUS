@@ -108,7 +108,7 @@ Every wrapped node executes through this pipeline:
 | `src/argus/providers.py` | Per-provider request/response translation for BYOK (message format, model remapping, response normalization) |
 | `src/argus/signature_generalizer.py` | Generalizes failure signatures via LLM + heuristic fallback. Uses `llm_proxy` for the LLM path |
 | `src/argus/check.py` | CI gate: evaluate a `RunRecord` as clean vs crash / silent_failure / semantic_fail |
-| `src/argus/cli/cmd_check.py` | `argus check <id>` / `ARGUS_RUN_ID=<id> argus check` / `argus check last` — grade one run, print its file, and exit 1 when it was not clean |
+| `src/argus/cli/cmd_check.py` | `argus check <id>` / `ARGUS_RUN_ID=<id> argus check` (user/CI-set) / `argus check last` — grade one run, print its file, and exit 1 when it was not clean. Finish no longer auto-writes `ARGUS_RUN_ID` (#90) |
 | `src/argus/pytest_plugin.py` | pytest `--argus` plugin: fail tests whose instrumented run was not clean |
 | `tests/test_argus_ci_gate.py` | Narrow sync-invoke graph run under CI `pytest --argus` (eat-own-cooking; #56) |
 | `src/argus/cli/main.py` | `argus` CLI entry point (Typer) |

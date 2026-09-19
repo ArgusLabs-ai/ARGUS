@@ -26,9 +26,9 @@ CRASH_FIXTURE = REPO / "tests" / "fixtures" / "langsmith" / "crash_graph.jsonl"
 
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
-    # finish() writes ARGUS_RUN_ID straight into os.environ; setenv first so
-    # monkeypatch puts the original back afterwards.
-    monkeypatch.setenv("ARGUS_RUN_ID", "")
+    # Keep ARGUS_RUN_ID out of the way so bare `argus check` uses `last`
+    # (newest run file). finish() no longer writes the env (#90).
+    monkeypatch.delenv("ARGUS_RUN_ID", raising=False)
     monkeypatch.delenv("ARGUS_EMBEDDINGS", raising=False)
     monkeypatch.setattr("argus.cloud.is_logged_in", lambda: False)
 

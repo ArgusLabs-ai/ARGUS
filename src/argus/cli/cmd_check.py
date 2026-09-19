@@ -98,6 +98,8 @@ def check_run(
 
     target = run_id if run_id not in (None, "last", "run") else None
     if target is None:
+        # ARGUS_RUN_ID is opt-in (CI / scripts). Graders must not auto-write it
+        # on finish — that overwrites concurrent / .batch() siblings (#90).
         target = os.environ.get("ARGUS_RUN_ID", "").strip() or last_run_id()
         if target is None:
             _emit_error("No runs found in .argus/runs/.", as_json=as_json)
