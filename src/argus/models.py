@@ -81,26 +81,13 @@ class SemanticCheckResult:
     # "empty_or_missing" — a field is blank, null or absent
     # "other"            — anything else, and the default for an older record
     #
-    # Coherence ("unrelated" / "contradiction") is the judge's own competence —
-    # no deterministic rule can see it — so those verdicts stand alone. The rest
-    # overlap rules that do the same job more reliably, and are the ones that
-    # made the gate flaky, so they only count alongside a rule finding. See
-    # `ArgusSession._corroborating_signal`.
+    # Audit only. None of these kinds fail `argus check` on their own —
+    # the judge reviews soft flags and cannot originate a fail.
     failure_kind: str = "other"
 
 
-# Judge verdicts that may fail a step with no corroborating rule finding.
-# Coherence is the judge's own competence: no deterministic rule can see that a
-# node fed cake ingredients wrote about helicopters.
+# Kept so older records and tests can name the kinds. None of them gate CI.
 JUDGE_STANDALONE_FAILURE_KINDS = frozenset({"unrelated", "contradiction"})
-
-# ...but standing alone carries a higher burden of proof than agreeing with a
-# rule. Measured over 20 verdicts from gpt-4o-mini on known-good and known-bad
-# pipelines, the two classes separated cleanly at this line: every true
-# incoherence (cake in / helicopter out, a summary contradicting its source)
-# came back at 0.9-1.0, and every false alarm — a fan-out branch contributing
-# one relevant fact, judged as "not answering the question" — came back at 0.8.
-# A corroborated verdict keeps the ordinary 0.7 bar.
 JUDGE_STANDALONE_MIN_CONFIDENCE = 0.9
 
 

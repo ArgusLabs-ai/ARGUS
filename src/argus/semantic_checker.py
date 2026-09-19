@@ -13,14 +13,13 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import replace
 from typing import Any
 
 from argus.models import DisambiguationResult, SemanticCheckResult, SemanticSignal
 
 _SYSTEM_PROMPT = (
-    "You verify whether an AI pipeline node produced semantically correct "
-    "output given its input. Respond with JSON:\n"
+    "You review the flags a deterministic checker already raised on one node "
+    "in an AI pipeline. You do not hunt for new failures. Respond with JSON:\n"
     '{"pass": bool, "reason": "<1 sentence>", "confidence": <0.0-1.0>, '
     '"failure_kind": "unrelated"|"contradiction"|"empty_or_missing"|"other", '
     '"evidence_considered": ["<signal1>", ...], '
@@ -54,9 +53,11 @@ _SYSTEM_PROMPT = (
     "- disambiguation_verdicts: verdict for each Ambiguous Heuristic Match "
     "(empty list if none provided)\n\n"
     "Rules:\n"
-    '- "pass": true if the output is a reasonable response to the input\n'
-    '- "pass": false ONLY if the output is completely unrelated, contradictory, '
-    "or nonsensical given the input\n"
+    '- "pass": true if the Prior Signals are wrong or the output is a reasonable '
+    "response to the input (a false-positive flag: customer text that reads like "
+    "a refusal, an empty list that is a real LGTM, a field the node is updating)\n"
+    '- "pass": false if those Prior Signals are correct — keep them. Do not invent '
+    "a new failure the signals did not name\n"
     "- Do not judge quality or completeness, only semantic relevance\n"
     "- EXCEPTION: if a key output field is empty string, null, or blank while "
     "the input contained meaningful data for that field, FAIL the node — "
@@ -349,96 +350,6 @@ def _is_blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip()) or value == []
 
 
-def _confirm_standalone_coherence(
-    sc: SemanticCheckResult,
-    node_name: str,
-    user_msg: str,
-    model: str,
-    api_key: str | None,
-) -> SemanticCheckResult:
-    """Ask a second time before letting a coherence verdict fail a build alone.
-
-    An "unrelated" / "contradiction" verdict is the only kind that gates CI with
-    no rule agreeing (see `models.JUDGE_STANDALONE_FAILURE_KINDS`), because no
-    deterministic rule can see that a node fed cake ingredients wrote about
-    helicopters. That privilege makes its false positives expensive, and a
-    single sample from a model is not stable: the same healthy fan-out branch
-    came back "unrelated" on roughly one run in eight.
-
-    Two independent samples have to agree. A genuine mismatch of subject is
-    obvious enough to reproduce; an intermittent misread is not. If the second
-    look disagrees, the verdict is kept and reported but demoted to "other", so
-    it now needs a corroborating rule finding like any other judge opinion.
-
-    The second look is a *different question*, not the first prompt replayed.
-    Replaying the same prompt at temperature 0 reproduced the same misread
-    almost every time — the model was asked to check its own work with its own
-    eyes. Here it is handed the first verdict as a claim to audit, together
-    with the false-alarm shapes this rule exists to catch, and asked whether
-    the claim holds. Measured: a lint node appending to a reducer
-    (`findings: []` → `[F401]`) was "contradiction" at 0.9 on one run in three
-    and the replay agreed with itself every time.
-
-    Costs one extra short call, and only on the rare path where a run is about
-    to fail on the judge's word alone.
-    """
-    from argus.models import JUDGE_STANDALONE_FAILURE_KINDS
-
-    if sc.passed or sc.failure_kind not in JUDGE_STANDALONE_FAILURE_KINDS:
-        return sc
-
-    from argus.llm_proxy import create_chat_completion
-
-    audit = (
-        f'A first reviewer failed node "{node_name}" as "{sc.failure_kind}" with the '
-        f"reason: {sc.reason}\n\n"
-        "Audit that verdict against the node below. Uphold it only if the output "
-        "is genuinely about a different subject than the input, or genuinely "
-        "asserts the opposite of an input fact the node did not itself write. "
-        "Common false alarms that must be overturned: a field present in both "
-        "input and output is being updated by this node (an empty list gaining "
-        "items, a status moving on, a count changing) — that is its work, not a "
-        "contradiction; a label, verdict, score, count, boolean or routing key "
-        "is a classification result and is never unrelated; a step that covers "
-        "one aspect of the input or adds one fact to a shared list is a normal "
-        "pipeline step; an empty list a scanner legitimately returned is not a "
-        "contradiction.\n\n" + user_msg
-    )
-
-    try:
-        second = create_chat_completion(
-            model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": audit},
-            ],
-            temperature=0,
-            max_tokens=200,
-            api_key=api_key,
-        )
-        parsed = _extract_json_object(
-            second.get("choices", [{}])[0].get("message", {}).get("content", "")
-        )
-    except Exception:
-        parsed = None
-
-    if parsed is None:
-        return sc  # could not get a second opinion — leave the first as it is
-
-    agrees = (
-        _coerce_verdict(parsed.get("pass")) is False
-        and _coerce_failure_kind(parsed.get("failure_kind")) in JUDGE_STANDALONE_FAILURE_KINDS
-    )
-    if agrees:
-        return sc
-
-    return replace(
-        sc,
-        failure_kind="other",
-        reason=f"{sc.reason} (not reproduced on a second look — needs a rule to agree)",
-    )
-
-
 def check_semantic_coherence(
     node_name: str,
     input_state: dict[str, Any],
@@ -644,8 +555,6 @@ def check_semantic_coherence(
                         duration_ms=round(elapsed, 2),
                     )
                 )
-
-        sc = _confirm_standalone_coherence(sc, node_name, user_msg, model, api_key)
 
         return sc, dis_results
     except Exception as exc:

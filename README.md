@@ -183,7 +183,7 @@ result = app.invoke(initial_state)
 | **Silent failures** | Node returns `{}` or drops a required field — no exception, pipeline keeps running broken |
 | **Semantic failures** | Output structure is fine but values are wrong (placeholders, refusals, degraded text) |
 | **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field |
-| **Wrong subject entirely** | Ingredients go in, a paragraph about helicopters comes out. Structurally perfect, semantically nonsense — the [judge](#semantic-judge) catches this |
+| **Wrong subject entirely** | The [judge](#semantic-judge) reviews *rule flags* (is this really a refusal?). It does not walk a clean graph looking for helicopters — that painted healthy nodes red |
 | **Contract violations** | A field a later node needs was never written, written empty, or dropped in between — blamed on the node responsible ([`consumers=`](#declaring-who-reads-what)) |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
 | **Conditional path confusion** | Unchosen branches correctly shown as "skipped" — not false "crashed" |
@@ -205,7 +205,7 @@ Runs in order, each more expensive — only fires when needed. Every status a la
    actually recorded, the recording wins. A custom reducer (anything that is not `operator.add`
    or `add_messages`) is therefore approximated, never trusted over the trace, so a node whose
    `[]` your reducer discards is not reported as having dropped anything.
-5. **LLM semantic judge** — evidence-aware final ruling. Receives all signals from layers 1–4 before deciding. Cannot override validator failures or critical anomalies.
+5. **LLM semantic judge** — reviews warning-level signatures the rules already raised. Does not scan clean nodes. Can dismiss a false-positive warning; cannot fail CI on its own; cannot clear a hard rule fail (`{}`, missing field, HTTP 4xx).
 6. **LLM investigator** — root cause explanations and debugging suggestions. Only on ambiguous failures.
 
 ---
@@ -276,43 +276,32 @@ the patch it ran with, so the run explains its own divergence from the original.
 
 ## Semantic Judge
 
-Pattern matching cannot tell you that a node fed cake ingredients wrote about
-helicopter rotors. Nothing is missing, nothing is empty, no tool failed — the
-output is simply about the wrong thing. That is what the judge is for.
+The rules fail the build. The judge reviews the flags they raised — that is all.
 
 ```python
 app = ArgusRecorder().attach(graph)                       # on when a key is set
 app = ArgusRecorder(semantic_judge=False).attach(graph)   # rules only, fully deterministic
 ```
 
-On by default once a provider key exists (`argus key set`, or `argus login`) —
-setting a key is opt-in enough. With no key it stays off, since it could only
-skip anyway.
+On by default once a provider key exists (`argus key set`). No key → off.
 
 ### Judge last, never first
 
-The judge runs **after** every deterministic layer and receives what they found.
-It cannot overturn a validator failure or a critical anomaly, and — the rule
-that matters most in CI — it mostly cannot **originate** a failure either:
+1. **Rules (the cop) fail `argus check`.** Empty `{}`, dropped field, HTTP 4xx, a tool that raised.
+2. **The judge is called only if those rules left a *soft* flag** on that step (a warning-level signature — "this looks like a refusal"). Clean nodes are not asked. Hard fails are not up for debate.
+3. **If the judge says the flag is wrong, the flag is dropped.** Customer text that reads like a refusal; an empty `issues: []` that is a real LGTM.
+4. **If the judge agrees, the cop's answer stands.** No second origin.
 
-| The judge says | Gates the build? |
-|---|---|
-| `unrelated` — output is about a different subject than the input | **Yes, on its own.** No rule can see this |
-| `contradiction` — output contradicts the input or itself | **Yes, on its own** |
-| `empty_or_missing`, or anything else | Only if a deterministic layer flagged that step too |
+Walking every node looking for hallucinations is how a healthy pipeline went red on one run in a hundred, a different node each time. That path is closed.
 
-The reason is measured, not philosophical. Left free to fail anything it
-disliked, the judge made the gate nondeterministic: one healthy
-`create_react_agent` failed two runs in three, at confidence 1.0, with
-self-contradicting reasons. Emptiness is a job the rules already do reliably, so
-the judge only gets a vote there. Coherence is a job nothing else can do, so it
-stands alone — and because it stands alone it has to prove itself **twice**, on
-two independent samples, before failing a build.
+| Situation | Judge called? | `argus check` |
+|---|---|---|
+| Rules said nothing | no | pass |
+| Soft flag, judge says "wrong" | yes | pass (flag dropped) |
+| Soft flag, judge says "right" | yes | still the rule's call (usually a warning → pass) |
+| Hard fail (`{}`, missing field, 404) | no | **fail** |
 
-An uncorroborated verdict is still recorded and shown by `argus show`; it just
-does not move the status.
-
-> Judging is skipped entirely for a turn that only issued tool calls — an empty
+> Judging is also skipped for a turn that only issued tool calls — an empty
 > `content` next to a populated `tool_calls` is how every tool-calling model
 > works, and there is no prose there to rule on.
 
@@ -329,9 +318,9 @@ Every verdict carries an audit trail:
 }
 ```
 
-- `failure_kind` — which of the four kinds above, deciding whether it can gate alone
+- `failure_kind` — `unrelated` / `contradiction` / `empty_or_missing` / `other` (audit only; none of these fail CI alone)
 - `evidence_considered` — which prior signals the judge weighed
-- `overridden_signals` — which it disagreed with and passed despite
+- `overridden_signals` — which it disagreed with and dropped
 
 ---
 
@@ -354,7 +343,7 @@ Validator failures cannot be overridden by the LLM judge — they are hard const
 from argus import ArgusWatcher, ArgusConfig
 
 config = ArgusConfig(
-    semantic_judge=True,           # LLM judge on every node (default: False)
+    semantic_judge=True,           # review soft rule flags (default: on when a key is set)
     judge_model="gpt-4o",          # model for the judge
     node_timeout_ms=30000,         # flag outputs at ≥95% of this
     min_expected_ms=500,           # flag suspiciously fast LLM nodes

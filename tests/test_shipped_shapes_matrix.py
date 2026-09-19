@@ -525,7 +525,7 @@ def test_a_tool_call_turn_is_not_judged_as_an_empty_answer(monkeypatch):
     assert "tool-call turn" in result.reason
 
 
-# ── 5. coherence: the one verdict the judge may reach on its own ─────────────
+# ── 5. coherence: the judge does not hunt on a clean step ─────────────────────
 
 
 def _judge_verdict(**fields):
@@ -568,20 +568,25 @@ def _cake_graph(method):
 _ON_TOPIC = lambda s: {"method": "Cream the butter and sugar, fold in the flour, bake 25 min."}  # noqa: E731
 
 
-def test_an_unrelated_verdict_fails_the_run_with_no_rule_agreeing(monkeypatch):
-    """Cake in, helicopters out: no rule can see this, so the judge stands alone.
+def test_an_unrelated_verdict_is_never_asked_on_a_clean_step(monkeypatch):
+    """Cake in, helicopters out: no rule flag, so the judge is not called.
 
-    Nothing is missing, empty, malformed or erroring — every deterministic layer
-    passes. If the judge could not gate here, ARGUS would have no answer at all
-    for "is the node doing the right job?".
+    Standing alone used to fail CI and painted a random healthy node red
+    on one run in a hundred.
     """
     monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
     monkeypatch.setattr(
         "argus.llm_proxy.create_chat_completion",
         _judge_verdict(failure_kind="unrelated", reason="output is about helicopters"),
     )
-    verdict = _run_judged(_cake_graph(_ON_TOPIC), {})
-    assert not verdict.passed, verdict
+    recorder = ArgusRecorder(semantic_judge=True)
+    recorder.attach(_cake_graph(_ON_TOPIC)).invoke({})
+    record = load_run(recorder.session.run_id)
+    assert evaluate_run(record).passed
+    assert not any(f.type == "semantic_fail" for f in record.findings)
+    assert all(
+        s.semantic_check is None or not s.semantic_check.evaluated for s in record.steps
+    )
 
 
 def test_an_empty_or_missing_verdict_does_not_gate_on_its_own(monkeypatch):
@@ -594,31 +599,34 @@ def test_an_empty_or_missing_verdict_does_not_gate_on_its_own(monkeypatch):
     assert _run_judged(_cake_graph(_ON_TOPIC), {}).passed
 
 
-def test_a_coherence_verdict_that_does_not_reproduce_is_demoted(monkeypatch):
-    """Standing alone means proving it twice.
-
-    The first call says "unrelated", the confirmation disagrees. An intermittent
-    misread must not fail a build — a real mismatch of subject reproduces.
-    """
+def test_a_coherence_verdict_is_not_reasked_because_it_does_not_gate(monkeypatch):
+    """No second look: standalone no longer fails a build, so there is nothing to confirm."""
     monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
     calls = {"n": 0}
 
-    def _flip_flop(**kwargs):
+    def _once(**kwargs):
         calls["n"] += 1
-        first = calls["n"] == 1
-        payload = (
-            {"pass": False, "reason": "unrelated", "confidence": 1.0, "failure_kind": "unrelated"}
-            if first
-            else {"pass": True, "reason": "fine", "confidence": 1.0, "failure_kind": "other"}
-        )
         return {
-            "choices": [{"message": {"content": json.dumps(payload)}}],
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "pass": False,
+                                "reason": "unrelated",
+                                "confidence": 1.0,
+                                "failure_kind": "unrelated",
+                            }
+                        )
+                    }
+                }
+            ],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5},
         }
 
-    monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _flip_flop)
+    monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _once)
     assert _run_judged(_cake_graph(_ON_TOPIC), {}).passed
-    assert calls["n"] >= 2, "the confirmation call never happened"
+    assert calls["n"] == 0, "a clean cake graph has no soft flags to review"
 
 
 # ── 4. the graph composed into something bigger ──────────────────────────────

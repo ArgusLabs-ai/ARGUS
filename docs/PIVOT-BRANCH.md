@@ -19,7 +19,7 @@ ArgusRecorder.attach(app)     # listen; do not patch compile / invoke
   → fat trace (node, input, what the node returned, tools, errors)
   → ledger (notebook from the saved run file)
   → rules (contextual + inspector + signatures — not an LLM)
-  → LLM judge last (on if a key exists, cannot override a critical)
+  → LLM judge last (on if a key exists; reviews soft flags only; cannot originate a fail)
   → argus check               # the verdict
   → optional: replay one failed node from the notebook + your app
 ```
@@ -214,14 +214,13 @@ the judge-off suites structurally could not:
 
 Defect 10 is the important one, and it is a **deliberate semantics change**:
 
-> A judge `fail` verdict now only moves a step's status when some deterministic
-> layer — a tool failure, a semantic signal, a missing/empty field, a type
-> mismatch, a failed validator, or a **critical** anomaly — flagged that step
-> too. Uncorroborated verdicts are still recorded and shown by `argus show`;
-> they no longer gate CI. This is "judge last, never first" enforced rather
-> than merely intended. `tests/test_async_judge_e2e.py` was updated to encode
-> it, and `test_shipped_shapes_matrix.py` pins both halves (a healthy agent
-> survives a judge that always votes fail; a real failure still fails).
+> The judge is a reviewer, not a second cop. It is called only when the rules
+> left a *soft* flag (a warning-level signature). It may drop that flag if it
+> is wrong. It cannot originate a fail and cannot clear a hard fail. Walking
+> every node looking for hallucinations is how a healthy pipeline went red on
+> one run in a hundred. `tests/test_judge_last.py` pins the contract;
+> `test_shipped_shapes_matrix.py` pins both halves (a healthy agent survives a
+> judge that always votes fail; a real failure still fails).
 
 Warning-level *behavioural* anomalies deliberately do not corroborate:
 `BA-005 structural malformation` fires on any flat dict, which is what a normal
@@ -244,53 +243,30 @@ this outright: the judge said *"completely unrelated to the input, which is
 about ingredients for a recipe"* at confidence 1.0, and the run graded **clean**.
 Blanket corroboration threw away the judge's only unique competence.
 
-The rule was refined to turn on *why* the judge failed something. It now returns
-a `failure_kind`, and only two kinds may gate alone:
+That carve-out is **closed**. Standing-alone `unrelated` / `contradiction`
+failed healthy nodes at random (a different node each run). The judge now
+only reviews *soft* flags the rules already raised; it cannot fail a clean
+step and cannot clear a hard fail.
 
 | `failure_kind` | Gates with no rule agreeing? | Why |
 |---|---|---|
-| `unrelated` | **yes** | Different subject matter. Nothing else can detect it |
-| `contradiction` | **yes** | Output contradicts the input or itself |
+| `unrelated` | no | Review of a soft flag only; never originates a fail |
+| `contradiction` | no | Same |
 | `empty_or_missing` | no | The rules already do this, and more reliably |
-| `other` | no | Includes any malformed or unparsable reply — degrades to annotate-only |
+| `other` | no | Includes any malformed or unparsable reply |
 
-Two further guards, both added because measurement demanded them, not by taste:
+The prompt still says **`unrelated` means subject matter, never answer quality**
+(a fan-out branch contributing one relevant fact is not unrelated; a short
+label — verdict, category, routing key, score — is a classification result).
+That text stays because the judge still *reviews* flags; it is no longer how
+a build fails.
 
-1. **`unrelated` means subject matter, never answer quality.** The first version
-   flagged a fan-out branch contributing one relevant fact ("does not address
-   the input question") and a reviewer node emitting `{"verdict": "APPROVE"}`.
-   The prompt now says to ask *"is this the same topic?"*, never *"does this
-   answer the question?"*, and that a short label — verdict, category, routing
-   key, score — is a classification result and never `unrelated`.
-2. **A standalone coherence verdict must reproduce.** It is re-asked once and
-   both samples must agree; a verdict that does not reproduce is demoted to
-   `other` and needs a rule to agree like any other. Costs one short call, only
-   on the rare path where a build is about to fail on the judge's word alone.
-
-Confidence thresholding was tried and **rejected**: over 20 verdicts the classes
-looked cleanly separated (true ≥0.9, false =0.8), then the same false positive
-came back at 0.9 on the next sample. `JUDGE_STANDALONE_MIN_CONFIDENCE` remains
-as a floor, but reproduction is what actually carries the weight.
-
-Measured after all of it, 6 trials per scenario:
-
-```text
-04_coherence.py helicopter      want fail   111111   ✓
-04_coherence.py wrong_topic     want fail   111111   ✓
-04_coherence.py contradiction   want fail   111111   ✓
-04_coherence.py healthy         want clean  000000   ✓
-01_rag / 02_agent (all modes)               ✓ all six scenarios stable
-03_research_desk healthy        want clean  000100   ← 1 in 6 false fail
-```
-
-**The residual is real and unresolved**: a healthy fan-out-plus-review pipeline
-still fails roughly one run in six, on a judge verdict about the reviewer node.
-Down from two in three, not to zero. For a hard CI gate today the honest advice
-is `ArgusRecorder(semantic_judge=False)` — fully deterministic, and it still
-catches empty updates, dropped contracts, tool failures, crashes and degraded
-output. Turn the judge on when you want coherence checking and can tolerate a
-rerun. Guarded by `test_shipped_shapes_matrix.py` (3 tests) with mocked verdicts,
-so the *rule* is pinned even though the model's judgement is not.
+A healthy graph with no soft flags does not call the judge, so the old
+"1 in 6 false fail on the reviewer node" path is closed. For a fully
+deterministic gate use `ArgusRecorder(semantic_judge=False)` — it still
+catches empty updates, dropped contracts, tool failures, crashes and
+degraded output. Guarded by `tests/test_judge_last.py` and
+`test_shipped_shapes_matrix.py`.
 
 ### What is still NOT covered
 
@@ -308,7 +284,7 @@ which is a different and more dangerous thing to leave undocumented.
 | **A victim flagged alongside the origin** | When an upstream `{}` starves a downstream model node, both are flagged. `first_failure_step` is still the origin, so the verdict is right and the extra finding is noise: `degraded_input` covers present-and-bad fields, not absent ones |
 | **A node that echoes its input** | The one true-positive miss: a researcher branch returned the question verbatim as its note and the run graded clean. Echo detection exists for main answer fields but not for a fan-in accumulator. Related signal worth adding: the reviewer loop hit its revision cap and shipped anyway, which is itself evidence |
 | **`BA-005 structural malformation`** | Warning-level noise on any flat dict — i.e. on most healthy nodes. It no longer gates anything (see defect 10) but still clutters `argus show` and the `argus fix` prompt |
-| **A healthy fan-out + review pipeline, judge on** | Still fails ~1 run in 6 (down from 2 in 3). See "Semantic coherence" above. `semantic_judge=False` is deterministic and remains the advice for a hard gate |
+| **A healthy fan-out + review pipeline, judge on** | Closed: the judge is not called unless a warning-level signature is already on the step. `semantic_judge=False` remains the fully deterministic gate |
 | **Frameworks other than LangGraph** | The recorder is LangGraph-specific. CrewAI etc. later |
 
 ---

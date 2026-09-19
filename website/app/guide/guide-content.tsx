@@ -438,8 +438,8 @@ export default function GuideContent() {
                             # reruns replay from disk — zero extra cost.
 
     # --- LLM semantic judge ---
-    semantic_judge=True,    # LLM reviews every node's output for subtle quality issues.
-                            # (default: False) opt in after 'argus key set'.
+    semantic_judge=True,    # review soft rule flags (placeholders, refusal-like text).
+                            # on when a key is set; False keeps the gate deterministic.
     judge_model="gpt-4o",  # tier hint: capable model. Auto-mapped to your active
                             # provider (Claude/Gemini). "gpt-4o-mini" = cheaper tier.
 
@@ -457,7 +457,7 @@ result = app.invoke(initial_state)`}
         <p className="text-[15px] text-muted-foreground leading-[1.7] mb-4">
           Access <Code>watcher.run_id</Code> after the run. <Code>record_http</Code>,
           <Code>investigate</Code>, and <Code>persist_state</Code> default to <Code>True</Code>.
-          <Code>semantic_judge</Code> defaults to <Code>False</Code> (heuristics-only until you opt in).
+          <Code>semantic_judge</Code> turns on when a provider key is set; pass <Code>False</Code> for a fully deterministic gate.
         </p>
         <div
           className="rounded-lg px-5 py-4 mb-8"
@@ -484,14 +484,14 @@ result = app.invoke(initial_state)`}
 
         <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-4">semantic_judge</h3>
         <p className="text-[15px] text-muted-foreground leading-[1.7] mb-5">
-          ARGUS catches ~80% of production failures deterministically — missing fields, empty results,
-          type mismatches, placeholder outputs. The remaining ~20% are subtle: wrong tone, unhelpful
-          responses, outdated info. The semantic judge covers those.
+          The rules fail the build. The judge reviews the <em>soft</em> flags they raised
+          (a warning-level signature — &quot;this looks like a refusal&quot;). It does not walk a
+          clean graph looking for hallucinations, and it cannot clear a hard fail.
         </p>
         <div className="space-y-3 mb-5">
-          <Row label="Deterministic first" text="Structural checks run first — free, instant, reproducible." />
-          <Row label="LLM second" text="Judge only reviews what structural checks couldn't decide." />
-          <Row label="Per-node" text="Each output evaluated in context of its input and the pipeline's purpose." />
+          <Row label="Rules first" text="Empty updates, dropped fields, HTTP 4xx, a tool that raised — these fail argus check." />
+          <Row label="Judge reviews flags" text="Called only when a warning-level signature is already on the step." />
+          <Row label="Can dismiss, cannot originate" text="A false-positive warning is dropped. A hard fail stays. A clean step is not asked." />
         </div>
         <p className="text-[15px] text-muted-foreground leading-[1.7]">
           Requires a provider key (OpenAI, Anthropic, or Google) — set via <Code>argus key set</Code>.

@@ -144,21 +144,11 @@ def test_the_judge_is_shown_the_step_that_emptied_the_field(monkeypatch):
     record, calls = _filter_run(monkeypatch, judge_passes=True)
 
     asked = {c["node_name"]: c for c in calls}
-    assert "summarize" in asked, "the judge must have been asked about the reader"
+    # `clean` is a hard contextual fail; `summarize` is the victim and has no
+    # soft flag. The judge is not asked about either — the cop already decided.
+    assert "summarize" not in asked
+    assert "clean" not in asked
 
-    rows = asked["summarize"]["prior_rows"]
-    assert [r.node for r in rows] == ["search", "clean"], "only the steps before it"
-
-    # And the prompt actually carries that history, scoped to `docs`.
-    history = _history_lines(
-        rows,
-        _tracked_fields("summarize", asked["summarize"]["consumers"], {}, {}),
-    )
-    assert any('"search"' in line and "populated" in line for line in history)
-    assert any('"clean"' in line and "now empty" in line for line in history)
-
-    # Both layers land on the same origin: the rules blame `clean`, and the
-    # judge is now looking at the row that says `clean` is where docs went.
     verdict = evaluate_run(record)
     assert verdict.passed is False
     assert "clean" in verdict.failing_nodes
@@ -223,9 +213,9 @@ def test_a_confident_judge_pass_cannot_wash_out_an_empty_update(monkeypatch):
     record = _run(monkeypatch, summarize_returns={}, semantic_judge=True)
     verdict = evaluate_run(record)
 
-    # It must have been asked about summarize specifically, or the override
-    # path was never exercised and this test would pass by accident.
-    assert "summarize" in asked
+    # Hard fail (`{}`) is the cop's. The judge is not called, so it cannot
+    # wash the fail out — and this test cannot pass by "never asked".
+    assert "summarize" not in asked
     assert verdict.passed is False
     assert "summarize" in verdict.failing_nodes
 
@@ -258,7 +248,9 @@ def test_judge_defaults_on_when_a_key_is_available(monkeypatch):
     # semantic_judge left at its default (None → auto).
     record = _run(monkeypatch, summarize_returns={"summary": "a real summary of doc-1"})
 
-    assert "summarize" in asked, "the judge should run automatically once a key exists"
+    # A clean run has nothing to review, so the judge stays quiet. A key
+    # being set is not a reason to walk every node.
+    assert asked == []
     assert record.overall_status == "clean"
 
 
@@ -276,15 +268,14 @@ def test_explicit_false_keeps_the_judge_off_even_with_a_key(monkeypatch):
 
 
 @pytest.mark.integration
-def test_the_judge_can_still_fail_a_step_the_rules_cleared(monkeypatch):
-    """Fluent but wrong: no rule fired, the last look did.
+def test_the_judge_is_not_asked_about_a_step_the_rules_cleared(monkeypatch):
+    """Fluent but wrong: the cop said nothing, so the judge is not called.
 
-    Only a coherence verdict (`unrelated` / `contradiction`) may do that alone;
-    `other` needs a *critical* rule finding to agree, and a warning no longer
-    counts — this test used to pass on the strength of one.
+    Walking every node looking for helicopters is how a healthy `intake`
+    went red on one run in a hundred.
     """
     _no_patching(monkeypatch)
-    _stub_judge(monkeypatch, passed=False, confidence=0.9, failure_kind="unrelated")
+    asked = _stub_judge(monkeypatch, passed=False, confidence=0.9, failure_kind="unrelated")
 
     record = _run(
         monkeypatch,
@@ -293,9 +284,10 @@ def test_the_judge_can_still_fail_a_step_the_rules_cleared(monkeypatch):
     )
     verdict = evaluate_run(record)
 
-    assert verdict.passed is False
-    assert record.overall_status == "silent_failure"
-    assert any(step.status == "semantic_fail" for step in record.steps)
+    assert asked == []
+    assert verdict.passed is True
+    assert record.overall_status == "clean"
+    assert not any(f.type == "semantic_fail" for f in record.findings)
 
 
 @pytest.mark.integration
@@ -418,17 +410,14 @@ def test_a_judge_verdict_downstream_of_the_origin_is_not_a_second_failure(monkey
 
     verdict = evaluate_run(record)
     assert verdict.failing_nodes == ("clean",), verdict.reasons
-
-    # Kept for the report, demoted out of the gate.
-    judged = [f for f in record.findings if f.node == "summarize" and f.type == "semantic_fail"]
-    assert judged and judged[0].severity == "warning", record.findings
+    assert not any(f.node == "summarize" and f.severity == "critical" for f in record.findings)
 
 
 @pytest.mark.integration
-def test_a_standalone_coherence_verdict_still_gates_when_it_is_the_origin(monkeypatch):
-    """The suppression is about order, not about muzzling the judge."""
+def test_a_standalone_coherence_verdict_does_not_run_on_a_clean_step(monkeypatch):
+    """Cake in, helicopters out: no rule flag, so the judge is not asked."""
     _no_patching(monkeypatch)
-    _per_node_judge(monkeypatch, {"summarize": (False, "contradiction")})
+    asked = _stub_judge(monkeypatch, passed=False, confidence=1.0, failure_kind="contradiction")
 
     record = _run(
         monkeypatch,
@@ -436,6 +425,68 @@ def test_a_standalone_coherence_verdict_still_gates_when_it_is_the_origin(monkey
         semantic_judge=True,
     )
 
-    by_node = {s.node_name: s for s in record.steps}
-    assert by_node["summarize"].status == "semantic_fail"
+    assert asked == []
+    assert evaluate_run(record).passed is True
+    assert not any(f.type == "semantic_fail" for f in record.findings)
+
+
+@pytest.mark.integration
+def test_the_judge_is_asked_only_when_the_rules_left_a_soft_flag(monkeypatch):
+    """`notes: TODO` is a warning-level placeholder. That is a review, not a gate."""
+    _no_patching(monkeypatch)
+    asked = _stub_judge(monkeypatch, passed=True, confidence=1.0)
+
+    record = _run(
+        monkeypatch,
+        summarize_returns={"summary": "Q3 revenue grew 12%.", "notes": "TODO"},
+        semantic_judge=True,
+    )
+
+    assert "summarize" in asked
+    assert evaluate_run(record).passed is True
+
+
+@pytest.mark.integration
+def test_the_judge_can_dismiss_a_soft_flag_it_contradicts(monkeypatch):
+    """Rules said 'placeholder'; judge says the flag is wrong → warning gone."""
+    _no_patching(monkeypatch)
+    _stub_judge(monkeypatch, passed=True, confidence=1.0)
+
+    record = _run(
+        monkeypatch,
+        summarize_returns={"summary": "Q3 revenue grew 12%.", "notes": "TODO"},
+        semantic_judge=True,
+    )
+
+    assert evaluate_run(record).passed is True
+    summarize = next(s for s in record.steps if s.node_name == "summarize")
+    assert not any(s.sig_id == "PH-001" for s in (summarize.inspection.semantic_signals or []))
+
+
+@pytest.mark.integration
+def test_the_judge_agreeing_leaves_the_soft_flag_and_does_not_fail(monkeypatch):
+    """Judge says the warning is right: flag stays, gate still passes."""
+    _no_patching(monkeypatch)
+    asked = _stub_judge(monkeypatch, passed=False, confidence=0.9, failure_kind="other")
+
+    record = _run(
+        monkeypatch,
+        summarize_returns={"summary": "Q3 revenue grew 12%.", "notes": "TODO"},
+        semantic_judge=True,
+    )
+
+    assert "summarize" in asked
+    assert evaluate_run(record).passed is True
+    summarize = next(s for s in record.steps if s.node_name == "summarize")
+    assert summarize.status == "pass"
+    assert any(s.sig_id == "PH-001" for s in (summarize.inspection.semantic_signals or []))
+
+
+@pytest.mark.integration
+def test_the_judge_cannot_clear_a_hard_empty_update(monkeypatch):
+    """Same as wash-out: `{}` is the cop's. Repeated here under the new names."""
+    _no_patching(monkeypatch)
+    asked = _stub_judge(monkeypatch, passed=True, confidence=1.0)
+    record = _run(monkeypatch, summarize_returns={}, semantic_judge=True)
+    assert "summarize" not in asked
     assert evaluate_run(record).passed is False
