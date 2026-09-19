@@ -99,6 +99,12 @@ except ImportError:
 # Sentinel for _pop_frozen_output — distinct from any real output value
 _MISSING = object()
 
+# An earlier step in one of these states means the run already has an origin,
+# so a judge-only verdict on a later step is a consequence (see
+# `ArgusSession._judge_may_fail_this_step`). `interrupted` is absent: a
+# human-in-the-loop pause blames nobody.
+_JUDGE_BLOCKING_STATUSES = frozenset({"fail", "crashed", "semantic_fail", "degraded_input"})
+
 _REDACTED = "__REDACTED__"
 
 # Built-in patterns that match common secret shapes (compiled once at import)
@@ -233,6 +239,27 @@ def _measure_output_depth(obj: Any, current: int = 0) -> int:
     return current
 
 
+def _output_makes_a_claim(obj: Any) -> bool:
+    """Does this update contain any text at all?
+
+    The judge may fail a step on its own only for ``unrelated`` /
+    ``contradiction`` — verdicts about what the output *says*. An update of
+    booleans and numbers says nothing: ``{"sent": True}`` cannot contradict
+    ``{"count": 0}``, and a dispatcher that forwards a hallucinated answer is
+    not the node that hallucinated it. Measured, not theorised: with the judge
+    on, ``{"sent": True}`` was failed as a *contradiction* (confidence 0.9) in
+    a healthy run, and blamed beside the real origin in a bad one. Text of any
+    length counts — ``{"answer": "60"}`` is a claim about the answer.
+    """
+    if isinstance(obj, str):
+        return bool(obj.strip())
+    if isinstance(obj, dict):
+        return any(_output_makes_a_claim(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_output_makes_a_claim(v) for v in obj)
+    return False
+
+
 def _merge_candidate(
     data: dict[str, Any],
     cluster_id: str,
@@ -358,7 +385,7 @@ class ArgusSession:
         self.node_fn_registry: dict[str, Any] = {}
         # Declared consumer map (argus.contextual). Read by the judge to scope
         # the run history it is shown to the fields a node actually reads (#85).
-        self.consumers: dict[str, list[str]] = {}
+        self.consumers: dict[str, Any] = {}
 
         self._strict = strict
         self._redact_keys: frozenset[str] = frozenset(redact_keys or ())
@@ -1005,6 +1032,7 @@ class ArgusSession:
                         behavior_type_val,
                         output_snap,
                         input_snap=input_snap,
+                        step_index=step_idx,
                     )
                 else:
                     # Async path: fire LLM in background, don't block
@@ -1182,10 +1210,19 @@ class ArgusSession:
         the rules found — it just cannot be the only thing failing a build. An
         uncorroborated fail is still recorded on the event and shown by
         ``argus show``; it just does not move the status.
+
+        Only **critical** rule findings corroborate. A warning is the rules
+        saying "noted, not a failure" — `empty_result` on a test scanner that
+        found nothing, `unused_result`, `shallow_context` — and letting the
+        judge upgrade it to a failure meant the judge overrode a calibration
+        the rules made on purpose. Measured on the enterprise suite: a PR
+        review bot's `tests: {"findings": []}` (the good outcome) failed as
+        `empty_or_missing` on two runs in three, corroborated by nothing but
+        that warning.
         """
         if inspection is not None and (
-            inspection.tool_failures
-            or inspection.semantic_signals
+            any(t.severity == "critical" for t in inspection.tool_failures)
+            or any(s.severity == "critical" for s in inspection.semantic_signals)
             or inspection.missing_fields
             or inspection.empty_fields
             or inspection.type_mismatches
@@ -1211,6 +1248,7 @@ class ArgusSession:
         behavior_type_val: str | None,
         output_snap: dict | None,
         input_snap: dict | None = None,
+        step_index: int | None = None,
     ) -> StepStatus:
         """Apply LLM disambiguation + coherence verdict to status. Returns new status."""
         if disambiguation_results and inspection is not None:
@@ -1302,28 +1340,117 @@ class ArgusSession:
                     except Exception:
                         pass
             elif not sc_passed and sc_confident:
-                _stands_alone = (
-                    semantic_check_result.failure_kind in JUDGE_STANDALONE_FAILURE_KINDS
-                    and semantic_check_result.confidence >= JUDGE_STANDALONE_MIN_CONFIDENCE
-                )
                 if (
                     status == "pass"
                     and not is_legitimate_field_handoff(input_snap, output_snap)
-                    and (
-                        _stands_alone
-                        or self._corroborating_signal(
-                            inspection, validator_results, anomaly_signals
-                        )
+                    and self._judge_may_fail_this_step(
+                        semantic_check_result,
+                        inspection,
+                        validator_results,
+                        anomaly_signals,
+                        output_snap,
+                        step_index,
                     )
                 ):
                     status = "semantic_fail"
 
         return status
 
+    def _judge_may_fail_this_step(
+        self,
+        sc: SemanticCheckResult,
+        inspection: InspectionResult | None,
+        validator_results: list[ValidatorResult],
+        anomaly_signals: list[AnomalySignal],
+        output_snap: dict | None,
+        step_index: int | None,
+    ) -> bool:
+        """May this judge verdict move a step the rules cleared?
+
+        One policy, in one place. Every clause below was a false positive
+        measured on real pipelines, and each new special case was a sign the
+        policy was missing rather than incomplete: the judge was being asked to
+        *originate* blame, which is the one thing it is worst at.
+
+        A judge verdict may fail a step only when it is the **origin** of
+        something. It is never the origin when:
+
+        1. An earlier step already failed. A node fed a bad answer will
+           restate it, and the judge will call that a contradiction — of the
+           consequence, not the cause. `notify` after a rejected ERP post,
+           `summarize` after `aggregate` nulled the issues, `generate` after
+           the reranker emptied the context: all true statements, none the
+           origin, and each one buried the node actually worth fixing. This is
+           the same rule `build_root_cause_chain` applies to `degraded_input`
+           and `contextual` applies to starved readers.
+        2. The output makes no claim. `{"sent": True}` cannot contradict
+           anything (see `_output_makes_a_claim`).
+        3. The verdict is "unrelated" on an output the rules saw echoing its
+           input. An echo is the same subject by construction, so the two
+           readings contradict each other.
+
+        Past those, a coherence verdict (`unrelated` / `contradiction`) at high
+        confidence stands alone — nothing deterministic can see incoherence.
+        Any other kind still needs a critical rule finding to agree.
+        """
+        if not _output_makes_a_claim(output_snap):
+            return False
+
+        if step_index is not None and any(
+            e.step_index < step_index and e.status in _JUDGE_BLOCKING_STATUSES
+            for e in self._events
+        ):
+            return False
+
+        echoes_input = inspection is not None and any(
+            t.failure_type == "input_echo" for t in inspection.tool_failures
+        )
+        stands_alone = (
+            sc.failure_kind in JUDGE_STANDALONE_FAILURE_KINDS
+            and sc.confidence >= JUDGE_STANDALONE_MIN_CONFIDENCE
+            and not (sc.failure_kind == "unrelated" and echoes_input)
+        )
+        return stands_alone or self._corroborating_signal(
+            inspection, validator_results, anomaly_signals
+        )
+
+    @staticmethod
+    def _demote_consequential_judge_fails(events: list[NodeEvent]) -> None:
+        """A judge verdict downstream of an existing origin is a consequence.
+
+        The same rule as :meth:`_judge_may_fail_this_step`, enforced where it
+        can actually be enforced. That check runs when the verdict arrives, and
+        a synchronous judge arrives *before* the contextual layer has blamed
+        anyone: `rerank` empties the context, `generate` says "I could not find
+        anything", the judge calls that a contradiction of the documents still
+        sitting in state — and it is right, in isolation. But `rerank` is not
+        marked `fail` until `grading.finish` builds the ledger, by which time
+        the flip has happened. Both nodes then arrive in the report, and the one
+        to fix is no longer the only one named.
+
+        So the rule is applied once more here, at finalize, when every layer
+        has spoken. Only judge-authored statuses are demoted; a step the rules
+        failed keeps its status. The verdict itself is kept on the event, and
+        `findings.collect_findings` records it as a warning.
+        """
+        failed = [e.step_index for e in events if e.status in _JUDGE_BLOCKING_STATUSES]
+        if not failed:
+            return
+        earliest = min(failed)
+        for event in events:
+            # `> earliest` leaves the origin alone even when the origin is
+            # itself a judge verdict: the first incoherence is the one to fix,
+            # the rest of the run is downstream of it.
+            if event.status == "semantic_fail" and event.step_index > earliest:
+                event.status = "pass"
+
     def _apply_deferred_judges(self) -> None:
         """Collect all background LLM judge results and apply to events."""
         with self._pending_judges_lock:
-            pending = list(self._pending_judges)
+            # Step order, not completion order: `_judge_may_fail_this_step`
+            # asks whether anything *earlier* already failed, so a verdict must
+            # not be able to jump ahead of the origin it is downstream of.
+            pending = sorted(self._pending_judges, key=lambda p: p.event.step_index)
             self._pending_judges.clear()
 
         for pj in pending:
@@ -1344,8 +1471,18 @@ class ArgusSession:
                 pj.event.behavior_type,
                 pj.output_snap,
                 input_snap=pj.input_snap,
+                step_index=pj.event.step_index,
             )
-            pj.event.status = new_status
+            # Only if nothing else claimed this step in the meantime. The judge
+            # was queued with `deterministic_status` while the node ran; the
+            # contextual layer blames origins later, in `grading.finish`, so
+            # writing the verdict's status unconditionally *erased* that blame.
+            # The measured effect was the worst of both: `rerank` emptied the
+            # context and came back `pass`, while `generate` — which merely
+            # said so — was flagged. Rules already outrank the judge; this
+            # makes that true regardless of which finished first.
+            if pj.event.status == pj.deterministic_status:
+                pj.event.status = new_status
             pj.event.semantic_check = semantic_check_result
             pj.event.disambiguation_results = disambiguation_results
 
@@ -1400,7 +1537,7 @@ class ArgusSession:
         existing roll-up and ``findings.collect_findings`` turn it into a
         ``missing_field`` finding with no new plumbing.
         """
-        for origin, key, crashed in crash_origins(events, self.graph_edge_map):
+        for origin, key, crashed in crash_origins(events, self.graph_edge_map, self.state_keys):
             insp = origin.inspection
             if insp is None or key in insp.missing_fields:
                 continue
@@ -1483,6 +1620,8 @@ class ArgusSession:
             duration_ms: float | None = (end - start).total_seconds() * 1000
         except Exception:
             duration_ms = None
+
+        self._demote_consequential_judge_fails(events_snapshot)
 
         # Exclude retried/skipped events — not real failures
         active_events = [e for e in events_snapshot if e.status not in ("retried", "skipped")]
@@ -1616,8 +1755,22 @@ class ArgusSession:
                 "crashed",
             ):
                 top = correlation.degradation_origins[0]
-                if top.confidence >= 0.8:
-                    corr_chain = [o.node_name for o in correlation.degradation_origins]
+                # The correlator may only move the headline onto a node that
+                # actually failed. It scores input→output degradation, so a
+                # healthy `retrieve` carrying a warning could outrank the
+                # `rerank` that emptied the field — and `argus show` then led
+                # with a node `argus check` never named.
+                failing = {
+                    e.node_name
+                    for e in record.steps
+                    if e.status in ("fail", "crashed", "semantic_fail", "degraded_input")
+                }
+                if top.confidence >= 0.8 and top.node_name in failing:
+                    corr_chain = [
+                        o.node_name
+                        for o in correlation.degradation_origins
+                        if o.node_name in failing
+                    ]
                     record.root_cause_chain = corr_chain
                     record.first_failure_step = corr_chain[0]
         except Exception:

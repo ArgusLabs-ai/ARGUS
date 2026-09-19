@@ -127,10 +127,15 @@ class TestSilentFieldDrop:
         _, run_id = _run_pipeline(graph, {"query": "test"})
         record = load_run(run_id)
 
-        # ARGUS detects the cascade even if overall_status stays clean
-        # (unannotated successors skip structural checks). The correlator
-        # still identifies consumer as a degradation origin.
-        assert len(record.root_cause_chain) > 0 or record.overall_status != "clean"
+        # Unannotated successors skip structural checks and nothing declared
+        # `results` as consumed, so this run grades clean — and a clean run
+        # names no origin. `root_cause_chain` used to name `consumer` here off
+        # a warning-level signal while the verdict said clean; the headline and
+        # the gate now agree. Catching this shape needs a declared consumer
+        # (`consumers={"results": ["consumer"]}`), covered in test_contextual.
+        assert record.overall_status == "clean"
+        assert record.root_cause_chain == []
+        assert record.first_failure_step is None
 
 
 # ── Test 3: Tool failure patterns ────────────────────────────────────────────

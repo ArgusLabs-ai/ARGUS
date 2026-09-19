@@ -332,6 +332,21 @@
       }
     },
     {
+      "id": "PH-014",
+      "category": "placeholder_outputs",
+      "pattern": "^\\s*\\[(?:INSERT|YOUR|ENTER|ADD|COMPANY|CUSTOMER|CLIENT|USER|RECIPIENT|NAME|DATE|PLACEHOLDER)[A-Z0-9 _'/-]*\\]\\s*$",
+      "match_strategy": "regex",
+      "severity": "warning",
+      "description": "Bracketed template variable left unfilled ([INSERT REPLY HERE], [Your Name])",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
       "id": "NL-001",
       "category": "null_like_semantic",
       "pattern": "null",
@@ -518,6 +533,21 @@
       "match_strategy": "contains_ci",
       "severity": "warning",
       "description": "LLM inability statement",
+      "source": "builtin",
+      "metadata": {
+        "confidence": null,
+        "frequency": null,
+        "approval_status": "approved",
+        "framework_specific": null
+      }
+    },
+    {
+      "id": "SP-028",
+      "category": "suspicious_phrases",
+      "pattern": "I'm unable to",
+      "match_strategy": "contains_ci",
+      "severity": "warning",
+      "description": "LLM inability statement (contracted form)",
       "source": "builtin",
       "metadata": {
         "confidence": null,

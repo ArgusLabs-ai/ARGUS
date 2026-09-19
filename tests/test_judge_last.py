@@ -36,7 +36,9 @@ def _no_patching(monkeypatch):
     monkeypatch.setattr("argus.patcher.patch_graph", _boom)
 
 
-def _stub_judge(monkeypatch, *, passed: bool, confidence: float = 1.0):
+def _stub_judge(
+    monkeypatch, *, passed: bool, confidence: float = 1.0, failure_kind: str = "other"
+):
     """Replace the LLM judge. Returns the list of node names it was asked about."""
     asked: list[str] = []
 
@@ -51,6 +53,7 @@ def _stub_judge(monkeypatch, *, passed: bool, confidence: float = 1.0):
                 prompt_tokens=0,
                 completion_tokens=0,
                 duration_ms=0.0,
+                failure_kind=failure_kind,
             ),
             [],
         )
@@ -188,8 +191,8 @@ def test_a_node_is_never_shown_the_history_of_a_field_it_writes():
     ]
     fields = _tracked_fields(
         "worker",
-        {"pending": ["worker"]},           # declared reader *and* writer
-        {"pending": ["a", "b"]},           # it reads the queue
+        {"pending": ["worker"]},  # declared reader *and* writer
+        {"pending": ["a", "b"]},  # it reads the queue
         {"pending": ["b"], "done": ["a"]},  # and it consumes from it
     )
 
@@ -274,9 +277,14 @@ def test_explicit_false_keeps_the_judge_off_even_with_a_key(monkeypatch):
 
 @pytest.mark.integration
 def test_the_judge_can_still_fail_a_step_the_rules_cleared(monkeypatch):
-    """Fluent but wrong: no rule fired, the last look did."""
+    """Fluent but wrong: no rule fired, the last look did.
+
+    Only a coherence verdict (`unrelated` / `contradiction`) may do that alone;
+    `other` needs a *critical* rule finding to agree, and a warning no longer
+    counts — this test used to pass on the strength of one.
+    """
     _no_patching(monkeypatch)
-    _stub_judge(monkeypatch, passed=False, confidence=0.9)
+    _stub_judge(monkeypatch, passed=False, confidence=0.9, failure_kind="unrelated")
 
     record = _run(
         monkeypatch,
@@ -324,3 +332,110 @@ def test_a_judge_pass_leaves_a_genuinely_clean_run_clean(monkeypatch):
 
     assert record.overall_status == "clean"
     assert evaluate_run(record).passed is True
+
+
+# ── the judge does not move blame off the origin ─────────────────────────────
+
+
+def _per_node_judge(monkeypatch, verdicts: dict[str, tuple[bool, str]]):
+    """Stub judge with a per-node verdict: ``{node: (passed, failure_kind)}``."""
+
+    def _fake(*, node_name, **kwargs):
+        passed, kind = verdicts.get(node_name, (True, "other"))
+        return (
+            SemanticCheckResult(
+                passed=passed,
+                reason="stubbed verdict",
+                confidence=1.0,
+                model="stub",
+                prompt_tokens=0,
+                completion_tokens=0,
+                duration_ms=0.0,
+                failure_kind=kind,
+            ),
+            [],
+        )
+
+    monkeypatch.setattr("argus.semantic_checker.check_semantic_coherence", _fake)
+
+
+def _origin_and_victim_run(monkeypatch, verdicts: dict[str, tuple[bool, str]]):
+    """`clean` empties the docs `summarize` was promised — the origin is `clean`.
+
+    Same shape as :func:`_filter_run`, with the judge verdict under this test's
+    control rather than a single flag for every node.
+    """
+    _per_node_judge(monkeypatch, verdicts)
+
+    g = StateGraph(_S)
+    g.add_node("search", lambda s: {"docs": ["doc-1", "doc-2"]})
+    g.add_node("clean", lambda s: {"docs": []})  # a filter that matched nothing
+    g.add_node("summarize", lambda s: {"summary": f"summary of {len(s.get('docs', []))} docs"})
+    g.add_edge(START, "search")
+    g.add_edge("search", "clean")
+    g.add_edge("clean", "summarize")
+    g.add_edge("summarize", END)
+
+    recorder = ArgusRecorder(semantic_judge=True, consumers={"docs": ["summarize"]})
+    recorder.attach(g.compile()).invoke({"query": "q"})
+    return load_run(recorder.session.run_id)
+
+
+@pytest.mark.integration
+def test_a_judge_pass_does_not_erase_blame_recorded_after_it_was_queued(monkeypatch):
+    """The origin keeps its `fail` status, not the one the judge was queued with.
+
+    The judge runs per step, in the background, holding the status that step had
+    at the time. Contextual blame lands later, at `grading.finish`. Applying the
+    verdict used to overwrite the status unconditionally, so a judge that
+    *passed* the origin reset it to `pass` after the rules had failed it —
+    measured on a RAG pipeline where `clean` emptied the docs and came back
+    clean while the node that merely reported the emptiness was flagged.
+    """
+    _no_patching(monkeypatch)
+    record = _origin_and_victim_run(monkeypatch, {})  # judge passes everything
+
+    by_node = {s.node_name: s for s in record.steps}
+    assert by_node["clean"].status == "fail", "the judge overwrote contextual blame"
+    assert "clean" in evaluate_run(record).failing_nodes
+
+
+@pytest.mark.integration
+def test_a_judge_verdict_downstream_of_the_origin_is_not_a_second_failure(monkeypatch):
+    """A node restating an upstream failure is a consequence, not an origin.
+
+    `clean` empties `docs`; `summarize` says "summary of 0 docs". A coherence
+    verdict on `summarize` is defensible in isolation and useless in a report:
+    the node to fix is `clean`. The verdict is kept as a warning so `argus show`
+    can display it, but it does not gate.
+    """
+    _no_patching(monkeypatch)
+    record = _origin_and_victim_run(monkeypatch, {"summarize": (False, "contradiction")})
+
+    by_node = {s.node_name: s for s in record.steps}
+    assert by_node["clean"].status == "fail"
+    assert by_node["summarize"].status == "pass", "the victim was flagged beside the origin"
+
+    verdict = evaluate_run(record)
+    assert verdict.failing_nodes == ("clean",), verdict.reasons
+
+    # Kept for the report, demoted out of the gate.
+    judged = [f for f in record.findings if f.node == "summarize" and f.type == "semantic_fail"]
+    assert judged and judged[0].severity == "warning", record.findings
+
+
+@pytest.mark.integration
+def test_a_standalone_coherence_verdict_still_gates_when_it_is_the_origin(monkeypatch):
+    """The suppression is about order, not about muzzling the judge."""
+    _no_patching(monkeypatch)
+    _per_node_judge(monkeypatch, {"summarize": (False, "contradiction")})
+
+    record = _run(
+        monkeypatch,
+        summarize_returns={"summary": "helicopter rotor maintenance schedules"},
+        semantic_judge=True,
+    )
+
+    by_node = {s.node_name: s for s in record.steps}
+    assert by_node["summarize"].status == "semantic_fail"
+    assert evaluate_run(record).passed is False

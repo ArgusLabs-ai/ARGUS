@@ -40,7 +40,12 @@ _SYSTEM_PROMPT = (
     'a status — is a classification result. It is never "unrelated", however '
     "little it resembles the input text.\n"
     '    "contradiction" — the output asserts the opposite of the input or of '
-    "itself (a summary saying a recipe has no eggs when the input lists eggs).\n"
+    "itself (a summary saying a recipe has no eggs when the input lists eggs). "
+    "A field that appears in BOTH Input and Output is being UPDATED by this "
+    "node: a list that was empty and now has items, a count that changed, a "
+    "status that moved on, a flag that flipped — that is the node's work and is "
+    'NEVER a contradiction. "contradiction" is only about output text versus '
+    "input facts the node did not write.\n"
     '    "empty_or_missing" — a field is blank, null or absent.\n'
     '    "other" — anything else. Use "other" when "pass" is true.\n'
     "- evidence_considered: list every Prior Signal you evaluated (empty list if none provided)\n"
@@ -286,7 +291,7 @@ def _is_tool_call_turn(output_dict: dict[str, Any]) -> bool:
 
 def _tracked_fields(
     node_name: str,
-    consumers: dict[str, list[str]] | None,
+    consumers: dict[str, Any] | None,
     input_state: dict[str, Any],
     output_dict: dict[str, Any],
 ) -> set[str]:
@@ -307,8 +312,15 @@ def _tracked_fields(
     its job; a node that *reads* a field someone else emptied is #85's case, and
     that is the one this keeps.
     """
-    declared = {f for f, readers in (consumers or {}).items() if node_name in (readers or ())}
+    declared = {f for f, spec in (consumers or {}).items() if node_name in _readers_of(spec)}
     return (declared | set(input_state)) - set(output_dict)
+
+
+def _readers_of(spec: Any) -> tuple[str, ...]:
+    """Readers from either consumer-map shape: a list, or a dict with ``readers``."""
+    if isinstance(spec, dict):
+        return tuple(spec.get("readers") or ())
+    return tuple(spec or ())
 
 
 def _history_lines(
@@ -358,6 +370,15 @@ def _confirm_standalone_coherence(
     look disagrees, the verdict is kept and reported but demoted to "other", so
     it now needs a corroborating rule finding like any other judge opinion.
 
+    The second look is a *different question*, not the first prompt replayed.
+    Replaying the same prompt at temperature 0 reproduced the same misread
+    almost every time — the model was asked to check its own work with its own
+    eyes. Here it is handed the first verdict as a claim to audit, together
+    with the false-alarm shapes this rule exists to catch, and asked whether
+    the claim holds. Measured: a lint node appending to a reducer
+    (`findings: []` → `[F401]`) was "contradiction" at 0.9 on one run in three
+    and the replay agreed with itself every time.
+
     Costs one extra short call, and only on the rare path where a run is about
     to fail on the judge's word alone.
     """
@@ -368,12 +389,28 @@ def _confirm_standalone_coherence(
 
     from argus.llm_proxy import create_chat_completion
 
+    audit = (
+        f'A first reviewer failed node "{node_name}" as "{sc.failure_kind}" with the '
+        f"reason: {sc.reason}\n\n"
+        "Audit that verdict against the node below. Uphold it only if the output "
+        "is genuinely about a different subject than the input, or genuinely "
+        "asserts the opposite of an input fact the node did not itself write. "
+        "Common false alarms that must be overturned: a field present in both "
+        "input and output is being updated by this node (an empty list gaining "
+        "items, a status moving on, a count changing) — that is its work, not a "
+        "contradiction; a label, verdict, score, count, boolean or routing key "
+        "is a classification result and is never unrelated; a step that covers "
+        "one aspect of the input or adds one fact to a shared list is a normal "
+        "pipeline step; an empty list a scanner legitimately returned is not a "
+        "contradiction.\n\n" + user_msg
+    )
+
     try:
         second = create_chat_completion(
             model=model,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
+                {"role": "user", "content": audit},
             ],
             temperature=0,
             max_tokens=200,
@@ -414,7 +451,7 @@ def check_semantic_coherence(
     inspection: Any | None = None,
     ambiguous_signals: list[SemanticSignal] | None = None,
     prior_rows: list[Any] | None = None,
-    consumers: dict[str, list[str]] | None = None,
+    consumers: dict[str, Any] | None = None,
 ) -> tuple[SemanticCheckResult, list[DisambiguationResult]]:
     """Check coherence and disambiguate heuristic signals in one LLM call.
 
