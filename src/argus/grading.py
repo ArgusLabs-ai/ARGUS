@@ -11,7 +11,6 @@ without a live app can use it. It imports nothing from ``langgraph`` or
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -140,8 +139,13 @@ def finish(
     # them up, applies the judge last, collects findings and saves the run.
     session.finalize()
 
-    # So a bare `argus check` grades this run (cli/cmd_check.py reads it).
-    os.environ["ARGUS_RUN_ID"] = session.run_id
+    # Do not write ARGUS_RUN_ID here (#90). One attach serves many runs
+    # (``.batch()``, a loop, a served app); a process-global pointer would
+    # silently grade whichever item finished last, and would leak into later
+    # ``argus check`` / pytest / notebook sessions. Bare ``argus check`` falls
+    # back to ``last`` (newest file under ``.argus/runs/``). For a specific
+    # batch item, pass the id or set ``ARGUS_RUN_ID`` yourself — see
+    # ``recorder.run_ids``.
 
 
 def _blame_origins(session: ArgusSession, findings: list[Finding]) -> None:

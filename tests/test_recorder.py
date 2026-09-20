@@ -464,3 +464,31 @@ def test_llm_calls_are_counted_and_a_truncated_one_warns(monkeypatch):
     truncated = [f for f in record.findings if f.type == "truncated_llm_output"]
     assert [(f.node, f.severity) for f in truncated] == [("write", "warning")]
     assert evaluate_run(record).passed, "a cut-off answer warns; it does not fail the build"
+
+
+@pytest.mark.integration
+def test_finish_does_not_write_argus_run_id_into_the_environment(monkeypatch):
+    """#90: concurrent / .batch() finishes must not overwrite a process-global pointer.
+
+    Bare ``argus check`` uses ``last`` (storage). ``ARGUS_RUN_ID`` stays opt-in
+    for CI scripts that set it themselves.
+    """
+    import os
+
+    monkeypatch.delenv("ARGUS_RUN_ID", raising=False)
+    _no_patching(monkeypatch)
+
+    recorder = ArgusRecorder(semantic_judge=False)
+    bound = recorder.attach(_build_app({"summary": "ok", "answer": "ok"}))
+    bound.invoke({"query": "a"})
+    first = recorder.run_ids[-1]
+    bound.invoke({"query": "b"})
+    second = recorder.run_ids[-1]
+
+    assert first != second
+    assert len(recorder.run_ids) == 2
+    assert "ARGUS_RUN_ID" not in os.environ
+
+    # Both runs remain loadable by id; newest-file ``last`` is not the only path.
+    assert load_run(first).run_id == first
+    assert load_run(second).run_id == second
