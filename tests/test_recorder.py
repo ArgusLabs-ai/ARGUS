@@ -492,3 +492,49 @@ def test_finish_does_not_write_argus_run_id_into_the_environment(monkeypatch):
     # Both runs remain loadable by id; newest-file ``last`` is not the only path.
     assert load_run(first).run_id == first
     assert load_run(second).run_id == second
+
+
+@pytest.mark.unit
+def test_tool_inside_inner_chain_parents_to_the_node_step():
+    """F-29: a tool invoked under an inner chain run (parented to the chain's
+    run id, not the node's) must land in the node step's tool_calls — the
+    exact-key pop at _close_step used to orphan those calls, so live
+    steps[].tool_capture stayed empty under langgraph 1.x."""
+    recorder = ArgusRecorder()
+    recorder.attach(_build_app({}))  # any compiled app — attach required
+
+    graph_run, node_run, chain_run, tool_run = uuid4(), uuid4(), uuid4(), uuid4()
+    recorder.on_chain_start(None, {}, run_id=graph_run)  # run boundary
+    recorder.on_chain_start(
+        None, {}, run_id=node_run, parent_run_id=graph_run,
+        metadata={"langgraph_node": "n1"},
+    )
+    recorder.on_chain_start(None, {}, run_id=chain_run, parent_run_id=node_run)  # inner sequence
+    recorder.on_tool_start(
+        {"name": "fetch"}, "{}", run_id=tool_run, parent_run_id=chain_run
+    )
+    recorder.on_tool_end("ok", run_id=tool_run)
+    recorder.on_chain_end({}, run_id=chain_run)
+    recorder.on_chain_end({"out": 1}, run_id=node_run)
+    recorder.on_chain_end({}, run_id=graph_run)
+
+    steps = [e for e in recorder.session._events if e.node_name == "n1"]
+    assert len(steps) == 1
+    tools = steps[0].tool_calls
+    assert len(tools) == 1
+    assert tools[0]["name"] == "fetch"
+    assert tools[0]["output"] == "ok"
+
+
+@pytest.mark.unit
+def test_tool_at_graph_level_keeps_raw_parent_key():
+    """No pending ancestor (tool outside any node): old keying preserved."""
+    recorder = ArgusRecorder()
+    recorder.attach(_build_app({}))
+
+    graph_run, tool_run = uuid4(), uuid4()
+    recorder.on_chain_start(None, {}, run_id=graph_run)
+    recorder.on_tool_start(
+        {"name": "t"}, "{}", run_id=tool_run, parent_run_id=graph_run
+    )
+    assert recorder._tools[graph_run][0]["name"] == "t"
