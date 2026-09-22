@@ -260,11 +260,11 @@ def _output_makes_a_claim(obj: Any) -> bool:
 def _has_soft_rule_flags(inspection: InspectionResult | None) -> bool:
     """Did the rules leave a *reviewable* flag on this step?
 
-    Soft = a warning-level **signature** ("this looks like a refusal" /
-    a `TODO` on a side field). Shape warnings (`shallow_output` on a
-    24-char summary, `json_in_string`, BA-005 on every flat dict) are
-    the cop noting a shape; counting them would send the judge back to
-    walking the whole graph. Hard fails never reach here — the caller
+    Soft = any warning-level semantic signal, shape warnings INCLUDED:
+    ``shallow_output`` (inspector.py) and ``json_in_string`` are assigned
+    ``severity="warning"``, so they DO gate the judge — an earlier version
+    of this docstring claimed shape warnings were excluded; the code has
+    always counted them (F-21). Hard fails never reach here — the caller
     requires ``status == "pass"``.
     """
     if inspection is None:
