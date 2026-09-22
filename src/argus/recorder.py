@@ -614,7 +614,17 @@ class ArgusRecorder(BaseCallbackHandler):
         }
         with self._lock:
             self._tool_owner[run_id] = record
-            self._tools.setdefault(parent_run_id, []).append(record)
+            # F-29: file under the nearest PENDING node step, mirroring the
+            # llm re-parent below — a tool invoked inside an inner chain
+            # parents to the chain's run id, not the node's, and the exact-key
+            # pop at _close_step orphaned those calls. No pending ancestor
+            # (tool at graph level): keep the raw parent key.
+            owner = parent_run_id
+            while owner is not None and owner not in self._pending:
+                owner = self._parent_of.get(owner)
+            if owner is None:
+                owner = parent_run_id
+            self._tools.setdefault(owner, []).append(record)
 
     def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
         self._close_tool(run_id, output=output, error=None)
