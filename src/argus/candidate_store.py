@@ -8,6 +8,7 @@ Manages two files in `.argus/`:
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +84,15 @@ def add_candidate(
     Returns the candidate ID, or None if skipped (duplicate, rejected, or
     already in the registry).
     """
+    if sig.match_strategy == "regex":
+        # Validate before any I/O: an uncompileable pattern would poison the
+        # registry at scan time (mirrors signature_generalizer's own guard).
+        try:
+            re.compile(sig.pattern, re.IGNORECASE)
+        except re.error as exc:
+            raise ValueError(
+                f"invalid regex for candidate ({sig.pattern!r}): {exc}"
+            ) from exc
     data = load_candidates()
     now = datetime.now(timezone.utc).isoformat()
 
