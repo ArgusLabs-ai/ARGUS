@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,12 +54,41 @@ def _ensure_parent(path: Path) -> None:
 
 
 def load_disputes() -> list[dict[str, Any]]:
-    """Load all disputes from disk."""
+    """Load all disputes from disk.
+
+    A missing file means "no disputes yet" (silent ``[]``); a corrupt file is
+    surfaced loudly (warning) but still reads as ``[]`` so stats never crash.
+    """
+    path = _disputes_path()
     try:
-        data = json.loads(_disputes_path().read_text(encoding="utf-8"))
-        return data.get("disputes", [])
-    except Exception:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return []
+    except OSError as exc:
+        warnings.warn(
+            f"argus: cannot read disputes file {path}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return []
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        warnings.warn(
+            f"argus: corrupt disputes file {path} ({exc}); reading as no disputes",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return []
+    disputes = data.get("disputes", []) if isinstance(data, dict) else []
+    if not isinstance(disputes, list):
+        warnings.warn(
+            f"argus: corrupt disputes file {path} ('disputes' is not a list); reading as no disputes",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return []
+    return disputes
 
 
 def _save_disputes(disputes: list[dict[str, Any]]) -> None:
