@@ -17,6 +17,34 @@ def extract_fn(node_value: Any) -> Any:
     return node_value
 
 
+def _is_compiled_graph(runnable: Any) -> bool:
+    """True when the runnable is a compiled langgraph graph (a subgraph node)."""
+    try:
+        from langgraph.pregel import Pregel
+    except Exception:  # pragma: no cover - langgraph always present in practice
+        return False
+    return isinstance(runnable, Pregel)
+
+
+def _wrap_runnable(session: ArgusSession, node_name: str, inner: Any) -> Any:
+    """Monitor a non-callable runnable node (e.g. a RunnableSequence such as
+    ``RunnableLambda(...) | tool``) by wrapping the runnable itself.
+
+    The StateNodeSpec stays intact — replacing it with a bare function crashed
+    langgraph's validate() at compile time (F-28: "'function' object has no
+    attribute 'ends'"). The wrapped invoke forwards the run config so the
+    sequence's inner steps execute under the node's context.
+    """
+    from langchain_core.runnables import RunnableLambda
+
+    def _invoke(state: Any, config: Any = None, **kwargs: Any) -> Any:
+        if config is not None:
+            return inner.invoke(state, config, **kwargs)
+        return inner.invoke(state, **kwargs)
+
+    return RunnableLambda(session.wrap(node_name, _invoke))
+
+
 def patch_graph(graph: Any, session: ArgusSession) -> None:
     """Replace every node function in graph.nodes with a monitoring wrapper.
 
@@ -40,16 +68,24 @@ def patch_graph(graph: Any, session: ArgusSession) -> None:
             original_fn = node_value.runnable.func
             if original_fn is not None:
                 node_value.runnable.func = session.wrap(node_name, original_fn)
-            # handle dedicated async func if present
-            afunc = node_value.runnable.afunc
+            # handle dedicated async func if present (RunnableCallable has
+            # afunc; plain RunnableLambda does not — F-40)
+            afunc = getattr(node_value.runnable, "afunc", None)
             if afunc is not None and afunc is not original_fn:
                 node_value.runnable.afunc = session.wrap(node_name, afunc)
-        elif not hasattr(node_value, "runnable"):
+        elif hasattr(node_value, "runnable"):
+            # StateNodeSpec whose .runnable is not a RunnableCallable (F-28):
+            # wrap the runnable itself instead of replacing the spec. Compiled
+            # subgraphs are left unmonitored (#74 semantics) — wrapping them
+            # would defeat langgraph's subgraph special-casing (checkpoint
+            # namespaces, interrupts).
+            if not _is_compiled_graph(node_value.runnable):
+                node_value.runnable = _wrap_runnable(
+                    session, node_name, node_value.runnable
+                )
+        else:
             # Legacy: nodes are plain callables
             graph.nodes[node_name] = session.wrap(node_name, node_value)
-        # StateNodeSpec whose .runnable is a compiled graph (subgraph nodes,
-        # e.g. langgraph-swarm agents, langgraph-reflection) has no .func to
-        # wrap — leave it unmonitored rather than corrupting graph.nodes.
 
 
 def extract_edge_map(graph: Any) -> dict[str, list[str]]:
