@@ -49,7 +49,7 @@ except Exception:
     pass
 
 from argus.models import ArgusConfig, LLMInvestigationConfig
-from argus.recorder import ArgusRecorder
+from argus.recorder import ArgusRecorder, report_tool_call
 from argus.session import ArgusSession
 from argus.watcher import ArgusWatcher
 
@@ -60,4 +60,5 @@ __all__ = [
     "ArgusSession",
     "LLMInvestigationConfig",
     "__version__",
+    "report_tool_call",
 ]

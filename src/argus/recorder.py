@@ -30,6 +30,7 @@ The LLM judge is on by default when a key is configured (``argus key set`` or
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any, Callable
@@ -58,10 +59,71 @@ try:  # pragma: no cover - exercised only when langgraph is absent
 except ImportError:  # pragma: no cover
     Command = None  # type: ignore[assignment,misc]
 
-__all__ = ["ArgusRecorder", "IncompleteTraceError"]
+__all__ = ["ArgusRecorder", "IncompleteTraceError", "report_tool_call"]
 
 # LangGraph's graph sentinels — not nodes anyone wrote.
 _SENTINELS = ("__start__", "__end__")
+
+# ── current-recorder registry (report_tool_call resolution) ────────────────
+# One entry per recorder with at least one live run, counting runs so a
+# `.batch()` item finishing never unregisters a recorder whose other item is
+# still mid-flight. The recorder is held strongly so id() can never be reused
+# while an entry exists.
+_recorder_registry_lock = threading.Lock()
+_active_recorders: dict[int, list[Any]] = {}
+
+
+def _register_run_start(recorder: ArgusRecorder) -> None:
+    with _recorder_registry_lock:
+        entry = _active_recorders.get(id(recorder))
+        if entry is None:
+            _active_recorders[id(recorder)] = [recorder, 1]
+        else:
+            entry[1] += 1
+
+
+def _register_run_end(recorder: ArgusRecorder) -> None:
+    with _recorder_registry_lock:
+        entry = _active_recorders.get(id(recorder))
+        if entry is None:
+            return
+        entry[1] -= 1
+        if entry[1] <= 0:
+            del _active_recorders[id(recorder)]
+
+
+def _current_recorder() -> ArgusRecorder | None:
+    """The most recently registered recorder still serving a live run."""
+    with _recorder_registry_lock:
+        for _key, (recorder, _runs) in reversed(list(_active_recorders.items())):
+            return recorder
+    return None
+
+
+def _ambient_runnable_config() -> dict[str, Any] | None:
+    """The ambient langchain runnable config, or None if langchain is absent.
+
+    Lazy on purpose: importing langchain here must stay optional at argus
+    import time. Newer langchain-core exposes ``get_config``; older ones only
+    have ``ensure_config``, which reads the same context var.
+    """
+    try:
+        from langchain_core.runnables import config as _lc_config
+    except ImportError:  # pragma: no cover - langchain-core is a hard dep in practice
+        return None
+    get_config = getattr(_lc_config, "get_config", None)
+    if callable(get_config):
+        try:
+            return get_config()
+        except Exception:
+            return None
+    ensure_config = getattr(_lc_config, "ensure_config", None)
+    if callable(ensure_config):
+        try:
+            return ensure_config({})
+        except Exception:
+            return None
+    return None
 
 
 def _superstep(metadata: dict[str, Any] | None) -> str | None:
@@ -430,6 +492,7 @@ class ArgusRecorder(BaseCallbackHandler):
                 with self._lock:
                     self._roots[root] = started
                 self.session = started
+                _register_run_start(self)
                 started.capture_state(inputs if isinstance(inputs, dict) else {})
             return
 
@@ -497,6 +560,7 @@ class ArgusRecorder(BaseCallbackHandler):
             self._root_of[parent_run_id] = parent_run_id
             self._roots[parent_run_id] = started
         self.session = started
+        _register_run_start(self)
         # The first node's input is the graph's state on entry; `capture_state`
         # latches the initial state off the first non-empty snapshot.
         started.capture_state(inputs if isinstance(inputs, dict) else {})
@@ -691,21 +755,88 @@ class ArgusRecorder(BaseCallbackHandler):
             if step is not None:
                 self._llm.setdefault(step, []).append(call)
 
+    # ── report_tool_call seam (F-29 second half) ────────────────────────────
+
+    def _resolve_seam_step(self, cfg: dict[str, Any] | None) -> UUID | None:
+        """Map an ambient runnable config to an open node step.
+
+        Mirrors the re-parent walk in :meth:`on_llm_end`: a ``run_id`` in the
+        config is walked up ``_parent_of`` to the nearest key in ``_pending``.
+        Inside a node function the config carries no ``run_id`` (measured under
+        langgraph 1.2 / langchain-core 1.6), so the fallback matches
+        ``metadata.langgraph_node`` against open ``_pending`` entries and takes
+        the most recently started — the innermost active visit of that node.
+        """
+        cfg = cfg if isinstance(cfg, dict) else {}
+        with self._lock:
+            run_id = cfg.get("run_id")
+            if run_id is not None:
+                step = run_id
+                while step is not None and step not in self._pending:
+                    step = self._parent_of.get(step)
+                if step is not None:
+                    return step
+            node = (cfg.get("metadata") or {}).get("langgraph_node")
+            if not node:
+                return None
+            best: UUID | None = None
+            best_t0 = -1.0
+            for rid, (pending_node, _snap, t0, _) in self._pending.items():
+                if pending_node == node and t0 > best_t0:
+                    best, best_t0 = rid, t0
+            return best
+
+    def _file_seam_tool(self, step: UUID, record: dict[str, Any]) -> bool:
+        """File one seam-reported tool call under ``step``, dedup included.
+
+        Same dict shape the callback path files (:meth:`on_tool_start`), so
+        ``_close_step`` attaches it to the step record identically. Dedup
+        against the callback path: a record with the same name and input that
+        is still unresolved (on_tool_start fired, on_tool_end not yet) gets
+        this call's output/error filled in instead of appending a duplicate;
+        an already-resolved match is treated as the same logical call and the
+        seam record is dropped. on_tool_start itself is untouched, so the
+        reverse order (report before the invoke that fires the callback) can
+        still double-file — for the F-29 case the callback never fires, and
+        for a live callback the realistic order is invoke-then-report.
+        """
+        with self._lock:
+            bucket = self._tools.setdefault(step, [])
+            for existing in bucket:
+                if existing.get("name") == record["name"] and existing.get(
+                    "input"
+                ) == record["input"]:
+                    if (
+                        existing.get("output") is None
+                        and existing.get("error") is None
+                        and (record["output"] is not None or record["error"] is not None)
+                    ):
+                        existing["output"] = record["output"]
+                        existing["error"] = record["error"]
+                    return True
+            bucket.append(record)
+            return True
+
     # ── the layer chain ─────────────────────────────────────────────────────
 
     def _finish(self, session: ArgusSession, root: UUID) -> None:
         """Grade one finished run (:func:`argus.grading.finish`)."""
-        with self._lock:
-            # Only this run's steps. Another `.batch()` item may still be mid
-            # flight on another thread; its open steps are not this run's gap.
-            unfinished = sorted(
-                node
-                for rid, (node, _, _, _) in self._pending.items()
-                if self._root_of.get(rid) == root
-            )
-        self._blame_barren_subgraphs(session)
-        finish(session, self._consumers, unfinished)
-        self.run_ids.append(session.run_id)
+        try:
+            with self._lock:
+                # Only this run's steps. Another `.batch()` item may still be mid
+                # flight on another thread; its open steps are not this run's gap.
+                unfinished = sorted(
+                    node
+                    for rid, (node, _, _, _) in self._pending.items()
+                    if self._root_of.get(rid) == root
+                )
+            self._blame_barren_subgraphs(session)
+            finish(session, self._consumers, unfinished)
+            self.run_ids.append(session.run_id)
+        finally:
+            # Exception-safe: a crashed grade must not leak this recorder into
+            # report_tool_call's resolution after the run is over.
+            _register_run_end(self)
 
     def _blame_barren_subgraphs(self, session: ArgusSession) -> None:
         """Fail a subgraph that ran and left the parent state untouched (#89).
@@ -767,3 +898,74 @@ class ArgusRecorder(BaseCallbackHandler):
     def _require_attached(self) -> None:
         if not self._attached:
             raise RuntimeError("ArgusRecorder.attach(app) must be called before invoking the app")
+
+
+def report_tool_call(
+    name: str,
+    input: Any = None,
+    output: Any = None,
+    error: Any = None,
+    *,
+    config: dict[str, Any] | None = None,
+    recorder: ArgusRecorder | None = None,
+) -> bool:
+    """File a tool call the callback path cannot see, onto the current node step.
+
+    Public seam for register finding F-29: under LangGraph 1.x, code running
+    inside a node function can hold an empty ``CallbackManager``, so a tool the
+    node invokes directly (``tool.invoke(args, config=config)``) never fires
+    the recorder's ``on_tool_start`` and would otherwise vanish from
+    ``StepRecord.tool_calls``. Calling this from node code files the call in
+    the exact shape the callback path uses, so ``_close_step`` attaches it to
+    the step record — and the graders read it — exactly like a callback-filed
+    call. The LangSmith ingest path is untouched.
+
+    Resolution: ``recorder=`` wins; else the module-level current-recorder
+    registry (set when the watcher attaches a run, cleared at run end, even on
+    a crash); else there is no recorder. ``config=`` wins for the step; else
+    the ambient langchain config is read (lazy import — argus itself does not
+    hard-require langchain at import time). The step is the config's ``run_id``
+    walked up ``recorder._parent_of`` to the nearest open step, or — inside a
+    node function, where the config carries no ``run_id`` — the open step
+    whose ``langgraph_node`` matches, most recently started first.
+
+    Returns True when the call is filed (or recognised as already filed);
+    False when dropped. Dropping never raises into user code: each failure
+    emits one warning on the ``argus`` logger naming the reason.
+    """
+    log = logging.getLogger("argus")
+    rec = recorder if recorder is not None else _current_recorder()
+    if rec is None:
+        log.warning(
+            "argus.report_tool_call(%r) dropped: no active ArgusRecorder — call it "
+            "inside a run watched by ArgusRecorder().attach(...) or pass recorder= explicitly",
+            name,
+        )
+        return False
+    if not isinstance(rec, ArgusRecorder):
+        log.warning(
+            "argus.report_tool_call(%r) dropped: recorder= is not an ArgusRecorder",
+            name,
+        )
+        return False
+    cfg = config if config is not None else _ambient_runnable_config()
+    step = rec._resolve_seam_step(cfg)
+    if step is None:
+        log.warning(
+            "argus.report_tool_call(%r) dropped: no open node step could be resolved "
+            "from the current config — the call is outside a watched node step",
+            name,
+        )
+        return False
+    if error is not None and not isinstance(error, str):
+        error = repr(error)
+    record = {
+        "name": str(name),
+        # The callback path files the string form of the tool input
+        # (on_tool_start's input_str) — keep the seam byte-compatible so
+        # _close_step and the graders see one shape.
+        "input": input if input is None or isinstance(input, str) else str(input),
+        "output": output,
+        "error": error,
+    }
+    return rec._file_seam_tool(step, record)
