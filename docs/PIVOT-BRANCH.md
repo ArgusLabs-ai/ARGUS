@@ -893,3 +893,41 @@ critical) fires on it. That is E2's defect surfacing, not a new one.
 
 The other defects the suite found (E1–E3, E4b, E5–E9) are #128–#136, listed in
 `test-cases.md` §6 with the order to fix them.
+
+---
+
+## A node's own verdict is not a tool response (E1 / E9)
+
+The error-key, success-boolean and status-word rules in `inspector.py` were
+written for tool payloads and ran on every node's own update too. The same
+shapes mean the opposite thing there:
+
+| Shape | On a tool payload | On a node's own update |
+|---|---|---|
+| `{"status": "denied"}` | the call did not go through | the node's answer — a claim correctly denied |
+| `{"ok": False, "errors": [...]}` | a broken response | a linter reporting what it found |
+
+So every claims / lending / KYC / moderation pipeline failed CI on its normal
+"no" path (E1), and every linter / guardrail / critic node was blamed beside the
+node that actually produced the bad input (E9).
+
+**Fix.** `inspect_tool_outputs(..., own_output=True)` — passed by
+`inspect_transition`, not by `inspect_tool_calls` — makes two shapes *warnings*
+on a node's own update: a status word, and a verdict about something else
+(`errors: [...]`, plus an `ok: False` / `failed: True` sitting beside such a
+list). Warnings are visible in `argus show`, do not gate, and are the soft flag
+the ambiguous tier (#130) will review. The tool's own response is still graded
+critically by `inspect_tool_calls`, so nothing that crossed a real boundary is
+lost. The parameter defaults off, so a direct caller keeps today's reading.
+
+**The line is narrow on purpose.** `errors: [...]` (plural, a list of findings)
+is a report; `error: "API timeout"` (singular, truthy) is the node saying *it*
+broke — the swallowed failure ARGUS exists for, and still critical. A
+`success: False` with no findings list beside it is a stored tool result, not a
+verdict, and stays critical too. The first cut of this fix softened every
+verdict-shaped rule and reded seven tracked tests, each one a node reporting its
+own breakage; those shapes are now pinned in
+`tests/test_own_verdict_vs_tool_response.py` alongside the two defects.
+
+Numeric HTTP status is untouched in both directions: no business decision is
+"500".
