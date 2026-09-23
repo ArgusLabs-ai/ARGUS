@@ -136,6 +136,10 @@ _STATUS_KEYS = {"status_code", "status", "http_status", "code", "response_code"}
 # Boolean fields whose False/True value indicates an error condition
 _SUCCESS_KEYS = {"success", "ok", "succeeded", "is_valid", "is_ok"}
 _FAILURE_KEYS = {"failed", "is_error", "has_error", "errored", "is_failed"}
+# A node reporting *findings about something else* — a linter, a validator, a
+# compliance check, a critic. Plural and list-valued on purpose: `errors: [...]`
+# is a report, `error: "timeout"` is the node's own failure (E9).
+_FINDINGS_KEYS = {"errors", "issues", "violations", "warnings", "findings", "failures"}
 # Nouns that mean "this field holds what the tool found". Matched against the
 # *last word* of the key, not its trailing characters: a bare suffix test makes
 # `response_metadata` end in "data", and since every LangChain message carries
@@ -367,16 +371,61 @@ def _add_http_status_failure(
         )
 
 
+def _is_findings_list(key: str, value: Any) -> bool:
+    """`errors: ["syntax error at or near SELEC"]` — findings, not a failure."""
+    return key.lower() in _FINDINGS_KEYS and isinstance(value, (list, tuple))
+
+
+def _is_report_object(parent: Any) -> bool:
+    """Does this dict report findings about something else?
+
+    `{"ok": False, "errors": [...]}` is a linter's verdict — the `False` is its
+    answer, not its own breakage. `{"success": False, "message": "Auth failed"}`
+    carries no findings and stays a failure (E9).
+    """
+    return isinstance(parent, dict) and any(_is_findings_list(k, v) for k, v in parent.items())
+
+
 def _apply_tool_shape_rules(
     key: str,
     value: Any,
     field_path: str,
     depth: int,
     add: Any,
+    own_output: bool = False,
+    parent: Any = None,
 ) -> None:
-    """Apply error / HTTP / empty-result / partial-failure rules at one field."""
+    """Apply error / HTTP / empty-result / partial-failure rules at one field.
+
+    ``own_output`` says this dict is a node's own state update rather than a
+    tool's response (E1 / E9), which changes what two shapes mean:
+
+    * a **status word** — `{"decision": {"status": "denied"}}` is the node's
+      answer, not a failed call. Always soft here; on a tool payload
+      `{"status": "declined"}` still means the payment did not go through.
+    * a **verdict about something else** — `errors: [...]`, and a
+      `ok: False` / `failed: True` sitting beside such a list. A linter
+      reporting what it found is doing its job.
+
+    A node's own `error` (singular, truthy) is untouched: that is the node
+    saying *it* broke, which is exactly the swallowed failure ARGUS exists for.
+    Numeric HTTP status is untouched too — no business decision is "500".
+
+    Soft means warning: visible in `argus show`, not a gate, and the flag the
+    ambiguous tier (#130) will review. The tool's own response is graded
+    separately by `inspect_tool_calls`, so nothing that crossed a real boundary
+    is lost.
+    """
     nested = depth > 0
     key_l = key.lower()
+    # A status word on a node's own update is its answer, not a failed call.
+    status_sev = "warning" if own_output else "critical"
+    # A verdict about something else — only when findings are actually present.
+    verdict_sev = (
+        "warning"
+        if own_output and (_is_findings_list(key, value) or _is_report_object(parent))
+        else "critical"
+    )
 
     # Rule 1 — error key with truthy value
     if key in _ERROR_KEYS:
@@ -398,7 +447,7 @@ def _apply_tool_shape_rules(
                     ToolFailure(
                         failure_type="error_response",
                         field_name=field_path,
-                        severity="critical",
+                        severity=verdict_sev,
                         evidence=(
                             f"{'nested error field' if nested else 'error field set'}: "
                             f"{as_str[:120]!r}"
@@ -424,7 +473,7 @@ def _apply_tool_shape_rules(
             ToolFailure(
                 failure_type="error_response",
                 field_name=field_path,
-                severity="critical",
+                severity=status_sev,
                 evidence=(f"{'nested ' if nested else ''}status field '{key}' is {value!r}"),
             )
         )
@@ -436,7 +485,7 @@ def _apply_tool_shape_rules(
             ToolFailure(
                 failure_type="error_response",
                 field_name=field_path,
-                severity="critical",
+                severity=verdict_sev,
                 evidence=(f"{'nested ' if nested else ''}success indicator '{key}' is False"),
             )
         )
@@ -448,7 +497,7 @@ def _apply_tool_shape_rules(
             ToolFailure(
                 failure_type="error_response",
                 field_name=field_path,
-                severity="critical",
+                severity=verdict_sev,
                 evidence=(f"{'nested ' if nested else ''}failure indicator '{key}' is True"),
             )
         )
@@ -524,8 +573,12 @@ def _scan_payload_for_tool_failures(
     prefix: str,
     depth: int,
     add: Any,
+    own_output: bool = False,
 ) -> None:
-    """Recursively scan dict/list payloads for tool-failure shapes (max depth 5)."""
+    """Recursively scan dict/list payloads for tool-failure shapes (max depth 5).
+
+    ``own_output`` is passed down unchanged — see `_apply_tool_shape_rules`.
+    """
     if depth > _MAX_TOOL_SCAN_DEPTH:
         return
     if isinstance(obj, dict):
@@ -540,11 +593,11 @@ def _scan_payload_for_tool_failures(
                 # then read that warning as evidence and failed the node: a
                 # working `create_react_agent` could not pass the gate.
                 continue
-            _apply_tool_shape_rules(key, value, field_path, depth, add)
+            _apply_tool_shape_rules(key, value, field_path, depth, add, own_output, obj)
             if isinstance(value, dict):
-                _scan_payload_for_tool_failures(value, field_path, depth + 1, add)
+                _scan_payload_for_tool_failures(value, field_path, depth + 1, add, own_output)
             elif isinstance(value, list):
-                _scan_payload_for_tool_failures(value, field_path, depth + 1, add)
+                _scan_payload_for_tool_failures(value, field_path, depth + 1, add, own_output)
             elif isinstance(value, str):
                 # A tool result that arrived as encoded JSON is still a tool
                 # result. LangChain stringifies every structured tool return
@@ -554,12 +607,12 @@ def _scan_payload_for_tool_failures(
                 # strings that already look like JSON.
                 nested = _as_json_payload(value)
                 if nested is not None:
-                    _scan_payload_for_tool_failures(nested, field_path, depth + 1, add)
+                    _scan_payload_for_tool_failures(nested, field_path, depth + 1, add, own_output)
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
             if isinstance(item, (dict, list)):
                 item_path = f"{prefix}[{i}]"
-                _scan_payload_for_tool_failures(item, item_path, depth + 1, add)
+                _scan_payload_for_tool_failures(item, item_path, depth + 1, add, own_output)
 
 
 _JSON_EXPECTED_KEYS = frozenset(
@@ -660,6 +713,7 @@ def inspect_tool_outputs(
     _precomputed_signals: list[SemanticSignal] | None = None,
     input_state: dict[str, Any] | None = None,
     reducer_fields: dict[str, Any] | None = None,
+    own_output: bool = False,
 ) -> InspectionResult:
     """Scan a node's output dict for tool call failure patterns.
 
@@ -673,6 +727,11 @@ def inspect_tool_outputs(
     _precomputed_signals: if provided, reuse these SemanticSignals for Rule 7
         instead of re-scanning. Avoids double-scan when called from
         inspect_transition which already ran the heuristic scan.
+    own_output: this dict is a node's own state update, not a tool's response.
+        Verdict-shaped signals (`error` keys, `success: False`, a status word
+        like "denied") then warn instead of failing — see
+        `_apply_tool_shape_rules`. Defaults off, so a direct caller keeps the
+        stricter reading it has today.
     """
     # field_name → best ToolFailure so far (highest severity)
     by_field: dict[str, ToolFailure] = {}
@@ -684,7 +743,7 @@ def inspect_tool_outputs(
 
     # Rules 1–6 — recursive tool-failure shapes (error keys, HTTP status,
     # success/failure booleans, empty retrieval, nested dict/list payloads)
-    _scan_payload_for_tool_failures(output_dict, "", 0, _add)
+    _scan_payload_for_tool_failures(output_dict, "", 0, _add, own_output)
 
     # Rule 17 — Double-Encoded JSON Detection
     _scan_double_encoded(output_dict, "", 0, _add)
@@ -1132,6 +1191,8 @@ def inspect_transition(
             _precomputed_signals=semantic_signals,
             input_state=input_state,
             reducer_fields=reducer_fields,
+            # This is what the node returned, not what a tool answered (E1/E9).
+            own_output=True,
         )
         if output_dict
         else None

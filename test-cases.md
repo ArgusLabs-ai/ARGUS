@@ -8,7 +8,7 @@ gitignored. This file describes what they cover, so you can rebuild any case.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -q                                  # 1126 pass
+pytest tests/ -q                                  # 1146 pass
 pytest tests/test_silent_failure_matrix.py tests/test_shipped_shapes_matrix.py -q
 ```
 
@@ -86,8 +86,8 @@ headline must name the no-op, not the crash site).
 
 | ID | Type | What | Where | Status |
 |---|---|---|---|---|
-| E1 | false positive | `decision.status: "denied"` (a node's own business outcome) is a critical `error_response` | `inspector.py` Rule 2d runs on node outputs, not just tool payloads | [#128](https://github.com/ArgusLabs-ai/ARGUS/issues/128) |
-| E2 | false positive | `hits: []` (a clean sanctions screen) is a critical `empty_result`; `allow_empty` cannot turn it off. More visible since E4 | `inspector._empty_result_severity` | [#129](https://github.com/ArgusLabs-ai/ARGUS/issues/129) |
+| E1 | false positive | `decision.status: "denied"` (a node's own business outcome) is a critical `error_response` | `inspector.py` Rule 2d ran on node outputs, not just tool payloads | **fixed**: `own_output=True`, `tests/test_own_verdict_vs_tool_response.py` |
+| E2 | false positive | `hits: []` (a clean sanctions screen) is a critical `empty_result`; `allow_empty` cannot turn it off. More visible since E4. **Now the only healthy-run false positive left besides E3** | `inspector._empty_result_severity` | [#129](https://github.com/ArgusLabs-ai/ARGUS/issues/129) |
 | E3 | false positive | a short legitimate policy decline is critical `BA-004`, so the reviewer never sees it | `anomaly_detector._check_generic_response` whole-answer promotion | [#130](https://github.com/ArgusLabs-ai/ARGUS/issues/130) |
 | E4 | **miss** | parallel `Send` workers were graded as retries, so a swallowed tool error in any worker but the last was hidden ($0 line item, CI green) | `session._apply_loop_retries` | **fixed**: siblings share `NodeEvent.superstep`, `tests/test_fanout_siblings.py` |
 | E4b | **miss** | a sequential loop that appends to a list still hides a failed iteration (pagination loses page 1, CI green) | same function; a plain "never retry a reducer write" would break ReAct recovery | [#131](https://github.com/ArgusLabs-ai/ARGUS/issues/131) |
@@ -95,18 +95,18 @@ headline must name the no-op, not the crash site).
 | E6 | miss | `email.body` blanked inside a declared `email` field is only a warning | `contextual` is top-level only | [#133](https://github.com/ArgusLabs-ai/ARGUS/issues/133) |
 | E7 | miss | a ReAct final AI turn with `content: ""` and no tool calls is only a warning | inspector / message handling | [#134](https://github.com/ArgusLabs-ai/ARGUS/issues/134) |
 | E8 | wrong blame | a router crash reading the node's own missing output blames the previous writer | `crash_origins` | [#135](https://github.com/ArgusLabs-ai/ARGUS/issues/135) |
-| E9 | bystander | a linter reporting `errors: [...]` is blamed next to the node that fed it bad SQL | error-key rule (fix with E1) | [#136](https://github.com/ArgusLabs-ai/ARGUS/issues/136) |
+| E9 | bystander | a linter reporting `errors: [...]` is blamed next to the node that fed it bad SQL | error-key rule | **fixed**: with E1, same change |
 
-Suggested order: E7, E6, E8 (plain bugs) → E1 + E9 (one change) → the
-ambiguous tier described in #130, then E3, E5 and E2 → E4b (needs a product call).
+Suggested order: E7, E6, E8 (plain bugs) → the ambiguous tier described in
+#130, then E3, E5 and E2 → E4b (needs a product call).
 
-## 7. Current numbers (pivot_eval, after the E4 fix)
+## 7. Current numbers (pivot_eval, after E4 / E1 / E9)
 
-57 runs over 5 pipelines, 468 steps. 163 pass, 31 xfail (17 semantic gaps, 9
-defects, 5 blame-precision issues). Of 14 healthy runs, 5 fail CI (E1, E2 ×3,
-E3). Of 26 rule-visible faults, 22 are caught at the origin; the 4 misses are
-E5 ×2, E6 and E7. 0 of 17 semantic faults are caught. The reviewer judge was
-invoked **0 times** across all 57 runs.
+57 runs over 5 pipelines, 468 steps. 166 pass, 28 xfail (17 semantic gaps, 8
+defects, 3 blame-precision issues). Of 14 healthy runs, 4 fail CI (E2 ×3, E3).
+Of 26 rule-visible faults, 22 are caught at the origin; the 4 misses are E5 ×2,
+E6 and E7. 0 of 17 semantic faults are caught. The reviewer judge was invoked
+**0 times** across all 57 runs.
 
 ## 8. Live-LLM numbers (for the judge / classifier design)
 
