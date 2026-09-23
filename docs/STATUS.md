@@ -16,13 +16,15 @@ together.
 | `semantic_fail` | A **critical anomaly** fired on a step that was otherwise `pass` — `unreadable_update` (#111) and the behavioural `BA-*` criticals. The LLM judge does **not** assign this on its own: it only reviews soft rule flags and cannot originate a fail. File grading (`argus ingest`) never calls the judge, so ingest still reaches `semantic_fail` via those critical anomalies. Validator failures and hard rule fails cannot be overridden, so a `fail` never downgrades to `semantic_fail`. | `session.py` `on_node_end` (anomalies) | **yes** — run becomes `silent_failure` |
 | `degraded_input` | Node produced syntactically valid output, but an upstream node it depends on dropped or degraded a field it consumed (`inspection.degraded_upstream_node`). The blame belongs upstream; this status marks the downstream victim. | `session.py` `_check_degraded_input` | **yes** — run becomes `silent_failure` |
 | `interrupted` | Execution was cut off before the node finished (e.g. `KeyboardInterrupt`, LangGraph interrupt). | `session.py` interrupt path | **yes** — run becomes `interrupted` |
-| `retried` | An earlier iteration of a node inside a loop, where the **final** iteration of that node passed. Not a failure: the pipeline self-corrected. | `session.py` `_mark_retried_iterations` at finalize | no — excluded from roll-up |
+| `retried` | An earlier iteration of a node inside a loop, where the **final** iteration of that node passed. Not a failure: the pipeline self-corrected. Parallel `Send` workers of one superstep are one iteration, not several. | `session.py` `_apply_loop_retries` at finalize | no — excluded from roll-up |
 | `skipped` | A node on a conditional branch that was not taken. | `session.py` `_record_skipped` | no — excluded from roll-up |
 
 Rules that follow from the table:
 
 - **`retried` only exists when the final iteration is `pass`.** If the last iteration of a
-  looped node fails, every iteration keeps its own status and each counts.
+  looped node fails, every iteration keeps its own status and each counts. The final
+  iteration is a whole superstep: if any `Send` sibling in it failed, nothing is relabelled,
+  and siblings never relabel each other.
 - **`degraded_input` never names the culprit.** Read `inspection.degraded_upstream_node` or
   `RunRecord.root_cause_chain[0]` for the origin.
 - **Warnings do not change status.** Warning-severity signals (`json_in_string`, `shallow_output`,

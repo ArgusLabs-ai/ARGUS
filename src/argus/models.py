@@ -243,6 +243,10 @@ class NodeEvent:
     # dynamic `goto` is invisible to `get_graph`, so this is the only record
     # of why the next node ran. Empty for a node that returned a plain update.
     goto: list[str] = field(default_factory=list)
+    # The Pregel superstep this step ran in, as "<parent checkpoint ns>#<step>".
+    # Parallel `Send` workers share it; loop iterations do not. None when the
+    # trace carries no step metadata (trace-file ingest, the wrap path).
+    superstep: str | None = None
 
 
 # ── Replay comparison dataclasses ─────────────────────────────────────────────

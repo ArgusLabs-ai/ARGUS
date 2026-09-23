@@ -277,7 +277,7 @@ which is a different and more dangerous thing to leave undocumented.
 |---|---|
 | **Real LLM nodes in CI** | Both matrices use deterministic stubs. Live-model runs were exercised by hand against OpenAI (healthy pipelines clean, sabotaged pipelines blamed on the sabotaged node, stable over three runs) but no live test runs in CI |
 | **A terminal node returning `{}`** | `empty_output` is gated on having successors, and an edge to `END` is not one. Defensible — a terminal `send_email` node legitimately returns nothing — but it is also the last chance to notice the answer was never produced. Workaround: declare `consumers={"answer": ["finalize"]}` |
-| **A silent early iteration of a loop** | `_apply_loop_retries` relabels every earlier iteration `retried` when the final one passes, and the gate skips `retried`. Right for a genuine retry, wrong for an accumulating field where round 1's empty contribution is never superseded. Pinned by a test; **the one open product decision** |
+| **A silent early iteration of a loop** | `_apply_loop_retries` relabels every earlier iteration `retried` when the final one passes, and the gate skips `retried`. Right for a genuine retry, wrong for an accumulating field where round 1's empty contribution is never superseded (a pagination loop that loses page 1 grades clean). Parallel `Send` workers are no longer caught by this (E4, below); the sequential case is **E4b (#131), still the open product decision** — "never retry a reducer write" would break a ReAct agent that recovers from a tool error, whose `messages` field accumulates too |
 | **Custom reducers, at fan-in** | Still round-trip as `"overwrite"` (`ledger.reducer_kinds`), and no single successor's recorded input can show what a merge did, so a custom fan-in reads as the last branch winning. The *sequential* case is fixed — see "The notebook believes the trace" below |
 | **`add_messages` id de-duplication** | Folded as plain concatenation, so an updated message counts twice. Pinned by a test |
 | **Token accounting** | `llm_tracker` reads usage off the node's output dict, so a node returning `{"category": "..."}` records none. Verified identical on the old wrap path — pre-existing, not a pivot regression. `on_llm_end` would fix it on this path |
@@ -456,6 +456,10 @@ Demos: `demo/fat_trace/`, `demo/new_user_rag.py`.
   (`ARGUS_EMBEDDINGS=1`) and off by default, so nothing calls out mid-grade.
   Turning them on costs a synchronous OpenAI round trip per unique string
   value — the old default, and why grading was minutes and leaked node data.
+
+- **Testing the branch?** `test-cases.md` at the repo root lists the pipeline
+  shapes, the healthy traps, the faults to inject (rule-visible and semantic,
+  G1–G9), the judge contract, and the open defects (E1–E9) with their issues.
 
 Untracked on purpose (not in the implementation): `docs/ARGUS-PIVOT*.pdf`, `docs/generate_pivot_*.py`, `demo/research_agent/`, `website/public/__artifact.html`.
 
@@ -851,3 +855,41 @@ update, so a branch that really did empty a field can read as still holding the
 pre-fan-out value, and a custom fan-in merge is still invisible. Blame anchors on
 the reader's own recorded `input_state` (`contextual.py`), which this never edits,
 so the cost is a row's display rather than a verdict.
+
+---
+
+## Parallel workers were graded as retries (E4)
+
+Found by the real-team pipeline suite (claims, text-to-SQL, SDR, ReAct support,
+KYC — `test-cases.md`). `_apply_loop_retries` grouped a node's runs **by name
+only**, so two `Send` workers that ran side by side looked like a loop: the last
+one passed, the first was filed `retried`, and the gate skips `retried`.
+
+| Pipeline | Swallowed failure in the *first* worker | Graded |
+|---|---|---|
+| KYC | sanctions provider 503 on the primary name, written as "no hits" | **clean** — customer screened on the alias only |
+| Claims | pricing API timeout on one line item, written as `$0` | **clean** — claim underpaid |
+
+The same failure in the *last* worker was caught, so the verdict depended on
+which item happened to be priced first.
+
+**Fix.** The recorder keeps LangGraph's `langgraph_step`, qualified by the
+parent checkpoint namespace (the step counter restarts inside every subgraph
+invocation), as `NodeEvent.superstep`. `_apply_loop_retries` now treats the
+node's whole final **round** as final: siblings in one superstep are graded
+individually and never relabel each other. Earlier rounds are relabelled only if
+every sibling in the final round passed. `superstep` is `None` for trace-file
+ingest and the wrap path, which keep the old per-event behaviour.
+
+**Unchanged on purpose.** A sequential loop still self-corrects: a ReAct agent
+whose first `lookup_order` 404s and whose second succeeds grades clean with the
+404 filed `retried`. `tests/test_fanout_siblings.py` pins both sides (first /
+middle / last worker failing, healthy fan-out, the ReAct recovery).
+
+**Visible side effect.** A worker whose legitimate result is an empty retrieval
+list (`hits: []` on a clean sanctions screen) used to be hidden the same way;
+it is now graded, and E2 (#129: empty `hits` / `results` / `docs` is always
+critical) fires on it. That is E2's defect surfacing, not a new one.
+
+The other defects the suite found (E1–E3, E4b, E5–E9) are #128–#136, listed in
+`test-cases.md` §6 with the order to fix them.

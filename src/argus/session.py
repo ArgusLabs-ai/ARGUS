@@ -851,6 +851,7 @@ class ArgusSession:
         tool_calls: list[dict[str, Any]] | None = None,
         goto: list[str] | None = None,
         unreadable_update: str | None = None,
+        superstep: str | None = None,
     ) -> None:
         with self._lock:
             step_idx = self._step_index
@@ -1073,6 +1074,7 @@ class ArgusSession:
                 disambiguation_results=disambiguation_results,
                 tool_calls=list(tool_calls or []),
                 goto=list(goto or []),
+                superstep=superstep,
             )
 
             self._events.append(event)
@@ -1558,10 +1560,16 @@ class ArgusSession:
             total = len(indices)
             for idx in indices:
                 self._events[idx].total_iterations = total
-            final = self._events[indices[-1]]
-            if final.status == "pass":
-                for idx in indices[:-1]:
-                    self._events[idx].status = "retried"
+            # The final *round*, not the final event (E4): `Send` workers that
+            # ran in one superstep are siblings — two names to screen, two
+            # items to price — and the last one passing supersedes nothing.
+            last = self._events[indices[-1]].superstep
+            final = [i for i in indices if last is not None and self._events[i].superstep == last]
+            final = final or indices[-1:]
+            if all(self._events[i].status == "pass" for i in final):
+                for idx in indices:
+                    if idx not in final:
+                        self._events[idx].status = "retried"
 
     # ── Finalization ──────────────────────────────────────────────────────────
 

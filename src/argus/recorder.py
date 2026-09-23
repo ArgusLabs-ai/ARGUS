@@ -64,6 +64,22 @@ __all__ = ["ArgusRecorder", "IncompleteTraceError"]
 _SENTINELS = ("__start__", "__end__")
 
 
+def _superstep(metadata: dict[str, Any] | None) -> str | None:
+    """Which Pregel superstep a node task ran in: ``"<parent ns>#<step>"``.
+
+    Parallel ``Send`` workers share a step; loop iterations do not (E4). The
+    step counter restarts inside every subgraph invocation, so it is qualified
+    by the *parent* checkpoint namespace — the task's own namespace minus its
+    last ``node:task_id`` segment, which is unique per sibling.
+    """
+    m = metadata or {}
+    step = m.get("langgraph_step")
+    if step is None:
+        return None
+    parent_ns = str(m.get("langgraph_checkpoint_ns") or "").rpartition("|")[0]
+    return f"{parent_ns}#{step}"
+
+
 def _node_update(outputs: Any) -> Any:
     """What the node actually wrote, unwrapping a ``Command`` handoff (#88).
 
@@ -270,8 +286,8 @@ class ArgusRecorder(BaseCallbackHandler):
         self.session: ArgusSession | None = None
         self.run_ids: list[str] = []
         self._lock = threading.Lock()
-        # run_id -> (node name, input snapshot, start time)
-        self._pending: dict[UUID, tuple[str, dict[str, Any], float]] = {}
+        # run_id -> (node name, input snapshot, start time, superstep)
+        self._pending: dict[UUID, tuple[str, dict[str, Any], float, str | None]] = {}
         # node chain run_id -> tool records recorded under it
         self._tools: dict[UUID, list[dict[str, Any]]] = {}
         # tool run_id -> that tool's own record, so concurrent tools don't cross
@@ -448,7 +464,7 @@ class ArgusRecorder(BaseCallbackHandler):
 
         input_snap = session.capture_state(inputs if isinstance(inputs, dict) else {})
         with self._lock:
-            self._pending[run_id] = (node, input_snap, time.perf_counter())
+            self._pending[run_id] = (node, input_snap, time.perf_counter(), _superstep(metadata))
         session.on_node_start(node, input_snap)
 
     def _adopt_graph_run(
@@ -538,7 +554,7 @@ class ArgusRecorder(BaseCallbackHandler):
             if entry is None:
                 return False
 
-            node, input_snap, started = entry
+            node, input_snap, started, superstep = entry
             duration_ms = (time.perf_counter() - started) * 1000
 
             # `{}` must only ever mean "the node really returned an empty update"
@@ -566,6 +582,7 @@ class ArgusRecorder(BaseCallbackHandler):
                 llm_usage=usage_from_calls(llm_calls),
                 tool_calls=tools,
                 goto=goto,
+                superstep=superstep,
             )
         return True
 
@@ -673,7 +690,7 @@ class ArgusRecorder(BaseCallbackHandler):
             # flight on another thread; its open steps are not this run's gap.
             unfinished = sorted(
                 node
-                for rid, (node, _, _) in self._pending.items()
+                for rid, (node, _, _, _) in self._pending.items()
                 if self._root_of.get(rid) == root
             )
         self._blame_barren_subgraphs(session)

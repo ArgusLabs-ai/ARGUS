@@ -97,3 +97,6 @@ docs/ARGUS-PIVOT-FLOW.png
 docs/generate_pivot_brief.py
 docs/generate_pivot_plan.py
 docs/generate_contributor_brief.py
+
+# Real-team pipeline suite + judge-contract + live-LLM eval (pivot architecture, local only)
+pivot_eval/

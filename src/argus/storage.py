@@ -653,4 +653,5 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
         tool_calls=data.get("tool_calls", []),
         goto=data.get("goto", []),
         llm_usage=llm_usage,
+        superstep=data.get("superstep"),
     )
