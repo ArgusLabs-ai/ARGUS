@@ -23,7 +23,11 @@ class TestLargeOutputs:
         t0 = time.perf_counter()
         inspect_tool_outputs(big)
         elapsed = time.perf_counter() - t0
-        assert elapsed < 60.0, f"Took {elapsed:.1f}s (was 1051s before fix)"
+        # 300s keeps the regression guard (pre-fix pathology was 1051s, >3x
+        # over) while tolerating slow/loaded CI machines — the healthy run
+        # measured 68s on the slowest machine observed (2026-09-23 sweep),
+        # so 300s trips only on a >4x regression, not on machine speed.
+        assert elapsed < 300.0, f"Took {elapsed:.1f}s (was 1051s before fix)"
 
     def test_1000_field_output(self):
         output = {f"key_{i}": f"data_{i}" for i in range(1000)}
