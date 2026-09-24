@@ -1321,9 +1321,7 @@ class ArgusSession:
                     }
                     if dismissed_ids:
                         inspection.semantic_signals = [
-                            s
-                            for s in inspection.semantic_signals
-                            if s.sig_id not in dismissed_ids
+                            s for s in inspection.semantic_signals if s.sig_id not in dismissed_ids
                         ]
                         inspection.tool_failures = [
                             tf
@@ -1600,8 +1598,25 @@ class ArgusSession:
             final = final or indices[-1:]
             if all(self._events[i].status == "pass" for i in final):
                 for idx in indices:
-                    if idx not in final:
-                        self._events[idx].status = "retried"
+                    if idx in final:
+                        continue
+                    # A data accumulator keeps every iteration's write
+                    # (`operator.add`). Relabelling an earlier page `retried`
+                    # hides a swallowed timeout once the last page passes
+                    # (#131). Message history (`add_messages`) stays a retry:
+                    # a ReAct agent that saw the 404 and tried again is
+                    # conversation, not lost rows.
+                    if self._wrote_data_accumulator(self._events[idx]):
+                        continue
+                    self._events[idx].status = "retried"
+
+    def _wrote_data_accumulator(self, event: NodeEvent) -> bool:
+        """Did this step write a field reduced with ``operator.add`` (not messages)?"""
+        update = event.output_dict
+        if not isinstance(update, dict):
+            return False
+        kinds = self.reducer_kinds
+        return any(kinds.get(key) == "add" for key in update)
 
     # ── Finalization ──────────────────────────────────────────────────────────
 
