@@ -435,3 +435,44 @@ def test_d10_headline_origin_is_the_failing_node_not_a_warned_bystander():
         failing,
     )
     assert "rerank" in record.root_cause_chain
+
+
+# ── E8 / #135: own-router KeyError blames the node, not the previous writer ──
+
+
+class KycState(TypedDict, total=False):
+    risk: float
+    decision: dict
+    notes: str
+
+
+def test_e8_own_router_keyerror_blames_decide_not_aggregate_risk():
+    """A node returns `{}`; its own conditional edge then reads the missing field.
+
+    LangGraph reports the KeyError on `decide`. crash_origins must not walk
+    back to `aggregate_risk` (it wrote an unrelated `risk`).
+    """
+
+    def decide(state):
+        return {}
+
+    def route(state):
+        return "open_account" if state["decision"]["outcome"] == "approve" else "manual_review"
+
+    g = StateGraph(KycState)
+    g.add_node("aggregate_risk", lambda s: {"risk": 0.9})
+    g.add_node("decide", decide)
+    g.add_node("open_account", lambda s: {"notes": "opened"})
+    g.add_node("manual_review", lambda s: {"notes": "review"})
+    g.add_edge(START, "aggregate_risk")
+    g.add_edge("aggregate_risk", "decide")
+    g.add_conditional_edges("decide", route, ["open_account", "manual_review"])
+    g.add_edge("open_account", END)
+    g.add_edge("manual_review", END)
+
+    _verdict, record = _run(g.compile(), {}, expect_raise=KeyError)
+    assert record.overall_status == "crashed"
+    assert "decide" in _blamed(record), record.findings
+    assert "aggregate_risk" not in _blamed(record), record.findings
+    assert record.root_cause_chain[0] == "decide"
+    assert record.first_failure_step == "decide"

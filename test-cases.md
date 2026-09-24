@@ -94,7 +94,7 @@ headline must name the no-op, not the crash site).
 | E5 | miss | `[Your Name]`, `[TOPIC]`, `[Claimant Name]` inside prose raise nothing | `signatures.json` PH-014 is whole-value only | [#132](https://github.com/ArgusLabs-ai/ARGUS/issues/132) |
 | E6 | miss | `email.body` blanked inside a declared `email` field is only a warning | `contextual` is top-level only | [#133](https://github.com/ArgusLabs-ai/ARGUS/issues/133) |
 | E7 | miss | a ReAct final AI turn with `content: ""` and no tool calls is only a warning | inspector / message handling | [#134](https://github.com/ArgusLabs-ai/ARGUS/issues/134) |
-| E8 | wrong blame | a router crash reading the node's own missing output blames the previous writer | `crash_origins` | [#135](https://github.com/ArgusLabs-ai/ARGUS/issues/135) |
+| E8 | wrong blame | a router crash reading the node's own missing output blames the previous writer | `crash_origins` | **fixed**: own-router KeyError blames the node (#135), `tests/test_enterprise_regressions.py` |
 | E9 | bystander | a linter reporting `errors: [...]` is blamed next to the node that fed it bad SQL | error-key rule | **fixed**: with E1, same change |
 
 Suggested order: E7, E6, E8 (plain bugs) → the ambiguous tier described in
