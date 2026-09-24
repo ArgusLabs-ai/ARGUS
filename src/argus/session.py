@@ -418,7 +418,7 @@ class ArgusSession:
             try:
                 from dotenv import load_dotenv
 
-                load_dotenv(override=True)
+                load_dotenv()
             except ImportError:
                 pass
             from argus.llm_proxy import is_available as _llm_available

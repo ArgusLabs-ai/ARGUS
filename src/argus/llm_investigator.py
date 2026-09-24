@@ -703,7 +703,7 @@ def investigate(
     try:
         from dotenv import load_dotenv
 
-        load_dotenv(override=True)
+        load_dotenv()
     except ImportError:
         pass
 
@@ -835,7 +835,7 @@ def compare_runs(
     try:
         from dotenv import load_dotenv
 
-        load_dotenv(override=True)
+        load_dotenv()
     except ImportError:
         pass
 
@@ -981,7 +981,7 @@ def compare_replay_runs(
     try:
         from dotenv import load_dotenv
 
-        load_dotenv(override=True)
+        load_dotenv()
     except ImportError:
         pass
 
