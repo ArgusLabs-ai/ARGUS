@@ -18,12 +18,20 @@ def extract_fn(node_value: Any) -> Any:
 
 
 def _is_compiled_graph(runnable: Any) -> bool:
-    """True when the runnable is a compiled langgraph graph (a subgraph node)."""
+    """True when the runnable is a compiled langgraph graph (a subgraph node).
+
+    Prefer ``isinstance(..., Pregel)``. Also duck-type objects that expose a
+    node map the way Pregel does — RunnableSequences carry ``steps``, not
+    ``nodes``, so sequences still get wrapped (F-28) while #74 stubs and
+    Pregel-like subgraphs stay unmonitored.
+    """
     try:
         from langgraph.pregel import Pregel
     except Exception:  # pragma: no cover - langgraph always present in practice
-        return False
-    return isinstance(runnable, Pregel)
+        Pregel = ()  # type: ignore[assignment, misc]
+    if Pregel and isinstance(runnable, Pregel):
+        return True
+    return hasattr(runnable, "nodes") and not hasattr(runnable, "steps")
 
 
 def _wrap_runnable(session: ArgusSession, node_name: str, inner: Any) -> Any:
