@@ -56,7 +56,10 @@ def test_patch_graph_skips_compiled_subgraph_node():
     # langgraph-swarm agents, langgraph-reflection) has no .func to wrap.
     # Regression: the legacy fallback replaced the spec with a plain function,
     # corrupting graph.nodes and crashing langgraph validate() at compile.
-    compiled = SimpleNamespace(invoke=lambda state: state)
+    # Duck-typed Pregel: has a node map, no RunnableSequence.steps (see
+    # _is_compiled_graph). A bare invoke-only stub would be wrapped as a
+    # non-callable runnable (F-28); subgraphs must stay unmonitored (#74).
+    compiled = SimpleNamespace(invoke=lambda state: state, nodes={})
     spec = SimpleNamespace(runnable=compiled)
     graph = _graph({"sub": spec})
     session = _StubSession()
