@@ -39,6 +39,7 @@ from typing import Any, Callable
 
 from argus import __version__
 from argus.anomaly_detector import detect_anomalies
+from argus.contextual import node_writes_allow_empty
 from argus.inspector import (
     build_root_cause_chain,
     crash_origins,
@@ -891,6 +892,9 @@ class ArgusSession:
             if status == "pass" and output_snap is not None:
                 successor_fns = self._get_successor_fns(node_name)
                 current_fn = self.node_fn_registry.get(node_name)
+                # #129: presence-only consumer fields soften empty retrieval
+                # lists in this node's update and its tool responses.
+                allow_empty = node_writes_allow_empty(self.consumers, output_snap)
                 inspection = inspect_transition(
                     current_node=node_name,
                     output_dict=output_snap,
@@ -904,11 +908,14 @@ class ArgusSession:
                     # _get_successor_fns) but things still run after them, and
                     # the empty_output rule only needs that much.
                     has_successors=bool(self.graph_edge_map.get(node_name)),
+                    allow_empty=allow_empty,
                 )
                 # The tools this step actually called (fat trace). Must land
                 # before the status roll-up below, or a swallowed tool error is
                 # recorded and then graded clean (#86).
-                tool_call_failures = inspect_tool_calls(tool_calls, strict=self._strict)
+                tool_call_failures = inspect_tool_calls(
+                    tool_calls, strict=self._strict, allow_empty=allow_empty
+                )
                 if tool_call_failures:
                     inspection.tool_failures.extend(tool_call_failures)
                     if any(tf.severity == "critical" for tf in tool_call_failures):

@@ -335,8 +335,17 @@ def _is_retrieval_list_key(field_path: str) -> bool:
     return _leaf_key(field_path).lower() in _RETRIEVAL_LIST_KEYS
 
 
-def _empty_result_severity(field_path: str, value: Any) -> str:
-    """Empty retrieval lists fail the node; other empty result-like fields warn."""
+def _empty_result_severity(
+    field_path: str, value: Any, *, allow_empty: bool = False
+) -> str:
+    """Empty retrieval lists fail the node; other empty result-like fields warn.
+
+    ``allow_empty``: the node wrote a consumer field declared presence-only
+    (#129). Empty ``hits`` / ``docs`` / … is then the good path (sanctions
+    screen, vuln scan), so severity drops to warning — visible, not a gate.
+    """
+    if allow_empty:
+        return "warning"
     if _is_retrieval_list_key(field_path) and isinstance(value, list):
         return "critical"
     if _is_retrieval_list_key(field_path) and value is None:
@@ -394,6 +403,7 @@ def _apply_tool_shape_rules(
     add: Any,
     own_output: bool = False,
     parent: Any = None,
+    allow_empty: bool = False,
 ) -> None:
     """Apply error / HTTP / empty-result / partial-failure rules at one field.
 
@@ -415,6 +425,10 @@ def _apply_tool_shape_rules(
     ambiguous tier (#130) will review. The tool's own response is graded
     separately by `inspect_tool_calls`, so nothing that crossed a real boundary
     is lost.
+
+    ``allow_empty`` softens empty retrieval lists (``hits`` / ``docs`` / …)
+    from critical to warning when the node wrote a presence-only consumer
+    field (#129). Error keys, HTTP 4xx/5xx, and raised tools stay critical.
     """
     nested = depth > 0
     key_l = key.lower()
@@ -510,7 +524,9 @@ def _apply_tool_shape_rules(
                 ToolFailure(
                     failure_type="empty_result",
                     field_name=field_path,
-                    severity=_empty_result_severity(field_path, value),
+                    severity=_empty_result_severity(
+                        field_path, value, allow_empty=allow_empty
+                    ),
                     evidence="tool returned no results",
                 )
             )
@@ -523,7 +539,9 @@ def _apply_tool_shape_rules(
                         failure_type="empty_result",
                         field_name=field_path,
                         severity=_empty_result_severity(
-                            field_path, [] if isinstance(value, list) else value
+                            field_path,
+                            [] if isinstance(value, list) else value,
+                            allow_empty=allow_empty,
                         ),
                         evidence=f"tool returned {len(items)} items but all are empty/null",
                     )
@@ -574,10 +592,12 @@ def _scan_payload_for_tool_failures(
     depth: int,
     add: Any,
     own_output: bool = False,
+    allow_empty: bool = False,
 ) -> None:
     """Recursively scan dict/list payloads for tool-failure shapes (max depth 5).
 
-    ``own_output`` is passed down unchanged — see `_apply_tool_shape_rules`.
+    ``own_output`` / ``allow_empty`` are passed down unchanged — see
+    `_apply_tool_shape_rules`.
     """
     if depth > _MAX_TOOL_SCAN_DEPTH:
         return
@@ -593,11 +613,17 @@ def _scan_payload_for_tool_failures(
                 # then read that warning as evidence and failed the node: a
                 # working `create_react_agent` could not pass the gate.
                 continue
-            _apply_tool_shape_rules(key, value, field_path, depth, add, own_output, obj)
+            _apply_tool_shape_rules(
+                key, value, field_path, depth, add, own_output, obj, allow_empty
+            )
             if isinstance(value, dict):
-                _scan_payload_for_tool_failures(value, field_path, depth + 1, add, own_output)
+                _scan_payload_for_tool_failures(
+                    value, field_path, depth + 1, add, own_output, allow_empty
+                )
             elif isinstance(value, list):
-                _scan_payload_for_tool_failures(value, field_path, depth + 1, add, own_output)
+                _scan_payload_for_tool_failures(
+                    value, field_path, depth + 1, add, own_output, allow_empty
+                )
             elif isinstance(value, str):
                 # A tool result that arrived as encoded JSON is still a tool
                 # result. LangChain stringifies every structured tool return
@@ -607,12 +633,16 @@ def _scan_payload_for_tool_failures(
                 # strings that already look like JSON.
                 nested = _as_json_payload(value)
                 if nested is not None:
-                    _scan_payload_for_tool_failures(nested, field_path, depth + 1, add, own_output)
+                    _scan_payload_for_tool_failures(
+                        nested, field_path, depth + 1, add, own_output, allow_empty
+                    )
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
             if isinstance(item, (dict, list)):
                 item_path = f"{prefix}[{i}]"
-                _scan_payload_for_tool_failures(item, item_path, depth + 1, add, own_output)
+                _scan_payload_for_tool_failures(
+                    item, item_path, depth + 1, add, own_output, allow_empty
+                )
 
 
 _JSON_EXPECTED_KEYS = frozenset(
@@ -714,6 +744,7 @@ def inspect_tool_outputs(
     input_state: dict[str, Any] | None = None,
     reducer_fields: dict[str, Any] | None = None,
     own_output: bool = False,
+    allow_empty: bool = False,
 ) -> InspectionResult:
     """Scan a node's output dict for tool call failure patterns.
 
@@ -732,6 +763,9 @@ def inspect_tool_outputs(
         like "denied") then warn instead of failing — see
         `_apply_tool_shape_rules`. Defaults off, so a direct caller keeps the
         stricter reading it has today.
+    allow_empty: the node wrote a consumer field declared presence-only (#129).
+        Empty retrieval lists (``hits`` / ``docs`` / …) then warn instead of
+        failing CI. Error / HTTP / raised-tool rules are unchanged.
     """
     # field_name → best ToolFailure so far (highest severity)
     by_field: dict[str, ToolFailure] = {}
@@ -743,7 +777,7 @@ def inspect_tool_outputs(
 
     # Rules 1–6 — recursive tool-failure shapes (error keys, HTTP status,
     # success/failure booleans, empty retrieval, nested dict/list payloads)
-    _scan_payload_for_tool_failures(output_dict, "", 0, _add, own_output)
+    _scan_payload_for_tool_failures(output_dict, "", 0, _add, own_output, allow_empty)
 
     # Rule 17 — Double-Encoded JSON Detection
     _scan_double_encoded(output_dict, "", 0, _add)
@@ -1096,6 +1130,7 @@ def inspect_tool_outputs(
 def inspect_tool_calls(
     tool_calls: list[dict[str, Any]] | None,
     strict: bool = False,
+    allow_empty: bool = False,
 ) -> list[ToolFailure]:
     """Grade the tool I/O recorded for one step (`NodeEvent.tool_calls`).
 
@@ -1112,6 +1147,10 @@ def inspect_tool_calls(
     A plain-string tool result is left alone: it lands in the node's output if
     the node used it, and scanning prose for error words is how false positives
     get made.
+
+    ``allow_empty``: the node wrote a presence-only consumer field (#129). Empty
+    retrieval lists in the tool payload then warn instead of failing CI; a
+    raised tool or an error / 4xx / 5xx body still fails hard.
     """
     out: list[ToolFailure] = []
     for call in tool_calls or []:
@@ -1136,7 +1175,9 @@ def inspect_tool_calls(
             payload = {"results": payload}
         if not isinstance(payload, dict):
             continue
-        for tf in inspect_tool_outputs(payload, strict=strict).tool_failures:
+        for tf in inspect_tool_outputs(
+            payload, strict=strict, allow_empty=allow_empty
+        ).tool_failures:
             out.append(
                 ToolFailure(
                     failure_type=tf.failure_type,
@@ -1158,6 +1199,7 @@ def inspect_transition(
     current_node_fn: Any = None,
     reducer_fields: dict[str, Any] | None = None,
     has_successors: bool | None = None,
+    allow_empty: bool = False,
 ) -> InspectionResult:
     """Check if the output of current_node will cause a silent failure in any successor.
 
@@ -1174,6 +1216,8 @@ def inspect_transition(
             source is handed no successor_fns on purpose (validating against
             every branch's annotations when only one branch runs is a false
             positive factory) but plenty still runs after it.
+        allow_empty: node wrote a presence-only consumer field (#129) — empty
+            retrieval lists in this update warn instead of failing CI.
     """
     if has_successors is None:
         has_successors = bool(successor_fns)
@@ -1193,6 +1237,7 @@ def inspect_transition(
             reducer_fields=reducer_fields,
             # This is what the node returned, not what a tool answered (E1/E9).
             own_output=True,
+            allow_empty=allow_empty,
         )
         if output_dict
         else None

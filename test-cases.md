@@ -87,7 +87,7 @@ headline must name the no-op, not the crash site).
 | ID | Type | What | Where | Status |
 |---|---|---|---|---|
 | E1 | false positive | `decision.status: "denied"` (a node's own business outcome) is a critical `error_response` | `inspector.py` Rule 2d ran on node outputs, not just tool payloads | **fixed**: `own_output=True`, `tests/test_own_verdict_vs_tool_response.py` |
-| E2 | false positive | `hits: []` (a clean sanctions screen) is a critical `empty_result`; `allow_empty` cannot turn it off. More visible since E4. **Now the only healthy-run false positive left besides E3** | `inspector._empty_result_severity` | [#129](https://github.com/ArgusLabs-ai/ARGUS/issues/129) |
+| E2 | false positive | `hits: []` (a clean sanctions screen) is a critical `empty_result`; `allow_empty` cannot turn it off. More visible since E4. | `inspector._empty_result_severity` | **fixed**: `allow_empty` softens empty retrieval on the writer node's tools, `tests/test_allow_empty_tool_hits.py` (#129) |
 | E3 | false positive | a short legitimate policy decline is critical `BA-004`, so the reviewer never sees it | `anomaly_detector._check_generic_response` whole-answer promotion | [#130](https://github.com/ArgusLabs-ai/ARGUS/issues/130) |
 | E4 | **miss** | parallel `Send` workers were graded as retries, so a swallowed tool error in any worker but the last was hidden ($0 line item, CI green) | `session._apply_loop_retries` | **fixed**: siblings share `NodeEvent.superstep`, `tests/test_fanout_siblings.py` |
 | E4b | **miss** | a sequential loop that appends to a list still hides a failed iteration (pagination loses page 1, CI green) | same function; a plain "never retry a reducer write" would break ReAct recovery | [#131](https://github.com/ArgusLabs-ai/ARGUS/issues/131) |
