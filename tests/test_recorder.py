@@ -538,3 +538,9 @@ def test_tool_at_graph_level_keeps_raw_parent_key():
         {"name": "t"}, "{}", run_id=tool_run, parent_run_id=graph_run
     )
     assert recorder._tools[graph_run][0]["name"] == "t"
+    # Closing the bare run boundary grades an empty trace (no node steps) —
+    # IncompleteTraceError is expected. The ``finally`` in ``_finish`` still
+    # clears the report_tool_call registry so this unit stub does not leak a
+    # current-recorder into later tests.
+    with pytest.raises(IncompleteTraceError):
+        recorder.on_chain_end({}, run_id=graph_run)
