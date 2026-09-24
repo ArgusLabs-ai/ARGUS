@@ -302,3 +302,128 @@ def test_a_reader_on_an_untaken_branch_never_read_anything(monkeypatch):
     assert "right" not in [r.node for r in rows], "a node that never ran is not a step"
     assert contextual_findings(rows, {"b": ["right"]}) == []
     assert [f.node for f in record.findings if f.type == "missing_field"] == []
+
+
+# ── E6 / #133: dotted paths into nested state ────────────────────────────────
+
+
+class _EmailState(TypedDict, total=False):
+    seed: str
+    email: dict
+    compliance: dict
+    sent: bool
+
+
+def _email_app(compliance):
+    def draft(state: _EmailState) -> dict:
+        return {
+            "email": {
+                "subject": "Globex x RouteCo",
+                "body": "Hi Dana, saw Globex is scaling...",
+            }
+        }
+
+    def send_email(state: _EmailState) -> dict:
+        return {"sent": bool(state["email"].get("body"))}
+
+    g = StateGraph(_EmailState)
+    nodes = (
+        ("draft", draft),
+        ("compliance_check", compliance),
+        ("send_email", send_email),
+    )
+    for name, fn in nodes:
+        g.add_node(name, fn)
+    g.add_edge(START, "draft")
+    g.add_edge("draft", "compliance_check")
+    g.add_edge("compliance_check", "send_email")
+    g.add_edge("send_email", END)
+    return g.compile()
+
+
+@pytest.mark.integration
+def test_nested_field_emptied_blames_the_writer(monkeypatch):
+    """E6: `email.body` blanked inside a still-non-empty `email` dict.
+
+    Top-level `consumers={"email": [...]}` stays quiet — the dict is present.
+    Declaring the leaf path blames the node that wiped it.
+    """
+    _no_patching(monkeypatch)
+
+    def compliance_check(state: _EmailState) -> dict:
+        return {
+            "compliance": {"ok": True},
+            "email": {"subject": state["email"]["subject"], "body": ""},
+        }
+
+    recorder = ArgusRecorder(consumers={"email.body": ["send_email"]})
+    recorder.attach(_email_app(compliance_check)).invoke({"seed": "s"})
+    record = load_run(recorder.session.run_id)
+    verdict = evaluate_run(record)
+
+    assert verdict.passed is False
+    assert "compliance_check" in verdict.failing_nodes
+    assert "send_email" not in verdict.failing_nodes
+    assert "draft" not in verdict.failing_nodes
+    miss = [
+        f
+        for f in record.findings
+        if f.type == "missing_field" and f.field_path == "email.body"
+    ]
+    assert [f.node for f in miss] == ["compliance_check"]
+    assert miss[0].severity == "critical"
+
+
+@pytest.mark.integration
+def test_nested_field_present_is_clean(monkeypatch):
+    _no_patching(monkeypatch)
+
+    def compliance_check(state: _EmailState) -> dict:
+        return {"compliance": {"ok": True}}
+
+    recorder = ArgusRecorder(consumers={"email.body": ["send_email"]})
+    recorder.attach(_email_app(compliance_check)).invoke({"seed": "s"})
+    record = load_run(recorder.session.run_id)
+
+    assert evaluate_run(record).passed is True
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_nested_sibling_change_keeps_body_clean(monkeypatch):
+    """A node that only rewrites `email.subject` must not trip `email.body`."""
+    _no_patching(monkeypatch)
+
+    def compliance_check(state: _EmailState) -> dict:
+        return {
+            "compliance": {"ok": True},
+            "email": {
+                "subject": state["email"]["subject"] + " [reviewed]",
+                "body": state["email"]["body"],
+            },
+        }
+
+    recorder = ArgusRecorder(consumers={"email.body": ["send_email"]})
+    recorder.attach(_email_app(compliance_check)).invoke({"seed": "s"})
+    record = load_run(recorder.session.run_id)
+
+    assert evaluate_run(record).passed is True
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_top_level_declaration_still_ignores_blanked_nested_leaf(monkeypatch):
+    """Top-level `email` stays exactly as today: a non-empty dict is not empty."""
+    _no_patching(monkeypatch)
+
+    def compliance_check(state: _EmailState) -> dict:
+        return {
+            "compliance": {"ok": True},
+            "email": {"subject": state["email"]["subject"], "body": ""},
+        }
+
+    recorder = ArgusRecorder(consumers={"email": ["send_email"]})
+    recorder.attach(_email_app(compliance_check)).invoke({"seed": "s"})
+    record = load_run(recorder.session.run_id)
+
+    assert [f for f in record.findings if f.type == "missing_field"] == []
