@@ -14,6 +14,11 @@ matching under a new name. So the readers are **declared**::
 
     ArgusRecorder(consumers={"b": ["D"]}).attach(app)
 
+Keys may be dotted paths into nested state
+(``consumers={"email.body": ["send_email"]}``). A top-level declaration still
+means the whole value — ``{"email": {"subject": "...", "body": ""}}`` is a
+non-empty ``email``, so blanking a nested leaf needs the leaf path.
+
 Blame is anchored at the **reader**, not at the start of the run. A field that
 does not exist yet is not a failure — most pipelines fill state progressively
 (``ingest`` writes ``query``, ``retrieve`` writes ``sources``, ``draft`` reads
@@ -66,7 +71,12 @@ __all__ = ["contextual_findings"]
 
 # ``{"field": ["reader", ...]}`` or
 # ``{"field": {"readers": ["reader", ...], "allow_empty": True}}``
+# ``field`` may be a dotted path (``email.body``).
 ConsumerMap = dict[str, Any]
+
+# Sentinel for a dotted path that does not resolve — distinct from a present
+# ``None``, which ``allow_empty`` still treats as absence.
+_MISSING = object()
 
 
 def contextual_findings(ledger: list[Any], consumers: ConsumerMap | None) -> list[Finding]:
@@ -182,13 +192,32 @@ def _reader_indices(ledger: list[Any], readers: list[str]) -> list[int]:
     return [i for i, row in enumerate(ledger) if row.node in names]
 
 
+def _resolve(state: Any, field: str) -> Any:
+    """Walk a dotted path in ``state``. ``_MISSING`` if any segment is absent."""
+    if not isinstance(state, dict):
+        return _MISSING
+    cur: Any = state
+    for part in field.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return _MISSING
+        cur = cur[part]
+    return cur
+
+
 def _wrote(row: Any, field: str) -> bool:
-    return isinstance(row.update, dict) and field in row.update
+    """True when the step's update sets this path (value may be empty).
+
+    A parent overwrite that omits the leaf (``{"email": {"subject": "x"}}``
+    with no ``body``) is not a write of ``email.body`` — the drop is visible
+    on ``state_after`` and caught by the held-then-lost walk instead.
+    """
+    return isinstance(row.update, dict) and _resolve(row.update, field) is not _MISSING
 
 
 def _absent(state: dict[str, Any], field: str) -> bool:
     """Missing or ``None`` — the presence-only rule for ``allow_empty`` fields."""
-    return state.get(field) is None
+    value = _resolve(state, field)
+    return value is _MISSING or value is None
 
 
 def _lacks(state: dict[str, Any], field: str) -> bool:
@@ -197,6 +226,8 @@ def _lacks(state: dict[str, Any], field: str) -> bool:
     Reuses the inspector's own rule so a field dropped to `[]` or `""` reads
     the same here as it does everywhere else in ARGUS. Narrower than that —
     None-only — silently misses the commonest drop: a filter step that removes
-    every element and returns `{"docs": []}`.
+    every element and returns `{"docs": []}`. Dotted paths resolve into nested
+    dicts the same way.
     """
-    return _is_empty(state.get(field))
+    value = _resolve(state, field)
+    return value is _MISSING or _is_empty(value)
