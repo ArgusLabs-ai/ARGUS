@@ -1519,19 +1519,44 @@ class ArgusSession:
         Marks the origin the same way a contextual miss is marked, so the
         existing roll-up and ``findings.collect_findings`` turn it into a
         ``missing_field`` finding with no new plumbing.
+
+        When the origin *is* the crash site (own-router KeyError, #135), the
+        step already carries ``crashed`` and usually has no inspection — build
+        one so the omit is named, but leave status alone.
         """
         for origin, key, crashed in crash_origins(events, self.graph_edge_map, self.state_keys):
+            self_blame = origin is crashed or (
+                origin.node_name == crashed.node_name and origin.step_index == crashed.step_index
+            )
             insp = origin.inspection
-            if insp is None or key in insp.missing_fields:
+            if insp is None:
+                if not self_blame:
+                    continue
+                insp = InspectionResult(
+                    is_silent_failure=True,
+                    missing_fields=[],
+                    empty_fields=[],
+                    type_mismatches=[],
+                    severity="critical",
+                    message="",
+                )
+                origin.inspection = insp
+            if key in insp.missing_fields:
                 continue
             insp.missing_fields.append(key)
             insp.is_silent_failure = True
             insp.severity = "critical"
-            insp.message = (
-                f"Field `{key}` is read by `{crashed.node_name}`, which crashed on it, "
-                f"but `{origin.node_name}` never wrote it."
-            )
-            origin.status = "fail"
+            if self_blame:
+                insp.message = (
+                    f"Field `{key}` was read by `{crashed.node_name}`'s own router, "
+                    f"but `{origin.node_name}` never wrote it."
+                )
+            else:
+                insp.message = (
+                    f"Field `{key}` is read by `{crashed.node_name}`, which crashed on it, "
+                    f"but `{origin.node_name}` never wrote it."
+                )
+                origin.status = "fail"
 
     def _get_successor_fns(self, node_name: str) -> list[Any]:
         # ponytail: router nodes fan out to multiple branches but only one runs;

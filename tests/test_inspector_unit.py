@@ -2,7 +2,12 @@
 import pytest
 from conftest import make_event, make_inspection
 
-from argus.inspector import build_root_cause_chain, inspect_tool_outputs, inspect_transition
+from argus.inspector import (
+    build_root_cause_chain,
+    crash_origins,
+    inspect_tool_outputs,
+    inspect_transition,
+)
 from argus.models import SemanticSignal, ToolFailure
 
 # ── Rule 1: Error keys ──────────────────────────────────────────────────────
@@ -907,6 +912,103 @@ class TestRootCauseChain:
         assert "retrieve" in chain
         assert "synthesize" not in chain
         assert "rerank" not in chain
+
+
+# ── E8 / #135: own-router KeyError blames the node, not the previous writer ──
+
+
+_ROUTER_KEYERROR = (
+    "KeyError: 'decision'\n"
+    "Traceback (most recent call last):\n"
+    '  File "/pkg/langgraph/_internal/_runnable.py", line 401, in invoke\n'
+    "    ret = self.func(*args, **kwargs)\n"
+    '  File "/pkg/langgraph/graph/_branch.py", line 168, in _route\n'
+    "    result = self.path.invoke(value, config)\n"
+    '  File "<stdin>", line 1, in route\n'
+    "KeyError: 'decision'\n"
+)
+
+
+@pytest.mark.unit
+class TestOwnRouterCrashBlame:
+    def test_router_keyerror_blames_the_node_not_the_previous_writer(self):
+        """decide returned without `decision`; its own router then KeyErrored.
+
+        Walking upstream used to name aggregate_risk (it wrote `risk`). The
+        node that owns the router is the origin (#135).
+        """
+        events = [
+            make_event(
+                "aggregate_risk",
+                "pass",
+                output={"risk": 0.9},
+                step_index=0,
+            ),
+            make_event(
+                "decide",
+                "crashed",
+                output=None,
+                step_index=1,
+                exception=_ROUTER_KEYERROR,
+            ),
+        ]
+        origins = crash_origins(
+            events,
+            edge_map={
+                "aggregate_risk": ["decide"],
+                "decide": ["open_account", "manual_review"],
+            },
+            state_keys=["risk", "decision"],
+        )
+        assert len(origins) == 1
+        origin, key, crashed = origins[0]
+        assert key == "decision"
+        assert origin.node_name == "decide"
+        assert crashed.node_name == "decide"
+        assert origin is crashed
+
+        chain = build_root_cause_chain(
+            events,
+            edge_map={
+                "aggregate_risk": ["decide"],
+                "decide": ["open_account", "manual_review"],
+            },
+        )
+        assert chain[0] == "decide"
+        assert "aggregate_risk" not in chain
+
+    def test_node_body_keyerror_still_blames_upstream(self):
+        """A KeyError inside the node function (no branch frame) is unchanged."""
+        events = [
+            make_event(
+                "draft",
+                "pass",
+                output={},
+                step_index=0,
+            ),
+            make_event(
+                "compliance",
+                "crashed",
+                output=None,
+                step_index=1,
+                exception=(
+                    "KeyError: 'reply'\n"
+                    "Traceback (most recent call last):\n"
+                    '  File "/pkg/langgraph/_internal/_runnable.py", line 401, in invoke\n'
+                    "    ret = self.func(*args, **kwargs)\n"
+                    '  File "<stdin>", line 1, in compliance\n'
+                    "KeyError: 'reply'\n"
+                ),
+            ),
+        ]
+        origins = crash_origins(
+            events,
+            edge_map={"draft": ["compliance"], "compliance": []},
+            state_keys=["reply", "approved"],
+        )
+        assert len(origins) == 1
+        assert origins[0][0].node_name == "draft"
+        assert origins[0][1] == "reply"
 
 
 # ── Typo detection via edit distance ────────────────────────────────────────

@@ -1657,6 +1657,18 @@ def _extract_missing_key_from_exception(exc_str: str) -> str | None:
     return None
 
 
+def _is_own_router_crash(exc_str: str) -> bool:
+    """True when the KeyError came from LangGraph's conditional-edge router.
+
+    The branch runs as a child under the node's task (``graph/_branch.py`` /
+    ``_route``). A crash inside the node function itself has no such frame, so
+    the traceback distinguishes a router miss from an upstream omission (#135).
+    """
+    if not exc_str:
+        return False
+    return "graph/_branch.py" in exc_str.replace("\\", "/")
+
+
 def _build_predecessor_map(
     edge_map: dict[str, list[str]],
 ) -> dict[str, set[str]]:
@@ -1783,6 +1795,20 @@ def crash_origins(
             for prev in steps_so_far
         )
         if key_was_available:
+            continue
+
+        # Own-router miss (E8 / #135): the node returned without the key its
+        # *own* conditional edge then read. LangGraph attributes the KeyError
+        # to that node; walking upstream used to blame whoever wrote an
+        # unrelated field just before. When the update we recorded does not
+        # contain the key (or the step crashed before any update was filed),
+        # the node that owns the router is the origin — not a bystander.
+        out = event.output_dict
+        own_update_missed = out is None or missing_key not in out or _is_empty(
+            out.get(missing_key)
+        )
+        if _is_own_router_crash(event.exception) and own_update_missed:
+            found.append((event, missing_key, event))
             continue
 
         # `state["policy"]["number"]` raises KeyError 'number', and `number` is
