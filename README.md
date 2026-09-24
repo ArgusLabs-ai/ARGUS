@@ -185,6 +185,7 @@ result = app.invoke(initial_state)
 | **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field |
 | **Wrong subject entirely** | The [judge](#semantic-judge) reviews *rule flags* (is this really a refusal?). It does not walk a clean graph looking for helicopters — that painted healthy nodes red |
 | **Contract violations** | A field a later node needs was never written, written empty, or dropped in between — blamed on the node responsible ([`consumers=`](#declaring-who-reads-what)) |
+| **Not a failure** | A node's own verdict — `{"status": "denied"}` or a linter's `errors: [...]` — is a warning on that node's update, not a CI fail. The same shape from a **tool** response stays critical |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
 | **Conditional path confusion** | Unchosen branches correctly shown as "skipped" — not false "crashed" |
 
@@ -194,7 +195,7 @@ result = app.invoke(initial_state)
 
 Runs in order, each more expensive — only fires when needed. Every status a layer can assign, and how node statuses roll up into the run verdict, is specified in [`docs/STATUS.md`](docs/STATUS.md).
 
-1. **Heuristics** — 150+ failure signatures (placeholders, empty results, error keys, semantic degradation). Zero cost.
+1. **Heuristics** — 150+ failure signatures (placeholders, empty results, error keys, semantic degradation). Zero cost. On a node's *own* update, a status word (`denied` / `declined`) or a findings list (`errors: [...]`) is warning-severity; a singular truthy `error`, bare `success: False`, and numeric HTTP status stay critical. Tool payloads are always graded critically.
 2. **Validators** — custom per-node business-logic constraints. Deterministic.
 3. **Anomaly detector** — statistical checks for output size anomalies, timing outliers. Deterministic.
 4. **Correlator** — traces failure propagation across nodes. Points at the *origin*, not the crash site.

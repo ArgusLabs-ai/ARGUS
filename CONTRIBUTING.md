@@ -6,10 +6,10 @@ Thanks for your interest in contributing. ARGUS is a production readiness platfo
 
 Two roles. Do not mix them.
 
-1. **Rules (the cop)** — `inspector.py`, `contextual.py`, signatures, validators. These fail `argus check`. Empty `{}`, dropped fields, HTTP 4xx, a tool that raised.
-2. **LLM judge (the reviewer)** — `semantic_checker.py`, applied in `session.py`. Called **only** when the rules left a *soft* flag on that step (a warning-level signature — "this looks like a refusal"). If it says the flag is wrong, the flag is dropped. If it agrees, the cop's answer stands. Shape warnings (`shallow_output`, `BA-005`) are not a reason to call it.
+1. **Rules (the cop)** — `inspector.py`, `contextual.py`, signatures, validators. These fail `argus check`. Empty `{}`, dropped fields, HTTP 4xx, a tool that raised. On a node's *own* update (`inspect_tool_outputs(..., own_output=True)`), a status word or a findings list (`errors: [...]`) is warning-only — a singular truthy `error` and tool payloads stay critical (`tests/test_own_verdict_vs_tool_response.py`).
+2. **LLM judge (the reviewer)** — `semantic_checker.py`, applied in `session.py`. Called **only** when the rules left a *soft* flag on that step — any warning-level `semantic_signals` entry, including shape warnings (`shallow_output`, `json_in_string`). If it says the flag is wrong, the flag is dropped. If it agrees, the cop's answer stands. The judge cannot originate a fail and cannot clear a hard fail.
 
-The judge does **not** walk a clean graph looking for hallucinations. That path failed healthy pipelines at random. It also cannot clear a hard fail.
+The judge does **not** walk a clean graph looking for hallucinations. That path failed healthy pipelines at random.
 
 Tests that pin this: `tests/test_judge_last.py`. Detection changes also need both matrices (`tests/test_silent_failure_matrix.py`, `tests/test_shipped_shapes_matrix.py`).
 

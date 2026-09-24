@@ -301,7 +301,7 @@ export default function GuideContent() {
         <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-4">Node statuses</h3>
         <div className="space-y-3 mb-8">
           <Row label="Pass" text="Node executed successfully with no issues detected." />
-          <Row label="Fail" text="Structural problem — missing fields, tool errors, or silent failures." />
+          <Row label="Fail" text="Structural problem — missing fields, critical tool errors, or silent failures. A node's own verdict (e.g. status: denied, or a linter's errors list) is a warning, not a fail." />
           <Row label="Crashed" text="Node threw an exception during execution." />
           <Row label="Semantic fail" text="Output passes structural checks but fails LLM quality review." />
           <Row label="Degraded input" text="Node ran but received incomplete state from a failed upstream node." />
@@ -474,8 +474,10 @@ result = app.invoke(initial_state)`}
 
         <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-4">record_http</h3>
         <p className="text-[15px] text-muted-foreground leading-[1.7] mb-3">
-          Captures every HTTP request/response during the original run. On rerun, serves
-          recorded responses back — same data, zero cost, fully reproducible.
+          Captures every HTTP request/response during the original run (urllib3 for{' '}
+          <Code>requests</Code>, httpcore for <Code>httpx</Code>). On rerun, serves
+          recorded responses back — same data, zero cost, fully reproducible. A session that
+          captures nothing logs a warning instead of writing a silent empty cassette.
         </p>
         <p className="text-[15px] text-muted-foreground leading-[1.7] mb-8">
           <strong className="text-foreground font-medium">Enable</strong> when nodes call paid APIs and you want cheap, identical reruns.{' '}
@@ -485,12 +487,12 @@ result = app.invoke(initial_state)`}
         <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-4">semantic_judge</h3>
         <p className="text-[15px] text-muted-foreground leading-[1.7] mb-5">
           The rules fail the build. The judge reviews the <em>soft</em> flags they raised
-          (a warning-level signature — &quot;this looks like a refusal&quot;). It does not walk a
+          (warning-level semantic signals, including shape warnings). It does not walk a
           clean graph looking for hallucinations, and it cannot clear a hard fail.
         </p>
         <div className="space-y-3 mb-5">
-          <Row label="Rules first" text="Empty updates, dropped fields, HTTP 4xx, a tool that raised — these fail argus check." />
-          <Row label="Judge reviews flags" text="Called only when a warning-level signature is already on the step." />
+          <Row label="Rules first" text="Empty updates, dropped fields, HTTP 4xx, a tool that raised — these fail argus check. A node's own status word or findings list is a warning, not a gate." />
+          <Row label="Judge reviews flags" text="Called only when a warning-level semantic signal is already on the step." />
           <Row label="Can dismiss, cannot originate" text="A false-positive warning is dropped. A hard fail stays. A clean step is not asked." />
         </div>
         <p className="text-[15px] text-muted-foreground leading-[1.7]">

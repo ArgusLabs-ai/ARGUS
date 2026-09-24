@@ -28,10 +28,11 @@ Rules that follow from the table:
 - **`degraded_input` never names the culprit.** Read `inspection.degraded_upstream_node` or
   `RunRecord.root_cause_chain[0]` for the origin.
 - **Warnings do not change status.** Warning-severity signals (`json_in_string`, `shallow_output`,
-  `truncated_llm_output`, warning-level tool failures such as HTTP 429) are recorded on the event
-  but leave it `pass`. A warning-level **signature** (placeholder / refusal-like text) is the one
-  soft flag the LLM judge may review — and drop, if it is a false positive. Shape warnings are
-  not a reason to call the judge. A strictness knob to escalate them is planned (see `visual/PRD.md` US-1.4).
+  `truncated_llm_output`, warning-level tool failures such as HTTP 429, and a node's own verdict
+  shapes under `own_output=True` — status words / `errors: [...]` lists) are recorded on the event
+  but leave it `pass`. Any warning-level entry in `inspection.semantic_signals` is a soft flag the
+  LLM judge may review — and drop, if it is a false positive (shape warnings included; F-21).
+  A strictness knob to escalate them is planned (see `visual/PRD.md` US-1.4).
 - **Critical anomaly signals do.** A critical signal on a `pass` step makes it `semantic_fail`,
   judge or no judge. `unreadable_update` is deliberately one of these: "I could not read this
   node's update" and "this node ran fine" must not be the same verdict, or a silent no-op ships
