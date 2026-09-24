@@ -1,4 +1,5 @@
 """Unit tests for argus.anomaly_detector — all 8 behavioral anomaly checks."""
+
 import pytest
 
 from argus.anomaly_detector import (
@@ -22,7 +23,9 @@ from argus.models import BehaviorConfig
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
+
 # ── BA-001: Length collapse/explosion ────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestBA001LengthCollapse:
@@ -45,7 +48,9 @@ class TestBA001LengthCollapse:
         signal = _check_length_collapse({"key": "value" * 10}, profile, "structured_json")
         assert signal is None
 
+
 # ── BA-002: Repetitive filler ────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestBA002RepetitiveFiller:
@@ -69,7 +74,9 @@ class TestBA002RepetitiveFiller:
         signal = _check_repetitive_filler({"text": "hello"})
         assert signal is None
 
+
 # ── BA-003: Info density ─────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestBA003InfoDensity:
@@ -86,7 +93,9 @@ class TestBA003InfoDensity:
         signal = _check_info_density({"text": text}, profile, "detailed_text")
         assert signal is None
 
+
 # ── BA-004: Generic response ─────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestBA004GenericResponse:
@@ -118,7 +127,29 @@ class TestBA004GenericResponse:
         signal = _check_generic_response(output)
         assert signal is None  # only 1/4 = 25% < 30%
 
+    def test_grounded_policy_decline_is_a_warning(self):
+        """#130: a short decline that cites the constraint does not gate."""
+        text = (
+            "I'm sorry, but I can't refund order A-1001 because it was delivered "
+            "45 days ago, outside our 30-day return window. I can offer store "
+            "credit instead."
+        )
+        signal = _check_generic_response({"reply": text})
+        assert signal is not None
+        assert signal.anomaly_id == "BA-004"
+        assert signal.severity == "warning"
+
+    def test_bare_short_refusal_stays_critical(self):
+        """#130: a capability refusal with no cited constraint still gates."""
+        signal = _check_generic_response(
+            {"answer": "I'm unable to answer questions about company revenue."}
+        )
+        assert signal is not None
+        assert signal.severity == "critical"
+
+
 # ── BA-005: Structural malformation ──────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestBA005StructuralMalformation:
@@ -140,7 +171,9 @@ class TestBA005StructuralMalformation:
         )
         assert signal is None
 
+
 # ── BA-006: Shallow empty ────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestBA006ShallowEmpty:
@@ -163,54 +196,56 @@ class TestBA006ShallowEmpty:
         assert signal is not None
         assert signal.severity == "critical"
 
+
 # ── BA-007: Incomplete reasoning ─────────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestBA007IncompleteReasoning:
     def test_single_step_chain(self):
-        signal = _check_incomplete_reasoning(
-            {"steps": ["only one step"]}, "reasoning_chain"
-        )
+        signal = _check_incomplete_reasoning({"steps": ["only one step"]}, "reasoning_chain")
         assert signal is not None
         assert signal.anomaly_id == "BA-007"
 
     def test_truncated_last_step(self):
         signal = _check_incomplete_reasoning(
-            {"steps": [
-                "First step with detailed analysis of the problem at hand.",
-                "Second step with thorough investigation of all factors.",
-                "Th",  # truncated — < 20% of avg
-            ]},
+            {
+                "steps": [
+                    "First step with detailed analysis of the problem at hand.",
+                    "Second step with thorough investigation of all factors.",
+                    "Th",  # truncated — < 20% of avg
+                ]
+            },
             "reasoning_chain",
         )
         assert signal is not None
         assert "truncated" in signal.reason
 
     def test_non_reasoning_type_skipped(self):
-        signal = _check_incomplete_reasoning(
-            {"steps": ["one"]}, "classification"
-        )
+        signal = _check_incomplete_reasoning({"steps": ["one"]}, "classification")
         assert signal is None
 
     def test_multi_step_ok(self):
         signal = _check_incomplete_reasoning(
-            {"steps": [
-                "First step with analysis.",
-                "Second step with conclusion.",
-                "Third step with recommendation.",
-            ]},
+            {
+                "steps": [
+                    "First step with analysis.",
+                    "Second step with conclusion.",
+                    "Third step with recommendation.",
+                ]
+            },
             "reasoning_chain",
         )
         assert signal is None
 
+
 # ── BA-008: Abnormal tool response ───────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestBA008AbnormalToolResponse:
     def test_no_text_content(self):
-        signal = _check_abnormal_tool_response(
-            {"status": 200, "count": 5}, "tool_output"
-        )
+        signal = _check_abnormal_tool_response({"status": 200, "count": 5}, "tool_output")
         assert signal is not None
         assert signal.anomaly_id == "BA-008"
 
@@ -222,12 +257,12 @@ class TestBA008AbnormalToolResponse:
         assert "identical" in signal.reason or "no text" in signal.reason
 
     def test_non_tool_type_skipped(self):
-        signal = _check_abnormal_tool_response(
-            {"status": 200}, "classification"
-        )
+        signal = _check_abnormal_tool_response({"status": 200}, "classification")
         assert signal is None
 
+
 # ── Behavior type inference ──────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestBehaviorTypeInference:
@@ -244,7 +279,9 @@ class TestBehaviorTypeInference:
     def test_empty_output(self):
         assert infer_behavior_type({}) == "structured_json"
 
+
 # ── Behavior resolution 3-tier ───────────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestBehaviorResolution:
@@ -262,7 +299,9 @@ class TestBehaviorResolution:
     def test_auto_inferred_fallback(self):
         assert resolve_behavior_type("any_node", {"label": "pos"}, None) == "classification"
 
+
 # ── Full detect_anomalies ────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 class TestDetectAnomalies:
@@ -278,14 +317,19 @@ class TestDetectAnomalies:
         assert signals == []
 
     def test_multiple_anomalies_returned(self):
-        bt, signals = detect_anomalies("node", {
-            "a": "I'm sorry, I cannot help.",
-            "b": None,
-            "c": "",
-        })
+        bt, signals = detect_anomalies(
+            "node",
+            {
+                "a": "I'm sorry, I cannot help.",
+                "b": None,
+                "c": "",
+            },
+        )
         assert len(signals) >= 1
 
+
 # ── chat_response / code_generation profiles ─────────────────────────────────
+
 
 @pytest.mark.unit
 class TestChatResponseProfile:
@@ -299,6 +343,7 @@ class TestChatResponseProfile:
         bt, signals = detect_anomalies("chat_node", {"message": reply}, config)
         assert bt == "chat_response"
         assert signals == []
+
 
 @pytest.mark.unit
 class TestCodeGenerationProfile:

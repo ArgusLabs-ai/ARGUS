@@ -359,12 +359,34 @@ def _check_info_density(
 _MAIN_OUTPUT_KEYS = frozenset({"answer", "draft", "summary", "reply", "content"})
 _WHOLE_ANSWER_MAX_LEN = 160
 _LIST_INDEX_RE = re.compile(r"\[\d+\]$")
+# A cited constraint (a number) plus a reason is a policy decision, not a
+# cop-out. "45 days" / "because" / "instead" — not "unable to answer".
+_POLICY_CONSTRAINT_RE = re.compile(
+    r"\d",
+)
+_POLICY_REASON_RE = re.compile(
+    r"\b(?:because|since|outside|within|window|instead|offer|policy|days?)\b",
+    re.IGNORECASE,
+)
 
 
 def _is_short_main_output(path: str, text: str) -> bool:
     """Is `path` a main answer field whose whole value is this short string?"""
     leaf = _LIST_INDEX_RE.sub("", path.rsplit(".", 1)[-1])
     return leaf.lower() in _MAIN_OUTPUT_KEYS and len(text) <= _WHOLE_ANSWER_MAX_LEN
+
+
+def _is_grounded_policy_decline(text: str) -> bool:
+    """A refusal that cites a concrete constraint is a decision, not a cop-out.
+
+    ``I can't refund order A-1001 because it was delivered 45 days ago`` names
+    the order and the window. ``I'm unable to answer questions about company
+    revenue`` does not. Phrase match alone cannot separate them; a number plus
+    a reason can, and that is what keeps the bare refusal gating CI (#130).
+    The grounded shape stays a warning so a reviewer can still see it. It does
+    not clear a hard fail and it does not itself fail the build.
+    """
+    return bool(_POLICY_CONSTRAINT_RE.search(text) and _POLICY_REASON_RE.search(text))
 
 
 def _check_generic_response(
@@ -389,6 +411,7 @@ def _check_generic_response(
     echoed = {text.strip().lower() for _, text in _extract_all_strings(input_state or {})}
 
     generic_hits = 0
+    grounded_hits = 0
     total_checked = 0
     worst_path = ""
     is_the_whole_answer = False
@@ -402,7 +425,12 @@ def _check_generic_response(
             if phrase in lower:
                 generic_hits += 1
                 worst_path = path
-                if _is_short_main_output(path, lower):
+                if _is_grounded_policy_decline(lower):
+                    # A short legitimate decline ("outside our 30-day window,
+                    # I can offer store credit") cites the constraint. It is
+                    # not the silent cop-out BA-004 exists to catch (#130).
+                    grounded_hits += 1
+                elif _is_short_main_output(path, lower):
                     is_the_whole_answer = True
                 break
 
@@ -419,7 +447,17 @@ def _check_generic_response(
     # (`type`, `id`) alongside the text, so the one field that matters is
     # diluted to a warning and the run ships clean. Same calibration the
     # registry path already makes for `{"answer": "N/A"}`.
-    severity = "critical" if score > 0.7 or is_the_whole_answer else "warning"
+    # Every generic hit citing a concrete constraint is the policy-decline
+    # shape: warning, so the reviewer can see it, and not a CI fail. A bare
+    # "I'm unable to answer…" stays critical. The judge is not asked to
+    # invent that distinction or to clear the hard fail.
+    all_grounded = grounded_hits == generic_hits
+    if all_grounded:
+        severity = "warning"
+    elif score > 0.7 or is_the_whole_answer:
+        severity = "critical"
+    else:
+        severity = "warning"
     return AnomalySignal(
         anomaly_id="BA-004",
         severity=severity,
