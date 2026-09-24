@@ -57,6 +57,13 @@ Some fields are legitimately empty on the good path — a PR review's
 ``issues: []`` *is* the LGTM. Declare them with
 ``{"issues": {"readers": ["summarize"], "allow_empty": True}}`` and only
 absence (or ``None``) is a failure.
+
+``allow_empty`` also covers the **tool responses** of the node that writes the
+field (#129). A clean sanctions screen returns ``{"hits": []}`` from its OFAC
+tool; without this, every healthy KYC onboarding failed CI on
+``empty_result``, and declaring ``allow_empty`` on ``screening`` never reached
+the tool key. A tool that raised or returned an error / 4xx / 5xx still fails
+hard. Undeclared retrieval lists keep today's RAG default (critical).
 """
 
 from __future__ import annotations
@@ -67,7 +74,11 @@ from argus.findings import _mk
 from argus.inspector import _is_empty
 from argus.models import Finding
 
-__all__ = ["contextual_findings"]
+__all__ = [
+    "allow_empty_fields",
+    "contextual_findings",
+    "node_writes_allow_empty",
+]
 
 # ``{"field": ["reader", ...]}`` or
 # ``{"field": {"readers": ["reader", ...], "allow_empty": True}}``
@@ -77,6 +88,27 @@ ConsumerMap = dict[str, Any]
 # Sentinel for a dotted path that does not resolve — distinct from a present
 # ``None``, which ``allow_empty`` still treats as absence.
 _MISSING = object()
+
+
+def allow_empty_fields(consumers: ConsumerMap | None) -> frozenset[str]:
+    """State fields declared with ``allow_empty=True``."""
+    if not consumers:
+        return frozenset()
+    return frozenset(field for field, spec in consumers.items() if _normalise(spec)[1])
+
+
+def node_writes_allow_empty(
+    consumers: ConsumerMap | None, update: dict[str, Any] | None
+) -> bool:
+    """Did this node's update write a field declared ``allow_empty``?
+
+    When true, empty retrieval lists in that node's tool responses (and in its
+    own update) are warnings, not CI fails — see #129.
+    """
+    if not isinstance(update, dict):
+        return False
+    allowed = allow_empty_fields(consumers)
+    return bool(allowed.intersection(update))
 
 
 def contextual_findings(ledger: list[Any], consumers: ConsumerMap | None) -> list[Finding]:
