@@ -40,6 +40,10 @@ __all__ = ["LedgerRow", "build_ledger", "reducer_kinds"]
 # fold combines it. `add_messages` is treated as concatenation: it really
 # de-duplicates by message id, so an updated message counts twice here.
 _ADD_REDUCERS = frozenset({"add", "iadd", "concat", "add_messages"})
+# Kinds the fold concatenates. ``add_messages`` is stored separately so a loop
+# retry can tell a data accumulator (``operator.add``) from message history
+# (#131). Both still concatenate here; ``add_messages`` de-dup is a ceiling.
+_CONCAT_KINDS = frozenset({"add", "add_messages"})
 
 
 def reducer_kinds(reducer_fields: dict[str, Any] | None) -> dict[str, str]:
@@ -49,11 +53,22 @@ def reducer_kinds(reducer_fields: dict[str, Any] | None) -> dict[str, str]:
     ``"overwrite"``, which is what the fold did for every field before. Guessing
     at an unknown callable's semantics off its name would put a state in the
     notebook that never existed.
+
+    ``operator.add`` (and ``iadd`` / ``concat``) is ``"add"``. ``add_messages``
+    is ``"add_messages"`` even though the fold concatenates both: a pagination
+    loop that appends rows is lost data, a ReAct recovery written into the
+    message list is not (#131).
     """
-    return {
-        name: ("add" if _reducer_name(fn) in _ADD_REDUCERS else "overwrite")
-        for name, fn in (reducer_fields or {}).items()
-    }
+    return {name: _kind_of(fn) for name, fn in (reducer_fields or {}).items()}
+
+
+def _kind_of(fn: Any) -> str:
+    name = _reducer_name(fn)
+    if name == "add_messages":
+        return "add_messages"
+    if name in _ADD_REDUCERS:
+        return "add"
+    return "overwrite"
 
 
 def _reducer_name(fn: Any) -> str:
@@ -93,7 +108,7 @@ def _fold(
     """Merge one update into the running state, honouring reduced fields."""
     merged = dict(running)
     for key, value in update.items():
-        if kinds.get(key) == "add" and key in merged:
+        if kinds.get(key) in _CONCAT_KINDS and key in merged:
             try:
                 merged[key] = merged[key] + value
             except TypeError:
@@ -103,9 +118,7 @@ def _fold(
     return merged
 
 
-def _believe_the_trace(
-    running: dict[str, Any], ran: list[Any], position: int
-) -> dict[str, Any]:
+def _believe_the_trace(running: dict[str, Any], ran: list[Any], position: int) -> dict[str, Any]:
     """Undo a fold that says "empty" where the trace says otherwise (#80).
 
     The fold emulates reducers from a *name* (``reducer_kinds``), because
