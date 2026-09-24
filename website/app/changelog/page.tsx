@@ -13,6 +13,24 @@ interface Release {
 
 const RELEASES: Release[] = [
   {
+    version: '0.12.0-dev',
+    title: 'Fat traces: ArgusRecorder replaces the wrap path',
+    date: '2026-09-24',
+    tag: 'beta',
+    highlights: [
+      'On the pivot/fat-traces branch — not on PyPI yet. pip install argus-agents still gets 0.11.0',
+      'ArgusRecorder: capture via LangChain callbacks, nothing patched. Keeps the dict each node returned — its update, not the merged state',
+      'consumers={"field": ["reader"]}: declare who reads what, so a field never written / written empty / dropped in between is blamed on the node responsible',
+      'argus ingest langsmith: grade a LangSmith export with no app and no graph. Skinny traces are refused, not graded green',
+      'report_tool_call(): file a tool the callback path cannot see, so a 404 body or a raised tool is not silently absent from the step',
+      'Parallel Send workers are siblings, not retries — a swallowed error in the first of five workers no longer hides behind the last one passing',
+      "A node's own verdict (status: denied, a linter's errors list) is a warning, not a CI fail. The same shape from a tool response stays critical",
+      'The judge reviews soft flags only: it cannot originate a fail, clear a hard fail, or move blame off an origin',
+      'Barren subgraphs: every inner node wrote something, all of it to inner-only keys, parent state unchanged (subgraph_no_contribution)',
+      'httpx traffic recorded via httpcore; a capture session that records nothing warns instead of writing an empty cassette',
+    ],
+  },
+  {
     version: '0.11.0',
     title: 'Findings, check JSON, replay patches',
     date: '2026-09-07',

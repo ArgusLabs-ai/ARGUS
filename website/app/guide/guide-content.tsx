@@ -26,22 +26,24 @@ This writes project skills for Cursor and Claude:
   .claude/skills/argus-debug/SKILL.md
 Commit them. Later chats will read .argus/runs JSON instead of guessing from logs.
 
-Add ArgusWatcher to the file where the graph is built. Keep my existing state and node functions as-is:
+Add ArgusRecorder to the file where the graph is built. Keep my existing state and node functions as-is:
 
-from argus import ArgusWatcher
+from argus import ArgusRecorder
 
-watcher = ArgusWatcher()
-app = watcher.attach(graph)            # StateGraph OR already-compiled app
+recorder = ArgusRecorder()
+app = recorder.attach(compiled_graph)  # returns the app to invoke — nothing is patched
 result = app.invoke(initial_state)     # run persists automatically
-print(watcher.run_id)
+print(recorder.run_ids[-1])
 
-If you prefer compiling yourself:
-
-watcher = ArgusWatcher(graph)          # uncompiled StateGraph
-app = graph.compile()
-result = app.invoke(initial_state)
+ArgusRecorder listens to LangGraph callbacks and keeps the dict each node returned — its update, before LangGraph merges it into shared state. That is what makes a node returning {} visible at all. One attach() serves many runs: each invoke() and each .batch() item gets its own run file.
 
 If node functions are async, use await app.ainvoke().
+
+A recording carries state, not code, so it cannot know which node reads a field written three steps earlier. If a later node depends on a specific field, declare it:
+
+recorder = ArgusRecorder(consumers={"audience": ["write"]})
+
+Do not use ArgusWatcher for new code. It patches compile() and rebinds invoke/stream/batch; it is still supported but is not being extended.
 
 ## STEP 3 — OPTIONAL CONFIG
 
@@ -56,8 +58,13 @@ After running the pipeline:
   argus check last        # CI gate — exit 1 on crash / silent failure / semantic fail
   argus ui                # open the web dashboard (empty table = wrong dir or no runs yet)
 
-For pytest, add --argus so silent failures fail the test (no ArgusWatcher in the test file required):
+For pytest, add --argus so silent failures fail the test (no recorder in the test file required):
   pytest --argus
+
+If a node calls a tool directly (tool.invoke(args, config=config)) rather than through the graph, the callback path can miss it under langgraph 1.x. File it explicitly so the tool scan still sees it:
+
+from argus import report_tool_call
+report_tool_call("search", input=q, output=hits)   # or error=exc on failure
 
 After the first run, the dashboard may suggest type hints to catch field-drop bugs. That is optional follow-up, not part of this integration.`
 
@@ -104,7 +111,7 @@ export default function GuideContent() {
         <div className="space-y-5 mb-8">
           <Step n={1} title="Install" text="pip install argus-agents" />
           <Step n={2} title="Init" text="argus init — writes .cursor/skills/argus-debug/ and .claude/skills/argus-debug/. Commit them. The skill already contains the setup prompt." />
-          <Step n={3} title="Attach" text="Ask your editor agent to wire ARGUS. (The skill already contains this AI setup prompt; the landing-page copy is just a fallback.) ArgusWatcher.attach(graph)" />
+          <Step n={3} title="Attach" text="Ask your editor agent to wire ARGUS. (The skill already contains this AI setup prompt; the landing-page copy is just a fallback.) ArgusRecorder().attach(graph)" />
         </div>
 
         <div className="space-y-5 mb-8">
@@ -307,7 +314,7 @@ export default function GuideContent() {
           <Row label="Degraded input" text="Node ran but received incomplete state from a failed upstream node." />
           <Row label="Skipped" text="Node was on an unchosen conditional branch — never activated. Shown as gray dashed boxes in the graph." />
           <Row label="Interrupted" text="Execution was interrupted (e.g. GraphInterrupt)." />
-          <Row label="Retried" text="Node ran multiple times in a loop — earlier iterations marked retried when the final pass succeeded." />
+          <Row label="Retried" text="Node ran multiple times in a loop — earlier rounds marked retried when the final round succeeded. Per round, not per node name: parallel Send workers are siblings, graded individually, and never relabel each other." />
         </div>
 
         <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-4">AI Analysis</h3>
@@ -406,8 +413,81 @@ export default function GuideContent() {
       <section className="mb-16">
         <h2 className="text-xl font-semibold text-foreground mb-3">Configuration Reference</h2>
         <p className="text-[15px] text-muted-foreground leading-[1.7] mb-6">
-          All <Code>ArgusWatcher</Code> parameters.
-          Graph is the only positional argument — everything else is keyword-only.
+          <Code>ArgusRecorder</Code> is the path under active development — every parameter is
+          keyword-only. It deliberately takes fewer knobs than the legacy watcher: it listens to
+          callbacks instead of patching the graph, so there is no HTTP cassette and no recompile
+          to configure.
+        </p>
+
+        <CodeBlock title="ArgusRecorder(**kwargs)">
+{`recorder = ArgusRecorder(
+    # --- Contract: who reads what ---
+    consumers={"audience": ["write"]},  # a trace carries state, not code, so it cannot
+                                        # know "write" needs the field "plan" wrote.
+                                        # Declared here, a field never written, written
+                                        # empty, or dropped in between fails on the node
+                                        # responsible — not on the node that noticed.
+                                        # {"issues": {"readers": ["triage"],
+                                        #             "allow_empty": True}} = presence only.
+
+    # --- Detection strictness ---
+    strict=False,           # extra checks: nested error keys, rate-limit responses,
+                            # empty lists, type mismatches. recommended for CI/staging.
+
+    # --- Semantic validators ---
+    validators={
+        "summarize": lambda o: (len(o.get("summary","")) > 10, "Summary too short"),
+        "*": lambda o: ("error" not in o, "error key present"),  # runs on every node
+    },
+
+    # --- LLM semantic judge ---
+    semantic_judge=None,    # None = auto: on when a provider key is available, off
+                            # otherwise. False keeps the gate fully deterministic.
+
+    # --- Output control ---
+    max_field_size=50_000,  # max chars per field before truncation (default: 50k)
+)
+
+app = recorder.attach(compiled_graph)   # returns the app you invoke; nothing is patched
+result = app.invoke(initial_state)`}
+        </CodeBlock>
+
+        <p className="text-[15px] text-muted-foreground leading-[1.7] mb-4">
+          Read <Code>recorder.run_ids</Code> after the run — one <Code>attach()</Code> serves
+          many runs, so it is a list. <Code>recorder.session</Code> is the most recent one.
+        </p>
+
+        <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-4">report_tool_call</h3>
+        <p className="text-[15px] text-muted-foreground leading-[1.7] mb-3">
+          Under langgraph 1.x, code inside a node function can hold an empty callback manager, so
+          a tool the node invokes directly never fires <Code>on_tool_start</Code> and vanishes from
+          the step&apos;s tool list — the tool-failure scan then has nothing to grade. File it yourself:
+        </p>
+        <CodeBlock title="Tools the callback path cannot see">
+{`from argus import report_tool_call
+
+def fetch(state):
+    try:
+        hits = search_tool.invoke(state["query"])
+    except Exception as exc:
+        report_tool_call("search", input=state["query"], error=exc)
+        raise
+    report_tool_call("search", input=state["query"], output=hits)
+    return {"hits": hits}`}
+        </CodeBlock>
+        <p className="text-[15px] text-muted-foreground leading-[1.7] mb-8">
+          Files the call in the same shape the callback path uses, onto the node step currently
+          open, so the graders cannot tell the difference. It resolves the active recorder itself;
+          pass <Code>recorder=</Code> or <Code>config=</Code> to be explicit. It never raises into
+          your code — a dropped call logs one warning on the <Code>argus</Code> logger and returns{' '}
+          <Code>False</Code>.
+        </p>
+
+        <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-4">ArgusWatcher (legacy)</h3>
+        <p className="text-[15px] text-muted-foreground leading-[1.7] mb-6">
+          The older wrap path: it patches <Code>compile()</Code> and rebinds the runtime methods.
+          Still supported, not being extended — the parameters below are watcher-only. Graph is the
+          only positional argument.
         </p>
 
         <CodeBlock title="ArgusWatcher(graph, **kwargs)">

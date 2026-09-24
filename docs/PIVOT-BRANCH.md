@@ -931,3 +931,60 @@ own breakage; those shapes are now pinned in
 
 Numeric HTTP status is untouched in both directions: no business decision is
 "500".
+
+---
+
+## Tools the callback path cannot see — `report_tool_call` (F-29, second half)
+
+Re-parenting inner-chain tool calls (F-29, first half) fixed the tools the
+callbacks *reported* under the wrong run id. It could not fix the tools they
+never reported at all.
+
+Under langgraph 1.x, code running inside a node function can hold an empty
+`CallbackManager`. A tool the node invokes directly —
+`tool.invoke(args, config=config)`, the shape most hand-written nodes use —
+therefore never fires `on_tool_start`, and `StepRecord.tool_calls` stays empty.
+Everything downstream of that list goes quiet with it: `inspect_tool_calls` has
+no payload to grade, so a 404 body, an empty result set, and a tool that raised
+are all invisible. The node returns a plausible update and the run grades clean.
+That is the exact outcome the brief bans, arriving through a hole in capture
+rather than a hole in detection.
+
+**The seam.** `report_tool_call(name, input=, output=, error=)`, exported from
+`argus`:
+
+```python
+from argus import report_tool_call
+
+def fetch(state):
+    try:
+        hits = search_tool.invoke(state["query"])
+    except Exception as exc:
+        report_tool_call("search", input=state["query"], error=exc)
+        raise
+    report_tool_call("search", input=state["query"], output=hits)
+    return {"hits": hits}
+```
+
+It writes the record in the shape `on_tool_start` / `on_tool_end` produce —
+`input` stringified the same way, `error` repr'd if it is not already a string —
+so `_close_step` attaches it and the graders cannot tell a filed call from a
+callback-filed one.
+
+**Resolution order.** Recorder: explicit `recorder=` wins, else the module-level
+current-recorder registry (set when a run attaches, cleared at run end *even on
+a crash*). Step: explicit `config=` wins, else the ambient langchain config,
+read by lazy import so argus does not hard-require langchain; from there, the
+config's `run_id` walked up `_parent_of` to the nearest open step — or, inside a
+node function where the config carries no `run_id`, the open step whose
+`langgraph_node` matches, most recently started first.
+
+**It never raises into user code.** A monitoring seam that takes the graph down
+is worse than the gap it closes. Every failure path returns `False` after one
+warning on the `argus` logger naming the reason: no active recorder, a
+`recorder=` that is not one, or no open step to attach to.
+
+The LangSmith ingest path is untouched — a trace file already carries its tool
+child runs.
+
+Pinned in `tests/test_report_tool_call.py`.

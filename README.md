@@ -155,6 +155,32 @@ node has a successor waiting, so a last node that returns `{}` is exempt by
 design (a terminal `send_email` legitimately returns nothing). Declare the field
 the run is supposed to end with and that gap closes.
 
+### Tools the callbacks cannot see
+
+ARGUS files every tool call LangChain reports, and grades its payload as strictly as a node's
+own update. Under langgraph 1.x, code running *inside* a node function can hold an empty
+callback manager — so a tool the node invokes directly never fires `on_tool_start`, leaves
+`tool_calls` empty, and a 404 body or a raised exception has nothing to be found in. File it
+yourself:
+
+```python
+from argus import report_tool_call
+
+def fetch(state):
+    try:
+        hits = search_tool.invoke(state["query"])
+    except Exception as exc:
+        report_tool_call("search", input=state["query"], error=exc)
+        raise
+    report_tool_call("search", input=state["query"], output=hits)
+    return {"hits": hits}
+```
+
+It writes the call in the exact shape the callback path uses, onto the node step currently open,
+so the graders cannot tell the two apart. The active recorder is resolved for you — pass
+`recorder=` or `config=` to be explicit. It never raises into your code: a call that cannot be
+placed logs one warning on the `argus` logger and returns `False`.
+
 ### `ArgusWatcher` (legacy path)
 
 ```python
@@ -185,6 +211,7 @@ result = app.invoke(initial_state)
 | **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field |
 | **Wrong subject entirely** | The [judge](#semantic-judge) reviews *rule flags* (is this really a refusal?). It does not walk a clean graph looking for helicopters — that painted healthy nodes red |
 | **Contract violations** | A field a later node needs was never written, written empty, or dropped in between — blamed on the node responsible ([`consumers=`](#declaring-who-reads-what)) |
+| **Barren subgraphs** | Every node inside a subgraph returned something, but all of it landed on keys that exist only in the subgraph's own schema — the parent graph gains nothing and the next node reads unchanged state. Each inner update looks busy; only the subgraph as a whole shows the no-op (`subgraph_no_contribution`) |
 | **Not a failure** | A node's own verdict — `{"status": "denied"}` or a linter's `errors: [...]` — is a warning on that node's update, not a CI fail. The same shape from a **tool** response stays critical |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
 | **Conditional path confusion** | Unchosen branches correctly shown as "skipped" — not false "crashed" |
@@ -215,9 +242,18 @@ Runs in order, each more expensive — only fires when needed. Every status a la
 
 Pipelines with loops (LLM -> compiler -> if fail, retry) get special treatment:
 
-- Earlier iterations that self-corrected are marked `retried` (not counted as failures)
-- Only the **final iteration** determines pass/fail
+- Earlier rounds that self-corrected are marked `retried` (not counted as failures)
+- Only the **final round** determines pass/fail
 - Dashboard shows iteration badges, collapse/expand across attempts
+
+**A round, not a node name.** Two `Send` workers running side by side are siblings, not a loop —
+they share a superstep. Each is graded on its own and none can relabel another, so a swallowed
+tool error in the first of five parallel workers still fails the build; previously the last
+worker's success buried it. An earlier round is only demoted to `retried` when *every* sibling in
+the final round passed.
+
+A sequential loop still self-corrects as before: a ReAct agent whose first tool call 404s and
+whose second succeeds stays clean.
 
 ---
 
@@ -374,6 +410,8 @@ argus fix <id>                       # fix prompt for the root cause, ready to p
 argus replay <id> <node> --app m:fn  # re-run from a node, against the graph you pass
 argus diff <id-a> <id-b>             # compare two runs
 argus stats                          # signature hit stats, disable/enable/dispute signatures
+argus ingest langsmith <file.jsonl>  # grade a LangSmith export — no app, no graph needed
+argus edges mypkg.graph:build -o edges.json   # real topology for `ingest --edges`
 argus ui                             # web dashboard
 argus doctor                         # check setup health + LLM mode (BYOK/hosted/heuristic)
 argus key set [--provider ...]       # save a provider key locally (OpenAI/Anthropic/Google) — BYOK
@@ -435,6 +473,25 @@ session.finalize()
 ```
 
 Works with any framework — Prefect, Temporal, plain Python.
+
+### From a trace file, with no app at all
+
+Already tracing to LangSmith? Grade the export directly — nothing imported, no graph, no rerun:
+
+```bash
+argus edges mypkg.graph:build -o edges.json        # real topology (optional but better)
+argus ingest langsmith run.jsonl --edges edges.json --consumers consumers.json
+argus check last
+```
+
+Tool and model child runs become the step's `tool_calls` / `llm_usage`. Without `--edges`,
+successors are guessed from step order; `--consumers` takes the same `{"field": ["reader"]}`
+map as `ArgusRecorder(consumers=)`.
+
+A **skinny** trace is refused rather than graded green: sampled runs, LLM-only spans, or payloads
+stripped at export leave nothing to detect a silent no-op with. ARGUS needs the dict each node
+returned. The one exception is a root run carrying an `error` — a graph that raised has no final
+state to export.
 
 ---
 
