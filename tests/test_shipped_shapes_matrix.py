@@ -169,6 +169,23 @@ def test_a_react_agent_that_answers_nothing_is_caught():
     assert "agent" in verdict.failing_nodes, verdict
 
 
+def test_a_react_agent_with_empty_final_reply_fails_the_gate():
+    """E7 / #134: blank final AI turn (no content, no tool calls) must gate CI.
+
+    Intermediate tool-call turns still use ``content: ""`` — those stay clean
+    (see ``test_a_healthy_react_agent_is_clean``). Only the final reply counts.
+    """
+    verdict, record, _ = _run(_agent(_lookup_order, ""), _ASK)
+    assert not verdict.passed, "empty final reply must fail argus check"
+    assert "agent" in verdict.failing_nodes, verdict
+    empty_final = [
+        f
+        for f in record.findings
+        if f.type == "empty_result" and f.node == "agent" and f.severity == "critical"
+    ]
+    assert empty_final, record.findings
+
+
 # ── 2. MessagesState / add_messages ──────────────────────────────────────────
 
 

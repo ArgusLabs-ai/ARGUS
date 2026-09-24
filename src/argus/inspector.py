@@ -593,6 +593,26 @@ def _scan_payload_for_tool_failures(
                 # then read that warning as evidence and failed the node: a
                 # working `create_react_agent` could not pass the gate.
                 continue
+            if (
+                key == "content"
+                and _is_empty(value)
+                and not carries_tool_call
+                and obj.get("type") == "ai"
+            ):
+                # E7 / #134: the agent's final turn — empty content, no tool
+                # calls — is a blank reply to the customer. Rule 3 alone only
+                # warns (`content` is not a retrieval list), so the run graded
+                # clean. Critical here; the tool-call exemption above still
+                # covers intermediate turns.
+                add(
+                    ToolFailure(
+                        failure_type="empty_result",
+                        field_name=field_path,
+                        severity="critical",
+                        evidence="final AI message has empty content and no tool calls",
+                    )
+                )
+                continue
             _apply_tool_shape_rules(key, value, field_path, depth, add, own_output, obj)
             if isinstance(value, dict):
                 _scan_payload_for_tool_failures(value, field_path, depth + 1, add, own_output)

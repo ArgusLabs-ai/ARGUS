@@ -176,6 +176,41 @@ class TestRule3EmptyResults:
         result = inspect_tool_outputs({"results": [0, 0, 0]})
         assert not any(tf.failure_type == "empty_result" for tf in result.tool_failures)
 
+    def test_empty_ai_final_content_is_critical(self):
+        """E7 / #134: AI message with empty content and no tool calls fails."""
+        result = inspect_tool_outputs(
+            {
+                "messages": [
+                    {"type": "ai", "content": "", "tool_calls": []},
+                ]
+            }
+        )
+        assert any(
+            tf.failure_type == "empty_result"
+            and tf.field_name == "messages[0].content"
+            and tf.severity == "critical"
+            for tf in result.tool_failures
+        )
+        assert result.has_tool_failure
+
+    def test_empty_content_beside_tool_calls_is_skipped(self):
+        """Tool-calling turns leave content empty — that shape must stay clean."""
+        result = inspect_tool_outputs(
+            {
+                "messages": [
+                    {
+                        "type": "ai",
+                        "content": "",
+                        "tool_calls": [{"name": "lookup", "args": {}, "id": "c1"}],
+                    },
+                ]
+            }
+        )
+        assert not any(
+            tf.failure_type == "empty_result" and "content" in tf.field_name
+            for tf in result.tool_failures
+        )
+
 
 # ── Rule 4: Error strings ────────────────────────────────────────────────────
 
