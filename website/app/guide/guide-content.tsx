@@ -422,13 +422,24 @@ export default function GuideContent() {
         <CodeBlock title="ArgusRecorder(**kwargs)">
 {`recorder = ArgusRecorder(
     # --- Contract: who reads what ---
-    consumers={"audience": ["write"]},  # a trace carries state, not code, so it cannot
-                                        # know "write" needs the field "plan" wrote.
-                                        # Declared here, a field never written, written
-                                        # empty, or dropped in between fails on the node
-                                        # responsible — not on the node that noticed.
-                                        # {"issues": {"readers": ["triage"],
-                                        #             "allow_empty": True}} = presence only.
+    consumers={
+        # A trace carries state, not code, so it cannot know "write" needs the
+        # field "plan" wrote. Declared here, a field never written, written
+        # empty, or dropped in between fails on the node responsible — not on
+        # the node that noticed.
+        "audience": ["write"],
+
+        # Dotted paths reach nested state. A top-level declaration means the
+        # whole value, so {"email": {"subject": "...", "body": ""}} is a
+        # non-empty "email" — blanking a leaf needs the leaf named.
+        "email.body": ["send_email"],
+
+        # Presence-only: issues: [] IS the LGTM, hits: [] IS a clean screen.
+        # Also softens empty retrieval in that node's TOOL responses, not just
+        # its own update. A tool that raised or a 4xx body still fails hard;
+        # undeclared empty lists stay critical (the RAG default).
+        "hits": {"readers": ["decide"], "allow_empty": True},
+    },
 
     # --- Detection strictness ---
     strict=False,           # extra checks: nested error keys, rate-limit responses,

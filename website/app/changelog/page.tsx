@@ -28,6 +28,10 @@ const RELEASES: Release[] = [
       'The judge reviews soft flags only: it cannot originate a fail, clear a hard fail, or move blame off an origin',
       'Barren subgraphs: every inner node wrote something, all of it to inner-only keys, parent state unchanged (subgraph_no_contribution)',
       'httpx traffic recorded via httpcore; a capture session that records nothing warns instead of writing an empty cassette',
+      "A ReAct agent's blank final reply (empty content, no tool calls) fails the gate; intermediate tool-calling turns stay exempt",
+      'A KeyError from a node\'s own conditional edge is blamed on that node, not on the upstream bystander that last touched the state',
+      'Consumer keys accept dotted paths (email.body) so a blanked nested leaf is caught; a top-level declaration still means the whole value',
+      'allow_empty reaches the writer\'s tool responses, so a clean sanctions screen returning hits: [] no longer fails CI. Undeclared empty retrieval stays critical',
     ],
   },
   {

@@ -988,3 +988,103 @@ The LangSmith ingest path is untouched — a trace file already carries its tool
 child runs.
 
 Pinned in `tests/test_report_tool_call.py`.
+
+---
+
+## Four defects from the eval run, merged from #139 – #142
+
+`test-cases.md` §6 listed E1–E9 with the order to fix them. E1 and E9 went in
+with `caa5f5a`, E4 with `cc39e0b`. These four close the rest of the batch that
+had a ticket.
+
+### A blank final reply graded clean (E7, #134 → #139)
+
+`create_react_agent`'s last turn is an AI message with `content` and no
+`tool_calls`. When the model returns empty content there, the customer gets a
+blank reply — and the run passed.
+
+The exemption written for #121 was the cause. A tool-calling turn legitimately
+has `content: ""` beside a non-empty `tool_calls`; without skipping it, every
+working agent raised a warning the judge then read as evidence, and a healthy
+`create_react_agent` could not pass the gate. But the skip was keyed on the
+*shape* being a message, so the final turn fell through to Rule 3 — which only
+warns, because `content` is not a retrieval list like `hits` or `docs`.
+
+Now an `ai`-typed message with empty `content` **and** no tool calls is critical
+`empty_result`. The intermediate-turn exemption is untouched: it still checks
+`tool_calls` first, so the two cases never meet.
+
+### An own-router `KeyError` blamed a bystander (E8, #135 → #140)
+
+`decide` ends with a conditional edge whose function reads
+`state["risk_tier"]`. The field was never written, so LangGraph raises
+`KeyError` — from inside `graph/_branch.py`, while evaluating `decide`'s own
+routing.
+
+The crash walk took that at face value: a node crashed on a field, so find who
+should have written it and blame them. It landed on `aggregate_risk`, the last
+node to touch the risk state — a node that did its job. The real bug is in
+`decide`: its router reads a field its own update does not produce.
+
+`crash_origins` now looks for the `graph/_branch.py` frame in the traceback.
+When it is there *and* the crashed node's own update did not contain the field
+either, the origin is the crash site. `_blame_crash_origins` then has to handle
+a case it never saw before — origin and crash site being the same step, which
+already carries `crashed` and usually no inspection at all. It builds one so the
+missing field is still named in `argus check`, and deliberately does **not**
+overwrite `crashed` with `fail`: the node did crash, and relabelling it would
+lose that.
+
+A `KeyError` raised in a node *body* has no branch frame and is unchanged — D1
+and the silent-failure matrix still blame the upstream omitter.
+
+### A nested field could not be declared (E6, #133 → #141)
+
+`consumers={"email": ["send_email"]}` cannot catch a `compose` node that writes
+`{"email": {"subject": "Re: your order", "body": ""}}`. The `email` key is
+present and the dict is non-empty, so the contract holds while the customer gets
+an empty email.
+
+Consumer keys are now dotted paths — `{"email.body": ["send_email"]}` — resolved
+against nested ledger state with the same never-written / dropped / written-empty
+rules as a top-level field. `_resolve` walks the path and returns a `_MISSING`
+sentinel when a segment is absent, kept distinct from a present `None` because
+`allow_empty` treats those two differently.
+
+Top-level behaviour is deliberately unchanged: a non-empty parent dict is still
+not empty. Declaring `email` and expecting `email.body` to be checked would make
+every partially-filled dict in every pipeline a failure. The leaf has to be
+named.
+
+### `allow_empty` stopped at the state field (E2, #129 → #142)
+
+Fixing E4 had a side effect it predicted: a parallel worker with a legitimately
+empty `hits` list used to be hidden by the sibling-relabelling bug, and once
+siblings were graded individually it surfaced as a failure.
+
+It is a real shape, not a regression. A KYC screen runs a name against OFAC and
+a clean customer comes back `{"hits": []}` — the good path. `allow_empty` exists
+for exactly this, but it only ever softened the node's **own update**. The empty
+list here arrives in the *tool response*, which `inspect_tool_calls` grades
+critically and separately, so declaring `allow_empty` on the state field never
+reached it. Every healthy onboarding failed CI.
+
+`node_writes_allow_empty(consumers, update)` answers one question — did this
+node write a field declared `allow_empty`? — and `session.py` threads the answer
+into both `inspect_transition` and `inspect_tool_calls`. Scoped to the writer on
+purpose: the declaration says *this* field may legitimately be empty, so it
+softens empty retrieval only where that field is being produced, not everywhere
+in the run.
+
+What still fails hard: a tool that raised, a 4xx/5xx body, an error key. And an
+**undeclared** empty retrieval list stays critical — that is the RAG default, and
+the whole point of a declaration is that it is a deliberate statement about one
+field.
+
+### Merge note
+
+#139 and #142 both edit the payload scan in `inspector.py` and conflicted.
+Resolved keeping both: #139's E7 branch sits above the
+`_apply_tool_shape_rules` dispatch, which now takes #142's `allow_empty`
+argument. Adjacent, not competing. Full suite green afterwards (1191 passed),
+both matrices included.

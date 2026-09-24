@@ -150,6 +150,27 @@ notice. Without a declaration ARGUS still catches empty updates, tool failures,
 crashes and degraded output; `consumers=` is what adds long-range field
 contracts.
 
+A key can be a **dotted path** into nested state:
+
+```python
+consumers={"email.body": ["send_email"]}
+```
+
+A top-level declaration means the whole value, so `{"email": {"subject": "Re: order", "body": ""}}`
+counts as a non-empty `email` — blanking a leaf is only caught if you declare the leaf.
+
+**Fields that are legitimately empty.** A PR review's `issues: []` *is* the LGTM; a clean
+sanctions screen *is* `hits: []`. Declare them presence-only and absence alone fails:
+
+```python
+consumers={"hits": {"readers": ["decide"], "allow_empty": True}}
+```
+
+That declaration also covers the **tool responses** of the node that writes the field, not just
+its own update — the OFAC tool returns `{"hits": []}` on a clean customer, and grading that
+critically failed every healthy KYC onboarding. A tool that raised, or a 4xx/5xx body, still
+fails hard. Undeclared empty retrieval lists keep the RAG default: critical.
+
 It is also the answer for a **final** node: `empty_output` only fires when a
 node has a successor waiting, so a last node that returns `{}` is exempt by
 design (a terminal `send_email` legitimately returns nothing). Declare the field
@@ -208,7 +229,8 @@ result = app.invoke(initial_state)
 |---------|---------|
 | **Silent failures** | Node returns `{}` or drops a required field — no exception, pipeline keeps running broken |
 | **Semantic failures** | Output structure is fine but values are wrong (placeholders, refusals, degraded text) |
-| **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field |
+| **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field — unless the `KeyError` came from the node's *own* conditional edge, which is that node's bug, not its predecessor's |
+| **Blank final answer** | A ReAct agent's last turn returns empty `content` with no tool calls — the customer gets nothing back. An intermediate tool-calling turn with empty `content` is still exempt |
 | **Wrong subject entirely** | The [judge](#semantic-judge) reviews *rule flags* (is this really a refusal?). It does not walk a clean graph looking for helicopters — that painted healthy nodes red |
 | **Contract violations** | A field a later node needs was never written, written empty, or dropped in between — blamed on the node responsible ([`consumers=`](#declaring-who-reads-what)) |
 | **Barren subgraphs** | Every node inside a subgraph returned something, but all of it landed on keys that exist only in the subgraph's own schema — the parent graph gains nothing and the next node reads unchanged state. Each inner update looks busy; only the subgraph as a whole shows the no-op (`subgraph_no_contribution`) |
