@@ -467,3 +467,39 @@ def test_prune_selective_removal():
 
     remaining = [s["id"] for s in load_custom_signatures()["signatures"]]
     assert remaining == ["CS-002"]
+
+
+@pytest.mark.unit
+def test_load_disputes_corrupt_file_warns_and_returns_empty():
+    """B-4 (F-16): a corrupt disputes file must warn loudly, never fail silent."""
+    import warnings as _warnings
+
+    from argus.signature_stats import _disputes_path
+
+    _ensure = _disputes_path()
+    _ensure.parent.mkdir(parents=True, exist_ok=True)
+    _ensure.write_text("{not json", encoding="utf-8")
+
+    with pytest.warns(RuntimeWarning, match="corrupt disputes file"):
+        assert load_disputes() == []
+
+
+@pytest.mark.unit
+def test_load_disputes_absent_file_is_silent_empty():
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        assert load_disputes() == []
+
+
+@pytest.mark.unit
+def test_load_disputes_non_list_disputes_warns():
+    from argus.signature_stats import _disputes_path
+
+    path = _disputes_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"disputes": {"oops": "not-a-list"}}), encoding="utf-8")
+
+    with pytest.warns(RuntimeWarning, match="not a list"):
+        assert load_disputes() == []
