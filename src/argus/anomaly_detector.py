@@ -368,12 +368,37 @@ _POLICY_REASON_RE = re.compile(
     r"\b(?:because|since|outside|within|window|instead|offer|policy|days?)\b",
     re.IGNORECASE,
 )
+# Double quotes only. ``can't`` contains an apostrophe, so a single-quote
+# span would split the customer's words in the middle.
+_DOUBLE_QUOTE_RE = re.compile(r'["“]([^"”]*)["”]')
 
 
 def _is_short_main_output(path: str, text: str) -> bool:
     """Is `path` a main answer field whose whole value is this short string?"""
     leaf = _LIST_INDEX_RE.sub("", path.rsplit(".", 1)[-1])
     return leaf.lower() in _MAIN_OUTPUT_KEYS and len(text) <= _WHOLE_ANSWER_MAX_LEN
+
+
+def _redact_quoted_input(text: str, input_text: str) -> str:
+    """Blank double-quoted spans that repeat this node's input.
+
+    ``You said "I can't reset my password" — I sent a reset link`` quotes the
+    customer. Refusal phrases inside that span are theirs (#146). The agent's
+    own words stay, so an ``I'm unable to`` outside the quotes still counts.
+    A span is blanked only when its text appears in the input: wrapping a
+    refusal in quotes does not hide it. Single quotes are not spans.
+    """
+    if not input_text:
+        return text
+    folded = " ".join(input_text.lower().split())
+
+    def _blank(match: re.Match[str]) -> str:
+        inner = " ".join(match.group(1).lower().split())
+        if len(inner) < 5 or inner not in folded:
+            return match.group(0)
+        return " " * len(match.group(0))
+
+    return _DOUBLE_QUOTE_RE.sub(_blank, text)
 
 
 def _is_grounded_policy_decline(text: str) -> bool:
@@ -402,13 +427,17 @@ def _check_generic_response(
     phrasing. Echoed strings are skipped entirely rather than counted as clean,
     so a node whose only output is a pass-through raises nothing either way. If
     the phrase really did originate from a model, the node that first emitted it
-    is still checked — which is where blame belongs.
+    is still checked — which is where blame belongs. A double-quoted span that
+    repeats the input is the customer being quoted (#146), so phrases inside
+    it are not the node's words either.
     """
     all_strings = _extract_all_strings(output_dict)
     if not all_strings:
         return None
 
-    echoed = {text.strip().lower() for _, text in _extract_all_strings(input_state or {})}
+    input_strings = _extract_all_strings(input_state or {})
+    echoed = {text.strip().lower() for _, text in input_strings}
+    input_text = " ".join(text for _, text in input_strings)
 
     generic_hits = 0
     grounded_hits = 0
@@ -420,17 +449,18 @@ def _check_generic_response(
         lower = text.lower().strip()
         if len(lower) < 5 or lower in echoed:
             continue
+        spoken = _redact_quoted_input(lower, input_text)
         total_checked += 1
         for phrase in _GENERIC_PHRASES:
-            if phrase in lower:
+            if phrase in spoken:
                 generic_hits += 1
                 worst_path = path
-                if _is_grounded_policy_decline(lower):
+                if _is_grounded_policy_decline(spoken):
                     # A short legitimate decline ("outside our 30-day window,
                     # I can offer store credit") cites the constraint. It is
                     # not the silent cop-out BA-004 exists to catch (#130).
                     grounded_hits += 1
-                elif _is_short_main_output(path, lower):
+                elif _is_short_main_output(path, spoken):
                     is_the_whole_answer = True
                 break
 

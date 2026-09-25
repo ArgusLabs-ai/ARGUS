@@ -147,6 +147,37 @@ class TestBA004GenericResponse:
         assert signal is not None
         assert signal.severity == "critical"
 
+    def test_quoting_the_customer_is_not_a_refusal(self):
+        """#146: "I can't" inside a quote of the input is the customer, not the agent."""
+        reply = (
+            "Thanks for writing in. You said \"I can't reset my password on the "
+            'billing page" — I reset it from our side and emailed a temporary '
+            "one to the address on the order."
+        )
+        signal = _check_generic_response(
+            {"reply": reply},
+            {"ticket": "I can't reset my password on the billing page"},
+        )
+        assert signal is None
+
+    def test_a_quoted_refusal_the_customer_did_not_say_stays_critical(self):
+        """#146: quotes do not hide a refusal that is not in the input."""
+        signal = _check_generic_response(
+            {"answer": '"I\'m unable to help with that."'},
+            {"ticket": "please refund order A-1001"},
+        )
+        assert signal is not None
+        assert signal.severity == "critical"
+
+    def test_own_refusal_beside_a_customer_quote_stays_critical(self):
+        """#146: quoting the ticket does not excuse the agent's own refusal."""
+        signal = _check_generic_response(
+            {"reply": ("You said \"I can't reset my password\". I'm unable to help with that.")},
+            {"ticket": "I can't reset my password"},
+        )
+        assert signal is not None
+        assert signal.severity == "critical"
+
 
 # ── BA-005: Structural malformation ──────────────────────────────────────────
 
