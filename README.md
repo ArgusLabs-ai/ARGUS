@@ -159,6 +159,23 @@ consumers={"email.body": ["send_email"]}
 A top-level declaration means the whole value, so `{"email": {"subject": "Re: order", "body": ""}}`
 counts as a non-empty `email` — blanking a leaf is only caught if you declare the leaf.
 
+On a healthy run, `argus consumers` lists every later node that was handed a
+field and did not write it. Delete the nodes that only saw the field in shared
+state, then pass the file yourself. ARGUS does not load it, and does not fail
+CI on the guess.
+
+```bash
+argus consumers last --write argus.consumers.json
+```
+
+```python
+import json
+from pathlib import Path
+
+consumers = json.loads(Path("argus.consumers.json").read_text())
+app = ArgusRecorder(consumers=consumers).attach(compiled_graph)
+```
+
 **Fields that are legitimately empty.** A PR review's `issues: []` *is* the LGTM; a clean
 sanctions screen *is* `hits: []`. Declare them presence-only and absence alone fails:
 

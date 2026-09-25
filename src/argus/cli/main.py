@@ -18,6 +18,7 @@ except ImportError:
     raise SystemExit(1)
 
 from argus.cli.cmd_check import check_run
+from argus.cli.cmd_consumers import propose_for_run
 from argus.cli.cmd_diff import diff_runs
 from argus.cli.cmd_doctor import doctor
 from argus.cli.cmd_edges import export_edges
@@ -78,6 +79,32 @@ def cmd_ingest_langsmith(
 ) -> None:
     """Grade a LangSmith export and save it as a run; then `argus check last`."""
     ingest_langsmith_file(path, allow_cloud=allow_cloud, edges=edges, consumers=consumers)
+
+
+@app.command("consumers")
+def cmd_consumers(
+    run_id: Optional[str] = typer.Argument(
+        None, help="Run ID, 8-char prefix, or 'last'. Defaults to the latest run."
+    ),
+    write: Optional[Path] = typer.Option(
+        None,
+        "--write",
+        help="Write the candidate map to this JSON file. Edit it before use.",
+    ),
+) -> None:
+    """Propose who was handed each field. Does not change the CI gate.
+
+    Run it on a healthy recording. Delete readers that only saw the field in
+    shared state, then pass the file as consumers=. ARGUS never loads the
+    file on its own.
+    """
+    from argus.storage import last_run_id
+
+    target = run_id if run_id not in (None, "last") else last_run_id()
+    if not target:
+        _console.print("[red]Error:[/red] No runs found in .argus/runs/.")
+        raise typer.Exit(1)
+    propose_for_run(target, write)
 
 
 @app.command("edges")

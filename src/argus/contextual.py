@@ -78,6 +78,7 @@ __all__ = [
     "allow_empty_fields",
     "contextual_findings",
     "node_writes_allow_empty",
+    "propose_consumers",
 ]
 
 # ``{"field": ["reader", ...]}`` or
@@ -97,9 +98,7 @@ def allow_empty_fields(consumers: ConsumerMap | None) -> frozenset[str]:
     return frozenset(field for field, spec in consumers.items() if _normalise(spec)[1])
 
 
-def node_writes_allow_empty(
-    consumers: ConsumerMap | None, update: dict[str, Any] | None
-) -> bool:
+def node_writes_allow_empty(consumers: ConsumerMap | None, update: dict[str, Any] | None) -> bool:
     """Did this node's update write a field declared ``allow_empty``?
 
     When true, empty retrieval lists in that node's tool responses (and in its
@@ -109,6 +108,62 @@ def node_writes_allow_empty(
         return False
     allowed = allow_empty_fields(consumers)
     return bool(allowed.intersection(update))
+
+
+def propose_consumers(ledger: list[Any]) -> dict[str, list[str]]:
+    """Candidate readers for fields a healthy run actually wrote.
+
+    A trace cannot see which keys a function body read: every later node is
+    handed the merged state. This lists, for each written field, the later
+    nodes that received it and did not write it. The user deletes the nodes
+    that only saw the field, then passes the result as ``consumers=``. Nothing
+    here is graded, and a guess is never applied on its own (#148).
+
+    Record a healthy run. A dropped field is absent from the starved node's
+    input, so that node will not appear.
+    """
+    paths: list[str] = []
+    seen_paths: set[str] = set()
+    for row in ledger:
+        for path in _written_paths(getattr(row, "update", None)):
+            if path not in seen_paths:
+                seen_paths.add(path)
+                paths.append(path)
+
+    proposed: dict[str, list[str]] = {}
+    for path in paths:
+        readers: list[str] = []
+        seen_nodes: set[str] = set()
+        written = False
+        for row in ledger:
+            if _wrote(row, path):
+                written = True
+                continue
+            if not written or row.node in seen_nodes:
+                continue
+            if _resolve(row.input_state, path) is _MISSING:
+                continue
+            seen_nodes.add(row.node)
+            readers.append(row.node)
+        if readers:
+            proposed[path] = readers
+    return proposed
+
+
+def _written_paths(update: Any) -> list[str]:
+    """Top-level keys, plus one dotted level when the value is a dict."""
+    if not isinstance(update, dict):
+        return []
+    paths: list[str] = []
+    for key, value in update.items():
+        if not isinstance(key, str) or key.startswith("__"):
+            continue
+        paths.append(key)
+        if isinstance(value, dict):
+            for child in value:
+                if isinstance(child, str) and not child.startswith("__"):
+                    paths.append(f"{key}.{child}")
+    return paths
 
 
 def contextual_findings(ledger: list[Any], consumers: ConsumerMap | None) -> list[Finding]:
