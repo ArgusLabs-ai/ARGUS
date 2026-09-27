@@ -186,6 +186,8 @@ export default function RunListPanel({ runs, loading }: { runs: RunSummary[]; lo
                 value={aliasValue}
                 onChange={(e) => setAliasValue(e.target.value)}
                 onKeyDown={(e) => {
+                  /* The row opens the run on Enter; keep this keypress in the input. */
+                  e.stopPropagation()
                   if (e.key === 'Enter') saveRename(run.run_id)
                   if (e.key === 'Escape') setEditing(null)
                 }}

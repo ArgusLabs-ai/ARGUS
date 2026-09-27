@@ -4,7 +4,7 @@
    the overview loads it immediately so it is on the page, not behind a click.
    Copy still goes through the clipboard. */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchFixPrompt, type FixPromptPayload } from '@/lib/fix-prompt'
 
 export function FixPromptBody({
@@ -72,30 +72,41 @@ export function useFixPrompt(runId: string, node?: string | null, opts?: { autol
   const [error, setError] = useState<string | null>(null)
   const [sanitized, setSanitized] = useState(false)
 
+  /* Every fetch takes a ticket; only the newest ticket may write state or touch
+     the clipboard. Switching node/run or unmounting voids outstanding tickets,
+     so a slow response for node A can never land in (or be copied from) node B,
+     and out-of-order toggle responses can't show values under "shapes only". */
+  const ticket = useRef(0)
+  const sanitizedRef = useRef(sanitized)
+  sanitizedRef.current = sanitized
+
   useEffect(() => {
     setOpen(false)
     setPayload(null)
     setError(null)
     setCopied(false)
-    if (!runId || !autoload) return
-    let cancelled = false
+    const id = ++ticket.current
+    /* Clear `busy` and void the ticket on cleanup, or a mid-fetch node switch
+       leaves the body stuck on "Building the fix prompt…" forever. */
+    const cleanup = () => { ticket.current++; setBusy(false) }
+    if (!runId || !autoload) return cleanup
     setBusy(true)
-    fetchFixPrompt(runId, node, sanitized)
+    fetchFixPrompt(runId, node, sanitizedRef.current)
       .then((data) => {
-        if (cancelled) return
+        if (ticket.current !== id) return
         setPayload(data)
         setOpen(true)
       })
       .catch((err) => {
-        if (cancelled) return
+        if (ticket.current !== id) return
         setError(err instanceof Error ? err.message : 'Could not build a fix prompt')
         setOpen(true)
       })
-      .finally(() => { if (!cancelled) setBusy(false) })
-    /* Clear `busy` on cancel too, or a mid-fetch `autoload` flip leaves the
-       body stuck on "Building the fix prompt…" forever. */
-    return () => { cancelled = true; setBusy(false) }
-  }, [runId, node, autoload, sanitized])
+      .finally(() => { if (ticket.current === id) setBusy(false) })
+    return cleanup
+    /* `sanitized` is read through a ref: the toggle refetches in place, and
+       re-running this effect would close the panel mid-toggle. */
+  }, [runId, node, autoload])
 
   const copyText = useCallback(async (text: string) => {
     try {
@@ -112,19 +123,22 @@ export function useFixPrompt(runId: string, node?: string | null, opts?: { autol
       return
     }
     if (!runId) return
+    const id = ++ticket.current
     setBusy(true)
     setError(null)
     try {
       const data = await fetchFixPrompt(runId, node, sanitized)
+      if (ticket.current !== id) return
       setPayload(data)
       setOpen(true)
       await copyText(data.prompt)
     } catch (err) {
+      if (ticket.current !== id) return
       setPayload(null)
       setError(err instanceof Error ? err.message : 'Could not build a fix prompt')
       setOpen(true)
     } finally {
-      setBusy(false)
+      if (ticket.current === id) setBusy(false)
     }
   }, [runId, node, sanitized, payload, error, copyText])
 
@@ -138,23 +152,28 @@ export function useFixPrompt(runId: string, node?: string | null, opts?: { autol
   }, [payload, copyText, load])
 
   /* Refetch in place rather than letting the autoload effect do it: that effect
-     clears `open`, which would close the panel the moment it is toggled. */
+     clears `open`, which would close the panel the moment it is toggled. The old
+     payload is dropped immediately so the new label never sits over the other
+     variant's text, and Copy in the gap fetches the variant the label names. */
   const toggleValues = useCallback(async () => {
     const next = !sanitized
     setSanitized(next)
+    setPayload(null)
     if (!runId) return
+    const id = ++ticket.current
     setBusy(true)
     setError(null)
     try {
       const data = await fetchFixPrompt(runId, node, next)
+      if (ticket.current !== id) return
       setPayload(data)
       setOpen(true)
     } catch (err) {
-      setPayload(null)
+      if (ticket.current !== id) return
       setError(err instanceof Error ? err.message : 'Could not build a fix prompt')
       setOpen(true)
     } finally {
-      setBusy(false)
+      if (ticket.current === id) setBusy(false)
     }
   }, [runId, node, sanitized])
 

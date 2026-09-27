@@ -231,10 +231,10 @@ export default function StepInspector({
 
   if (selectedNodeName) {
     const step = steps.find((s) => s.node_name === selectedNodeName)
-    if (step) return <NodeDetail step={step} run={run} onDismiss={onDismiss} />
+    if (step) return <NodeDetail key={step.node_name} step={step} run={run} onDismiss={onDismiss} />
   }
 
   const failed = steps.find((s) => s.status !== 'pass' && s.status !== 'skipped')
   if (!failed) return null
-  return <NodeDetail step={failed} run={run} />
+  return <NodeDetail key={failed.node_name} step={failed} run={run} />
 }
