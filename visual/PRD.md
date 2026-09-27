@@ -271,7 +271,7 @@ with one command.
 **Description:** As P2, I want to see, across all runs, which (origin node → failing node)
 pairs fail most often.
 **Acceptance:**
-- [ ] API `GET /api/hotspots?tag=…` in `cmd_open_ui.py` aggregates `findings[].origin_node × node` counts across runs
+- [x] API `GET /api/hotspots?tag=…` in `cmd_open_ui.py` aggregates `findings[].origin_node × node` counts across runs
 - [x] `components/HotspotMatrix.tsx`: rows = origin, cols = failing node, cell = raw count on a **single-hue amber ramp**, zero cells blank, "Low → High" legend, one-line explainer under title `[E-10b]`; click → run list filtered to those runs
 - [x] Lives on the Runs page above the table, collapsed by default when < 5 runs
 - [x] No LLM call involved
