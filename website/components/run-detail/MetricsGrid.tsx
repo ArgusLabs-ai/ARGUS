@@ -1,7 +1,7 @@
 'use client'
 
 import type { RunRecord } from '@/lib/types'
-import { formatDur, fmtCost, fmtTokens } from '@/lib/run-utils'
+import { formatDur, fmtCost, fmtTokens, tint } from '@/lib/run-utils'
 
 const C_GREEN = 'var(--success)'
 const C_AMBER = 'var(--warning)'
@@ -40,7 +40,7 @@ function MetricCard({ icon, label, value, color }: MetricCardProps) {
 
 function MetricIcon({ color, children }: { color: string; children: React.ReactNode }) {
   return (
-    <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: color.startsWith('var(') ? `color-mix(in srgb, ${color} 4%, transparent)` : `${color}0a`, color }}>
+    <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: tint(color, 4), color }}>
       {children}
     </div>
   )

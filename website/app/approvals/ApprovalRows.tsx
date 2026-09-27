@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import type { Candidate, Signature, SignatureStatsData } from './types'
+import { tint } from '@/lib/run-utils'
 
 /* Card and row presentation for the approvals views. Split out of page.tsx,
    which had grown to 1027 lines. */
@@ -59,7 +60,7 @@ function StrategyBadge({ strategy }: { strategy: string }) {
   return (
     <span
       className="text-[10.5px] font-mono font-medium px-2 py-0.5 rounded-md"
-      style={{ background: `${color}10`, border: `1px solid ${color}30`, color }}
+      style={{ background: tint(color, 6), border: `1px solid ${tint(color, 19)}`, color }}
     >
       {strategy}
     </span>

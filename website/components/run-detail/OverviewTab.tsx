@@ -167,6 +167,8 @@ export default function OverviewTab({
           busy={fix?.busy}
           onCopy={fix ? () => { void fix.copy() } : undefined}
           onHide={fix ? () => fix.setOpen(false) : undefined}
+          sanitized={fix?.sanitized}
+          onToggleValues={fix ? () => { void fix.toggleValues() } : undefined}
         />
       )}
 

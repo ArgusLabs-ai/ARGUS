@@ -40,18 +40,20 @@ def _ui_failure_labels() -> set[str]:
 
 
 def _python_behavior_types() -> set[str]:
+    """Keys of ``BEHAVIOR_PROFILES`` in anomaly_detector.py.
+
+    Read from the source, not hardcoded: a hardcoded list can only ever confirm
+    what the test already knew, so a profile added in Python — exactly the case
+    this guard exists for — would never trip it.
+    """
     src = (REPO / "src" / "argus" / "anomaly_detector.py").read_text()
-    known = {
-        "structured_json",
-        "retrieval_result",
-        "classification",
-        "detailed_text",
-        "tool_output",
-        "reasoning_chain",
-        "chat_response",
-        "code_generation",
-    }
-    return {name for name in known if f'"{name}"' in src}
+    block = re.search(
+        r"BEHAVIOR_PROFILES:\s*dict\[str, dict\[str, Any\]\]\s*=\s*{(.*?)\n}", src, re.S
+    )
+    assert block, "BEHAVIOR_PROFILES not found in anomaly_detector.py"
+    found = set(re.findall(r'^ {4}"([a-z_]+)":\s*{', block.group(1), re.M))
+    assert found, "no behavior profiles parsed out of BEHAVIOR_PROFILES"
+    return found
 
 
 def _ui_behavior_labels() -> set[str]:
@@ -77,12 +79,52 @@ def test_every_behavior_type_has_a_ui_label() -> None:
     )
 
 
-def test_every_step_status_is_rendered() -> None:
-    """All StepStatus values must appear in StatusBadge.tsx."""
+def _step_statuses() -> set[str]:
     models = (REPO / "src" / "argus" / "models.py").read_text()
     block = re.search(r"StepStatus\s*=\s*Literal\[(.*?)\]", models, re.S)
     assert block, "StepStatus Literal not found in models.py"
     statuses = set(re.findall(r'"([a-z_]+)"', block.group(1)))
+    assert statuses, "no step statuses parsed out of models.py"
+    return statuses
+
+
+def test_every_step_status_is_rendered() -> None:
+    """All StepStatus values must appear in StatusBadge.tsx."""
     badge = (WEBSITE / "components" / "StatusBadge.tsx").read_text()
-    missing = {s for s in statuses if s not in badge}
+    missing = {s for s in _step_statuses() if s not in badge}
     assert not missing, f"step statuses not handled in StatusBadge.tsx: {sorted(missing)}"
+
+
+def test_every_step_status_is_coloured_in_the_graph() -> None:
+    """`mapStatus` must name every status explicitly.
+
+    Its `default` branch is a catch-all, so a status it forgets is painted
+    whatever the fallback happens to be rather than flagged — `interrupted`
+    rendered as a green pass this way.
+    """
+    src = (WEBSITE / "components" / "run-detail" / "ExecutionGraph.tsx").read_text()
+    block = re.search(r"function mapStatus\(.*?\n}", src, re.S)
+    assert block, "mapStatus not found in ExecutionGraph.tsx"
+    handled = set(re.findall(r"case '([a-z_]+)':", block.group(0)))
+    missing = _step_statuses() - handled
+    assert not missing, (
+        f"step statuses with no explicit case in ExecutionGraph.mapStatus "
+        f"(they fall through to the default colour): {sorted(missing)}"
+    )
+
+
+def test_tool_failure_union_matches_the_label_map() -> None:
+    """`ToolFailure.failure_type` and FAILURE_META must list the same types.
+
+    A type in one but not the other either renders as 'Unknown' or fails to
+    type-check at the call site that produces it.
+    """
+    types_src = (WEBSITE / "lib" / "types.ts").read_text()
+    block = re.search(r"failure_type:\n(.*?)\n\s+field_name:", types_src, re.S)
+    assert block, "ToolFailure.failure_type union not found in types.ts"
+    union = set(re.findall(r"'([a-z_]+)'", block.group(1)))
+    labels = _ui_failure_labels()
+    assert union == labels, (
+        f"only in the union: {sorted(union - labels)}; "
+        f"only in FAILURE_META: {sorted(labels - union)}"
+    )

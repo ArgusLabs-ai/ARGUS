@@ -16,6 +16,8 @@ export function FixPromptBody({
   busy,
   onCopy,
   onHide,
+  sanitized,
+  onToggleValues,
 }: {
   node?: string | null
   sourcePath?: string | null
@@ -25,6 +27,8 @@ export function FixPromptBody({
   busy?: boolean
   onCopy?: () => void
   onHide?: () => void
+  sanitized?: boolean
+  onToggleValues?: () => void
 }) {
   if (error) {
     return <p className="note-line bad" style={{ margin: '8px 0 0' }}>{error}</p>
@@ -39,8 +43,17 @@ export function FixPromptBody({
         <span>
           Fix prompt · paste into a coding agent · <span style={{ fontFamily: 'var(--mono)' }}>{node}</span>
           {sourcePath && <> · {sourcePath}</>}
+          {' · '}
+          {/* This prompt is pasted into someone else's model, so whether it
+              carries recorded values is stated, not assumed. */}
+          {sanitized ? 'shapes only' : 'includes recorded values'}
         </span>
         <span style={{ display: 'flex', gap: 14 }}>
+          {onToggleValues && (
+            <a href="#" onClick={(e) => { e.preventDefault(); onToggleValues() }}>
+              {sanitized ? 'Include values' : 'Strip values'}
+            </a>
+          )}
           {onCopy && <a href="#" onClick={(e) => { e.preventDefault(); onCopy() }}>{copied ? 'Copied' : 'Copy'}</a>}
           {onHide && <a href="#" onClick={(e) => { e.preventDefault(); onHide() }}>Hide</a>}
         </span>
@@ -57,6 +70,7 @@ export function useFixPrompt(runId: string, node?: string | null, opts?: { autol
   const [open, setOpen] = useState(false)
   const [payload, setPayload] = useState<FixPromptPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [sanitized, setSanitized] = useState(false)
 
   useEffect(() => {
     setOpen(false)
@@ -66,7 +80,7 @@ export function useFixPrompt(runId: string, node?: string | null, opts?: { autol
     if (!runId || !autoload) return
     let cancelled = false
     setBusy(true)
-    fetchFixPrompt(runId, node)
+    fetchFixPrompt(runId, node, sanitized)
       .then((data) => {
         if (cancelled) return
         setPayload(data)
@@ -78,8 +92,10 @@ export function useFixPrompt(runId: string, node?: string | null, opts?: { autol
         setOpen(true)
       })
       .finally(() => { if (!cancelled) setBusy(false) })
-    return () => { cancelled = true }
-  }, [runId, node, autoload])
+    /* Clear `busy` on cancel too, or a mid-fetch `autoload` flip leaves the
+       body stuck on "Building the fix prompt…" forever. */
+    return () => { cancelled = true; setBusy(false) }
+  }, [runId, node, autoload, sanitized])
 
   const copyText = useCallback(async (text: string) => {
     try {
@@ -99,7 +115,7 @@ export function useFixPrompt(runId: string, node?: string | null, opts?: { autol
     setBusy(true)
     setError(null)
     try {
-      const data = await fetchFixPrompt(runId, node)
+      const data = await fetchFixPrompt(runId, node, sanitized)
       setPayload(data)
       setOpen(true)
       await copyText(data.prompt)
@@ -110,7 +126,7 @@ export function useFixPrompt(runId: string, node?: string | null, opts?: { autol
     } finally {
       setBusy(false)
     }
-  }, [runId, node, payload, error, copyText])
+  }, [runId, node, sanitized, payload, error, copyText])
 
   const copy = useCallback(() => {
     if (payload?.prompt) {
@@ -121,8 +137,29 @@ export function useFixPrompt(runId: string, node?: string | null, opts?: { autol
     void load()
   }, [payload, copyText, load])
 
+  /* Refetch in place rather than letting the autoload effect do it: that effect
+     clears `open`, which would close the panel the moment it is toggled. */
+  const toggleValues = useCallback(async () => {
+    const next = !sanitized
+    setSanitized(next)
+    if (!runId) return
+    setBusy(true)
+    setError(null)
+    try {
+      const data = await fetchFixPrompt(runId, node, next)
+      setPayload(data)
+      setOpen(true)
+    } catch (err) {
+      setPayload(null)
+      setError(err instanceof Error ? err.message : 'Could not build a fix prompt')
+      setOpen(true)
+    } finally {
+      setBusy(false)
+    }
+  }, [runId, node, sanitized])
+
   const label = busy ? 'Building…' : copied ? 'Copied' : 'Copy fix prompt'
-  return { load, copy, busy, copied, open, payload, error, label, setOpen }
+  return { load, copy, busy, copied, open, payload, error, label, setOpen, sanitized, toggleValues }
 }
 
 export default function FixPromptButton({
@@ -159,6 +196,8 @@ export default function FixPromptButton({
             busy={fix.busy}
             onCopy={fix.copy}
             onHide={() => fix.setOpen(false)}
+            sanitized={fix.sanitized}
+            onToggleValues={() => { void fix.toggleValues() }}
           />
         </div>
       )}

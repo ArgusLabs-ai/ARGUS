@@ -171,7 +171,7 @@ function Marker({ children }: { children: ReactNode }) {
 }
 
 export default function PipelineTab({ run }: { run: RunRecord }) {
-  const steps = run.steps ?? []
+  const steps = useMemo(() => run.steps ?? [], [run.steps])
   const segments = useMemo(() => segmentEvents(steps, run.graph_edge_map), [steps, run.graph_edge_map])
   const reached = steps.filter((s) => s.status !== 'skipped').length
 

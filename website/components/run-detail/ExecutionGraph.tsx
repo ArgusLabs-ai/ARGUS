@@ -71,6 +71,7 @@ function mapStatus(s: StepStatus | undefined): S {
     case 'semantic_fail': return 'semantic'
     case 'degraded_input': return 'degraded'
     case 'fail': case 'retried': return 'fail'
+    case 'interrupted': return 'running'
     case 'skipped': case undefined: return 'skipped'
     /* A status this UI does not know yet must not render as green. */
     default: return 'skipped'
@@ -212,21 +213,41 @@ export default function ExecutionGraph({
 
   const byId = useMemo(() => Object.fromEntries(nodes.map((n) => [n.id, n])), [nodes])
 
+  /* One owner for window-level gesture listeners. `pointercancel` matters — a
+     cancelled touch gesture would otherwise leave the canvas panning forever —
+     and the teardown has to survive unmounting mid-drag, which plain
+     pointerup-only cleanup leaks. */
+  const endGesture = useRef<(() => void) | null>(null)
+  const trackPointer = useCallback(
+    (move: (ev: PointerEvent) => void, done: () => void) => {
+      endGesture.current?.()
+      const end = () => {
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', end)
+        window.removeEventListener('pointercancel', end)
+        endGesture.current = null
+        done()
+      }
+      window.addEventListener('pointermove', move)
+      window.addEventListener('pointerup', end)
+      window.addEventListener('pointercancel', end)
+      endGesture.current = end
+    },
+    [],
+  )
+  useEffect(() => () => endGesture.current?.(), [])
+
   /* pan */
   const onCanvasDown = useCallback((e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest('.gnode')) return
     setPanning(true)
     const sx = e.clientX - pan.x
     const sy = e.clientY - pan.y
-    const move = (ev: PointerEvent) => setPan({ x: ev.clientX - sx, y: ev.clientY - sy })
-    const up = () => {
-      setPanning(false)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-  }, [pan])
+    trackPointer(
+      (ev) => setPan({ x: ev.clientX - sx, y: ev.clientY - sy }),
+      () => setPanning(false),
+    )
+  }, [pan, trackPointer])
 
   /* node drag */
   const onNodeDown = useCallback((e: React.PointerEvent, id: string) => {
@@ -234,20 +255,16 @@ export default function ExecutionGraph({
     const n = byId[id]
     if (!n) return
     drag.current = { id, ox: e.clientX / scale - n.x, oy: e.clientY / scale - n.y }
-    const move = (ev: PointerEvent) => {
-      const d = drag.current
-      if (!d?.id) return
-      setNodes((prev) => prev.map((p) =>
-        p.id === d.id ? { ...p, x: ev.clientX / scale - d.ox, y: ev.clientY / scale - d.oy } : p))
-    }
-    const up = () => {
-      drag.current = null
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-  }, [byId, scale])
+    trackPointer(
+      (ev) => {
+        const d = drag.current
+        if (!d?.id) return
+        setNodes((prev) => prev.map((p) =>
+          p.id === d.id ? { ...p, x: ev.clientX / scale - d.ox, y: ev.clientY / scale - d.oy } : p))
+      },
+      () => { drag.current = null },
+    )
+  }, [byId, scale, trackPointer])
 
   /* wheel zoom */
   useEffect(() => {

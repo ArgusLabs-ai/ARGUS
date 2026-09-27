@@ -11,7 +11,6 @@ export const FAILURE_META: Record<string, FailureMeta> = {
   error_response:     { label: 'Error Response',     category: 'Tool',      categoryColor: 'var(--tool)' },
   rate_limit:         { label: 'Rate Limited',        category: 'Tool',      categoryColor: 'var(--tool)' },
   empty_result:       { label: 'Empty Result',        category: 'Tool',      categoryColor: 'var(--tool)' },
-  empty_output:       { label: 'Empty Output',        category: 'Tool',      categoryColor: 'var(--tool)' },
   error_in_data:      { label: 'Error in Data',       category: 'Tool',      categoryColor: 'var(--tool)' },
   partial_failure:    { label: 'Partial Failure',     category: 'Tool',      categoryColor: 'var(--tool)' },
   // Quality — output exists but is degraded
@@ -31,6 +30,9 @@ export const FAILURE_META: Record<string, FailureMeta> = {
   input_echo:                    { label: 'Input Echo',          category: 'Coherence', categoryColor: 'var(--coherence)' },
   semantic_contradiction:        { label: 'Contradiction',       category: 'Coherence', categoryColor: 'var(--coherence)' },
   context_size_anomaly:          { label: 'Context Overflow',    category: 'Coherence', categoryColor: 'var(--coherence)' },
+  // A node that returned a literal `{}` contributed nothing to state — a
+  // contract failure between nodes, not a tool that misbehaved.
+  empty_output:                  { label: 'Empty Output',        category: 'Coherence', categoryColor: 'var(--coherence)' },
   // Latency — timing-correlated degradation (VAR-8)
   timeout_adjacent:              { label: 'Near Timeout',        category: 'Quality',   categoryColor: 'var(--quality)' },
   suspiciously_fast:             { label: 'Suspiciously Fast',   category: 'Quality',   categoryColor: 'var(--quality)' },

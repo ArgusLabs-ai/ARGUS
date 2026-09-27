@@ -457,7 +457,8 @@ body{
   transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
 }
 .seg button:hover{ color: var(--ink); }
-.seg button[aria-selected="true"]{ background: var(--raised); color: var(--ink); }
+.seg button[aria-selected="true"],
+.seg button[aria-pressed="true"]{ background: var(--raised); color: var(--ink); }
 
 .tabs{ display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
 .tabs button{

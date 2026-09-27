@@ -80,7 +80,7 @@ export default function RunFilterBar({
           >
             <div className="seg" style={{ margin: 8, display: 'flex' }}>
               {FILTER_KEYS.map((k) => (
-                <button key={k.key} type="button" aria-selected={adding === k.key} onClick={() => setAdding(k.key)} style={{ flex: 1 }}>
+                <button key={k.key} type="button" aria-pressed={adding === k.key} onClick={() => setAdding(k.key)} style={{ flex: 1 }}>
                   {k.label}
                 </button>
               ))}

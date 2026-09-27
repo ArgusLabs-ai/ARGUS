@@ -353,7 +353,7 @@ export default function GuideContent() {
         </div>
 
         <div className="space-y-4 mb-6">
-          <Step n={1} title="Open Compare" text="Sidebar link, or the Compare button on any run detail page." />
+          <Step n={1} title="Open Compare" text="Icon rail, or the Compare button on any run detail page." />
           <Step n={2} title="Enter two run IDs" text="Run A is typically the broken run, Run B is the fix." />
           <Step n={3} title="Read the verdict" text="Winner banner shows which run performed better and why." />
           <Step n={4} title="Read the node diff" text="Status in A vs B per node. Missing nodes labelled only in A / only in B." />

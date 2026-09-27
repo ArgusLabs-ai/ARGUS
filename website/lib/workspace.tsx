@@ -5,6 +5,7 @@
    live-tail toggle. Tabs persist across reloads in localStorage. */
 
 import {
+  Suspense,
   createContext,
   useCallback,
   useContext,
@@ -52,9 +53,26 @@ interface WorkspaceValue {
   note: { text: string; key: string } | null
   setNote: (n: { text: string; key: string } | null) => void
   dismissNote: () => void
+
+  /** Current query string. Read this instead of calling `useSearchParams`
+      again — see `SearchParamsBridge`. */
+  query: URLSearchParams
 }
 
 const Ctx = createContext<WorkspaceValue | null>(null)
+const NO_QUERY = new URLSearchParams()
+
+/* `useSearchParams` opts a component out of static prerendering up to its
+   nearest Suspense boundary. Calling it in the provider put the whole app —
+   rail, explorer and every page body — behind one boundary, so Next 14
+   prerendered the public /guide and /changelog routes as an empty shell. This
+   reads the params behind its own null-fallback boundary and hands them down,
+   which keeps the rest of the tree statically prerenderable. */
+function SearchParamsBridge({ onChange }: { onChange: (q: URLSearchParams) => void }) {
+  const sp = useSearchParams()
+  useEffect(() => { onChange(sp) }, [sp, onChange])
+  return null
+}
 const TABS_KEY = 'argus-ws-tabs'
 const POLL_MS = 6000
 
@@ -90,7 +108,7 @@ function sameRuns(prev: RunSummary[], next: RunSummary[]): boolean {
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
-  const searchParams = useSearchParams()
+  const [query, setQuery] = useState<URLSearchParams>(NO_QUERY)
   const serving = useServingInfo()
 
   /* ── run list ── */
@@ -132,9 +150,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     try { localStorage.setItem(TABS_KEY, JSON.stringify(tabs)) } catch { /* ignore */ }
   }, [tabs])
 
-  const activeRunId = pathname === '/' ? searchParams.get('run') : null
-  const cmpA = pathname === '/compare' ? searchParams.get('a') : null
-  const cmpB = pathname === '/compare' ? searchParams.get('b') : null
+  const activeRunId = pathname === '/' ? query.get('run') : null
+  const cmpA = pathname === '/compare' ? query.get('a') : null
+  const cmpB = pathname === '/compare' ? query.get('b') : null
   const activeTabId = activeRunId ? `run:${activeRunId}` : cmpA && cmpB ? compareTabId(cmpA, cmpB) : null
 
   /* A deep link to a run or a comparison opens its tab. */
@@ -168,19 +186,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [router])
 
   const closeTab = useCallback((tabId: string) => {
-    setTabs((prev) => {
-      const idx = prev.findIndex((t) => t.id === tabId)
-      if (idx === -1) return prev
-      const next = prev.filter((t) => t.id !== tabId)
-      if (tabId === activeTabId) {
-        const neighbour = next[idx] ?? next[idx - 1]
-        if (!neighbour) router.push('/', { scroll: false })
-        else if (neighbour.kind === 'run') router.push(`/?run=${encodeURIComponent(neighbour.runId)}`, { scroll: false })
-        else router.push(`/compare?a=${encodeURIComponent(neighbour.a)}&b=${encodeURIComponent(neighbour.b)}`, { scroll: false })
-      }
-      return next
-    })
-  }, [activeTabId, router])
+    /* Navigate outside the updater: updaters must be pure, and StrictMode
+       double-invokes them, which pushed two history entries per close. */
+    const idx = tabs.findIndex((t) => t.id === tabId)
+    if (idx === -1) return
+    const next = tabs.filter((t) => t.id !== tabId)
+    setTabs(next)
+    if (tabId !== activeTabId) return
+    const neighbour = next[idx] ?? next[idx - 1]
+    if (!neighbour) router.push('/', { scroll: false })
+    else if (neighbour.kind === 'run') router.push(`/?run=${encodeURIComponent(neighbour.runId)}`, { scroll: false })
+    else router.push(`/compare?a=${encodeURIComponent(neighbour.a)}&b=${encodeURIComponent(neighbour.b)}`, { scroll: false })
+  }, [tabs, activeTabId, router])
 
   /* ── workspace note (the pill at the top right) ── */
   const [note, setNoteState] = useState<{ text: string; key: string } | null>(null)
@@ -196,10 +213,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const value = useMemo<WorkspaceValue>(() => ({
     runs, runsLoading, refreshRuns: fetchRuns, serving, live, setLive,
     tabs, activeTabId, activeRunId, openRun, openCompare, closeTab, goHome,
-    note, setNote, dismissNote,
-  }), [runs, runsLoading, fetchRuns, serving, live, setLive, tabs, activeTabId, activeRunId, openRun, openCompare, closeTab, goHome, note, setNote, dismissNote])
+    note, setNote, dismissNote, query,
+  }), [runs, runsLoading, fetchRuns, serving, live, setLive, tabs, activeTabId, activeRunId, openRun, openCompare, closeTab, goHome, note, setNote, dismissNote, query])
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+  return (
+    <Ctx.Provider value={value}>
+      <Suspense fallback={null}><SearchParamsBridge onChange={setQuery} /></Suspense>
+      {children}
+    </Ctx.Provider>
+  )
 }
 
 export function useWorkspace(): WorkspaceValue {

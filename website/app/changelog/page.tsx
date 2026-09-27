@@ -398,7 +398,7 @@ export default function ChangelogPage() {
                 className="absolute left-0 top-[6px] w-[15px] h-[15px] rounded-full border-2 flex items-center justify-center"
                 style={{
                   borderColor: i === 0 ? 'var(--iris)' : 'var(--border-subtle)',
-                  background: i === 0 ? 'var(--iris)' : 'var(--card-bg)',
+                  background: i === 0 ? 'var(--iris)' : 'var(--panel)',
                 }}
               >
                 {i === 0 && (

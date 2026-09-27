@@ -4,7 +4,7 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-const ROOTS = ['app', 'components']
+const ROOTS = ['app', 'components', 'lib']
 
 // SendReportDialog's modal scrim is deliberately a black rgba in both themes.
 // globals.css is where the tokens themselves are defined.

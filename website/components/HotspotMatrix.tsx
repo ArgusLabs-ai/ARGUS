@@ -44,7 +44,7 @@ export default function HotspotMatrix({
       if (failed.length === 0) return null
       const records = await Promise.all(
         failed.map((r) =>
-          fetch(`/api/runs/${r.run_id}`)
+          fetch(`/api/runs/${encodeURIComponent(r.run_id)}`)
             .then((res) => (res.ok ? res.json() : null))
             .catch(() => null),
         ),
@@ -62,10 +62,12 @@ export default function HotspotMatrix({
           setData(payload)
           return
         }
-        setData(await fromDetails())
+        const built = await fromDetails()
+        if (!cancelled) setData(built)
       })
       .catch(async () => {
-        if (!cancelled) setData(await fromDetails())
+        const built = await fromDetails()
+        if (!cancelled) setData(built)
       })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps

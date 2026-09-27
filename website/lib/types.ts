@@ -57,6 +57,9 @@ export interface ToolFailure {
     | 'input_echo'
     | 'semantic_contradiction'
     | 'context_size_anomaly'
+    | 'timeout_adjacent'
+    | 'suspiciously_fast'
+    | 'latency_quality_mismatch'
   field_name: string
   severity: 'critical' | 'warning'
   evidence: string

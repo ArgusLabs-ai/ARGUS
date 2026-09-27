@@ -6,7 +6,7 @@ import EvalBadge from './EvalBadge'
 import type { EvalState } from './EvaluationBuilder'
 import EmptyRunsState from './EmptyRunsState'
 import { useServingInfo } from '@/lib/hooks'
-import { displayNodes } from '@/lib/run-utils'
+import { displayNodes, tint } from '@/lib/run-utils'
 
 function getRunShape(run: RunSummary): { label: string; color: string } | null {
   if (run.overall_status === 'clean' && !run.first_failure_step) {
@@ -186,7 +186,7 @@ export default function RunTable({ runs, evalState }: RunTableProps) {
                     {shape ? (
                       <span
                         className="text-[11px] font-medium px-2 py-0.5 rounded-md"
-                        style={{ color: shape.color, background: `${shape.color}10` }}
+                        style={{ color: shape.color, background: tint(shape.color, 6) }}
                       >
                         {shape.label}
                       </span>

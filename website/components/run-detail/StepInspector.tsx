@@ -119,6 +119,8 @@ function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord;
           copied={fix.copied}
           onCopy={() => { void fix.copy() }}
           onHide={() => fix.setOpen(false)}
+          sanitized={fix.sanitized}
+          onToggleValues={() => { void fix.toggleValues() }}
         />
       )}
 

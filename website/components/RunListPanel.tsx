@@ -161,11 +161,15 @@ export default function RunListPanel({ runs, loading }: { runs: RunSummary[]; lo
     )
   }
 
-  const Row = ({ run, child }: { run: RunSummary; child?: boolean }) => {
+  /* Rendered inline, NOT as `<Row/>`: a component defined inside this render is
+     a new type on every render, so React unmounts and remounts the row and the
+     rename input loses focus after each keystroke. */
+  const renderRow = (run: RunSummary, child = false) => {
     const name = aliases[run.run_id] ?? run.alias ?? null
     const tone = toneFor(run.overall_status)
     return (
       <div
+        key={run.run_id}
         role="row"
         tabIndex={0}
         className={cn('rrow', child && 'child')}
@@ -302,8 +306,8 @@ export default function RunListPanel({ runs, loading }: { runs: RunSummary[]; lo
             )}
             {topLevel.map((run) => (
               <div key={run.run_id}>
-                <Row run={run} />
-                {children.get(run.run_id)?.map((c) => <Row key={c.run_id} run={c} child />)}
+                {renderRow(run)}
+                {children.get(run.run_id)?.map((c) => renderRow(c, true))}
               </div>
             ))}
             {!loading && visible.length === 0 && runs.length > 0 && (

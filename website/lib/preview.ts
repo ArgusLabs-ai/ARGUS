@@ -1,23 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useWorkspace } from './workspace'
 
-/** Maintainer preview: `?preview=1` restores planned nav that is hidden by default (US-4.1). */
+/** Maintainer preview: `?preview=1` restores planned nav that is hidden by default (US-4.1).
+    Reads the workspace's query string, so client-side navigation (`Link`,
+    `router.push`) flips it — the old `popstate` listener never fired for those,
+    so the flag neither turned on when navigating to `?preview=1` nor cleared
+    when leaving it. */
 export function useMaintainerPreview(): boolean {
-  const [enabled, setEnabled] = useState(false)
-
-  useEffect(() => {
-    const read = () => {
-      try {
-        setEnabled(new URLSearchParams(window.location.search).get('preview') === '1')
-      } catch {
-        setEnabled(false)
-      }
-    }
-    read()
-    window.addEventListener('popstate', read)
-    return () => window.removeEventListener('popstate', read)
-  }, [])
-
-  return enabled
+  return useWorkspace().query.get('preview') === '1'
 }

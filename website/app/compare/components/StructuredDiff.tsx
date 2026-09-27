@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import type { NodeDiff } from '../lib/compare-utils'
+import { tint } from '@/lib/run-utils'
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -59,7 +60,7 @@ function DiffPanel({
             {lines.map((line, i) => {
               const isChanged = Array.from(changedKeys).some((k) => line.includes(`"${k}"`))
               return (
-                <tr key={i} style={{ background: isChanged ? `${highlightColor}08` : 'transparent' }}>
+                <tr key={i} style={{ background: isChanged ? tint(highlightColor, 3) : 'transparent' }}>
                   <td
                     className="text-right px-2 py-0 select-none shrink-0"
                     style={{ color: 'var(--text-tertiary)', width: '36px', borderRight: '1px solid var(--border)' }}
@@ -69,7 +70,7 @@ function DiffPanel({
                   <td className="px-2 py-0 whitespace-pre" style={{ color: 'var(--text-secondary)' }}>
                     <span
                       dangerouslySetInnerHTML={{ __html: syntaxHighlight(line) }}
-                      style={isChanged ? { background: `${highlightColor}12`, borderRadius: '2px', padding: '0 2px' } : undefined}
+                      style={isChanged ? { background: tint(highlightColor, 7), borderRadius: '2px', padding: '0 2px' } : undefined}
                     />
                   </td>
                 </tr>

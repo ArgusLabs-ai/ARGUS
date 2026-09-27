@@ -749,11 +749,21 @@ def _make_handler(
 
         def _hotspots(self, tag: str | None) -> None:
             """origin x node finding counts across every stored run (US-4.4)."""
-            from argus.hotspots import aggregate_hotspots  # noqa: PLC0415
+            from argus.hotspots import HOTSPOT_RUN_CAP, aggregate_hotspots  # noqa: PLC0415
 
+            # Newest first by mtime, so only the newest HOTSPOT_RUN_CAP files are
+            # read. Parsing every run on a directory with thousands of them, then
+            # capping afterwards, made this the slowest call on the page.
+            files = sorted(
+                _all_run_files(_project_dir),
+                key=lambda f: f.stat().st_mtime if f.exists() else 0.0,
+                reverse=True,
+            )
             runs: list[dict[str, Any]] = []
             seen: set[str] = set()
-            for f in _all_run_files(_project_dir):
+            for f in files:
+                if len(runs) >= HOTSPOT_RUN_CAP:
+                    break
                 try:
                     run = json.loads(f.read_text())
                 except Exception:
@@ -763,6 +773,7 @@ def _make_handler(
                     continue
                 seen.add(rid)
                 runs.append(run)
+            # mtime orders the reads; started_at is the order the matrix reports.
             runs.sort(key=lambda r: r.get("started_at") or "", reverse=True)
             self._send_json(aggregate_hotspots(runs, tag=tag))
 
