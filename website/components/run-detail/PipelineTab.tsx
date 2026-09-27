@@ -138,7 +138,9 @@ function Row({
       onClick={() => setOpen((v) => !v)}
       role="button"
       tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen((v) => !v) } }}
+      /* Only the row itself — preventDefault here would cancel the native click on
+         the rerun / fix / dismiss buttons inside it. */
+      onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setOpen((v) => !v) } }}
     >
       <span className="srow-n">{String(index).padStart(2, '0')}</span>
       <div style={{ minWidth: 0 }}>

@@ -76,3 +76,12 @@ def test_hotspots_endpoint_aggregates_across_runs(server: str) -> None:
 
 def test_hotspots_endpoint_honours_a_tag(server: str) -> None:
     assert _get(server, "/api/hotspots?tag=status:clean")["run_count"] == 0
+
+
+def test_fix_endpoint_rejects_an_empty_run_id(server: str) -> None:
+    """`startswith("")` matches every file, so an empty id must not pick one."""
+    from urllib.error import HTTPError
+
+    with pytest.raises(HTTPError) as exc:
+        _get(server, "/api/runs//fix")
+    assert exc.value.code == 404

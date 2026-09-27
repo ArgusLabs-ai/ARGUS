@@ -797,9 +797,16 @@ def _make_handler(
             )
             from argus.storage import _deserialize_run  # noqa: PLC0415
 
-            for f in _all_run_files(_project_dir):
-                if f.stem != run_id and not f.stem.startswith(run_id):
-                    continue
+            if not run_id:
+                self._send_json({"error": "not found"}, 404)
+                return
+            # Exact id first, so a run whose id prefixes another's can't be
+            # shadowed by it; then the prefix match `argus fix` also accepts.
+            files = _all_run_files(_project_dir)
+            files = [f for f in files if f.stem == run_id] + [
+                f for f in files if f.stem != run_id and f.stem.startswith(run_id)
+            ]
+            for f in files:
                 try:
                     data = json.loads(f.read_text(encoding="utf-8"))
                     record = _deserialize_run(data)

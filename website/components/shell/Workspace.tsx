@@ -76,7 +76,8 @@ function TabStrip() {
             className={cn('tab', on && 'on')}
             onClick={() => activate(t)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(t) }
+              /* Only the tab itself — Enter on its × button must close, not activate. */
+              if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activate(t) }
               if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'w') { e.preventDefault(); closeTab(t.id) }
             }}
             title={t.kind === 'run' ? t.runId : `${t.a} ↔ ${t.b}`}

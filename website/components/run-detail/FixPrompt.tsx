@@ -201,8 +201,10 @@ export default function FixPromptButton({
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); void fix.load() }}
         aria-expanded={showPanel ? fix.open : undefined}
         aria-label={node ? `Fix prompt for ${node}` : 'Copy fix prompt for the root-cause node'}
+        /* Without the panel there is nowhere else to show a failure. */
+        title={!showPanel && fix.error && !fix.busy ? fix.error : undefined}
       >
-        {fix.label}
+        {!showPanel && fix.error && !fix.busy ? 'Fix prompt failed' : fix.label}
       </button>
       {showPanel && fix.open && (
         <div className="fix-slot" onClick={(e) => e.stopPropagation()}>

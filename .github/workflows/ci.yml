@@ -75,7 +75,7 @@ jobs:
       - name: ui_dist must be rebuilt when the dashboard source changes
         run: |
           changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-          source_changed=$(echo "$changed" | grep -E '^website/(app|components|lib)/' || true)
+          source_changed=$(echo "$changed" | grep -E '^website/(app|components|lib|public)/|^website/(next\.config\.mjs|tailwind\.config\.ts|postcss\.config\.[mc]?js|package(-lock)?\.json|tsconfig\.json)$' || true)
           dist_changed=$(echo "$changed" | grep '^src/argus/ui_dist/' || true)
           if [ -n "$source_changed" ] && [ -z "$dist_changed" ]; then
             echo "::error::website/ source changed but src/argus/ui_dist/ was not rebuilt."

@@ -69,9 +69,10 @@ export default function RunDetailPanel({
   const { openRun, serving } = useWorkspace()
   const [activeTab, setActiveTab] = useState<Tab>('Overview')
   const [showReport, setShowReport] = useState(false)
-  /* `GET /api/runs/<id>/fix` 400s on a clean run — only prefetch when the run
-     actually has something to fix. */
-  const canFix = !!run && ((run.findings ?? []).some((f) => !f.suppressed) || run.overall_status !== 'clean')
+  /* `GET /api/runs/<id>/fix` 400s unless the run has a root cause or a first
+     failure — the same inputs the server resolves its target node from. Status
+     alone is not enough: an interrupted run with no failure is not `clean`. */
+  const canFix = !!run && ((run.root_cause_chain?.length ?? 0) > 0 || !!run.first_failure_step)
   const fix = useFixPrompt(runId ?? '', undefined, { autoload: canFix })
 
   useEffect(() => { setActiveTab('Overview') }, [runId])

@@ -73,6 +73,11 @@ function SearchParamsBridge({ onChange }: { onChange: (q: URLSearchParams) => vo
   useEffect(() => { onChange(sp) }, [sp, onChange])
   return null
 }
+/** `/compare/` → `/compare`; `/` stays `/`. */
+export function normalizePath(p: string | null): string {
+  return (p ?? '/').replace(/\/+$/, '') || '/'
+}
+
 const TABS_KEY = 'argus-ws-tabs'
 const POLL_MS = 6000
 
@@ -107,7 +112,9 @@ function sameRuns(prev: RunSummary[], next: RunSummary[]): boolean {
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
-  const pathname = usePathname()
+  /* The `argus ui` export uses `trailingSlash: true`, so the real pathname is
+     `/compare/` there but `/compare` in `next dev`. Compare the normalised form. */
+  const pathname = normalizePath(usePathname())
   const [query, setQuery] = useState<URLSearchParams>(NO_QUERY)
   const serving = useServingInfo()
 
@@ -140,15 +147,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   /* ── tabs ── */
   const [tabs, setTabs] = useState<WsTab[]>([])
-  const hydrated = useRef(false)
+  /* State, not a ref: with a ref the persist effect saw `hydrated` flip in the
+     same commit and wrote `[]` before the restored tabs rendered, and
+     StrictMode's second effect pass then restored that `[]`. */
+  const [hydrated, setHydrated] = useState(false)
   useEffect(() => {
     setTabs(readTabs())
-    hydrated.current = true
+    setHydrated(true)
   }, [])
   useEffect(() => {
-    if (!hydrated.current) return
+    if (!hydrated) return
     try { localStorage.setItem(TABS_KEY, JSON.stringify(tabs)) } catch { /* ignore */ }
-  }, [tabs])
+  }, [tabs, hydrated])
 
   const activeRunId = pathname === '/' ? query.get('run') : null
   const cmpA = pathname === '/compare' ? query.get('a') : null
@@ -157,7 +167,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   /* A deep link to a run or a comparison opens its tab. */
   useEffect(() => {
-    if (!hydrated.current) return
+    if (!hydrated) return
     if (activeRunId) {
       const id = `run:${activeRunId}`
       setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, kind: 'run', runId: activeRunId }]))
@@ -165,7 +175,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const id = compareTabId(cmpA, cmpB)
       setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, kind: 'compare', a: cmpA, b: cmpB }]))
     }
-  }, [activeRunId, cmpA, cmpB])
+  }, [hydrated, activeRunId, cmpA, cmpB])
 
   const openRun = useCallback((runId: string, opts?: { replace?: boolean }) => {
     const id = `run:${runId}`

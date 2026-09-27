@@ -174,7 +174,8 @@ export default function RunListPanel({ runs, loading }: { runs: RunSummary[]; lo
         tabIndex={0}
         className={cn('rrow', child && 'child')}
         onClick={() => openRun(run.run_id)}
-        onKeyDown={(e) => { if (e.key === 'Enter') openRun(run.run_id) }}
+        /* Only the row itself: Enter on its Rename/Delete buttons must not open the run. */
+        onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) openRun(run.run_id) }}
       >
         <div style={{ minWidth: 0 }}>
           {editing === run.run_id ? (

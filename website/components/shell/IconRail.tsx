@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { useMaintainerPreview } from '@/lib/preview'
 import { getStoredTheme, applyTheme as setTheme, type Theme } from '@/lib/theme'
-import { useWorkspace } from '@/lib/workspace'
+import { normalizePath, useWorkspace } from '@/lib/workspace'
 import { cn } from '@/lib/utils'
 
 interface RailItem {
@@ -76,7 +76,7 @@ function ThemeButton() {
 }
 
 export default function IconRail() {
-  const pathname = usePathname()
+  const pathname = normalizePath(usePathname())
   const preview = useMaintainerPreview()
   const { goHome, activeRunId } = useWorkspace()
 
