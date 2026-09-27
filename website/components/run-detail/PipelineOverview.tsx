@@ -2,9 +2,7 @@
 
 import { useRef, useState, type MouseEvent, type WheelEvent } from 'react'
 import type { RunRecord, StepStatus } from '@/lib/types'
-import { formatDur, fmtCost } from '@/lib/run-utils'
-
-const SENTINEL_NODES = new Set(['__start__', '__end__', 'START', 'END'])
+import { formatDur, fmtCost, displayTopology } from '@/lib/run-utils'
 
 function displayName(name: string): string {
   return name.length > 12 ? `${name.slice(0, 11)}...` : name
@@ -119,8 +117,8 @@ export default function PipelineOverview({ run, onViewFull }: { run: RunRecord; 
   const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 0.82 })
   const [isDragging, setIsDragging] = useState(false)
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null)
-  const nodes = (run.graph_node_names ?? []).filter((n) => !n.startsWith('__') && !SENTINEL_NODES.has(n))
-  const layers = dagLayers(nodes, run.graph_edge_map ?? {})
+  const { nodes, edges } = displayTopology(run.graph_node_names, run.graph_edge_map)
+  const layers = dagLayers(nodes, edges)
   const stepMap = new Map((run.steps ?? []).map((s) => [s.node_name, s]))
   const firstFailureIndex = run.first_failure_step
     ? (run.steps ?? []).findIndex((s) => s.node_name === run.first_failure_step)

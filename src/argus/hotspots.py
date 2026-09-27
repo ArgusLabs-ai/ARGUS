@@ -35,11 +35,33 @@ def finding_index(run: dict[str, Any]) -> tuple[list[str], list[str]]:
     return origins, nodes
 
 
+def _tag_values(raw: Any) -> set[str]:
+    """One tag entry as a set of strings — a scalar is a one-element set."""
+    if raw is None:
+        return set()
+    if isinstance(raw, (list, tuple, set)):
+        return {str(v) for v in raw}
+    return {str(raw)}
+
+
+def _flat_tags(tags: Any) -> set[str]:
+    """Every key and value in a run's tags, for exact membership checks."""
+    if isinstance(tags, dict):
+        out: set[str] = set()
+        for key, raw in tags.items():
+            out.add(str(key))
+            out |= _tag_values(raw)
+        return out
+    return _tag_values(tags)
+
+
 def _matches_tag(run: dict[str, Any], tag: str) -> bool:
     key, sep, value = tag.partition(":")
+    tags = run.get("tags") or {}
+    # Membership is always exact: `env:pro` must not match `{"env": "prod"}`,
+    # and a bare tag must not match a substring of the tags repr.
     if not sep:
-        tags = run.get("tags") or {}
-        return tag in tags or tag in str(tags)
+        return tag in _flat_tags(tags)
     if key == "status":
         return run.get("overall_status") == value
     if key == "node":
@@ -51,9 +73,8 @@ def _matches_tag(run: dict[str, Any], tag: str) -> bool:
             (_finding_ends(f) or (None, None))[0] == value
             for f in (run.get("findings") or [])
         )
-    tags = run.get("tags") or {}
     if isinstance(tags, dict):
-        return tags.get(key) == value or value in tags.get(key, [])
+        return value in _tag_values(tags.get(key))
     return False
 
 

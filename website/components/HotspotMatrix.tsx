@@ -32,7 +32,9 @@ export default function HotspotMatrix({
 }) {
   const [data, setData] = useState<HotspotMatrixData | null>(null)
   const [open, setOpen] = useState(true)
-  const runKey = runs.map((r) => r.run_id).join(',')
+  /* Refresh when a run appears OR when one flips status — the matrix counts
+     findings, and a run that turns dirty adds cells without changing the ids. */
+  const runKey = runs.map((r) => `${r.run_id}:${r.overall_status}`).join(',')
 
   useEffect(() => {
     let cancelled = false

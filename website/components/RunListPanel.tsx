@@ -19,11 +19,12 @@ import {
   type RunFilter,
 } from '@/lib/run-filters'
 import type { RunSummary, RunStatus } from '@/lib/types'
+import { displayNodes } from '@/lib/run-utils'
 
 /* ── Step dots ─────────────────────────────────────────────────── */
 
 function dotClasses(run: RunSummary): string[] {
-  const names = run.graph_node_names ?? []
+  const names = displayNodes(run.graph_node_names)
   const total = names.length || run.step_count
   const completed = Math.min(run.step_count, total)
   const failIdx = run.first_failure_step ? names.indexOf(run.first_failure_step) : -1
@@ -39,13 +40,14 @@ function dotClasses(run: RunSummary): string[] {
 }
 
 function Dots({ run }: { run: RunSummary }) {
+  const names = displayNodes(run.graph_node_names)
   const dots = dotClasses(run)
   const total = dots.length
   return (
     <span className="dots">
       <i>
         {dots.slice(0, 10).map((c, i) => (
-          <b key={i} className={c} title={run.graph_node_names[i] ?? `step ${i + 1}`} />
+          <b key={i} className={c} title={names[i] ?? `step ${i + 1}`} />
         ))}
       </i>
       <span>{Math.min(run.step_count, total)}/{total}</span>

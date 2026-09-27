@@ -25,6 +25,29 @@ export const STATUS_LABEL_STYLE: Record<string, string> = {
 
 export const SENTINEL_NODES = new Set(['__start__', '__end__', 'START', 'END'])
 
+/** Real graph nodes. `graph_node_names` is the raw `graph.nodes` key list, so it
+    carries LangGraph's `__start__` / `__end__` sentinels — they never run and
+    must never render as steps. Every node-list consumer goes through here. */
+export function displayNodes(names: string[] | null | undefined): string[] {
+  return (names ?? []).filter((n) => !SENTINEL_NODES.has(n) && !n.startsWith('__'))
+}
+
+/** Node list plus edge map with the sentinels dropped from both sides, so
+    in-degree / root detection is not skewed by a `__start__ → first` edge. */
+export function displayTopology(
+  names: string[] | null | undefined,
+  edgeMap: Record<string, string[]> | null | undefined,
+): { nodes: string[]; edges: Record<string, string[]> } {
+  const nodes = displayNodes(names)
+  const keep = new Set(nodes)
+  const edges: Record<string, string[]> = {}
+  for (const [src, dests] of Object.entries(edgeMap ?? {})) {
+    if (!keep.has(src)) continue
+    edges[src] = (dests ?? []).filter((d) => keep.has(d))
+  }
+  return { nodes, edges }
+}
+
 /* ── Helpers ─────────────────────────────────────────────────────── */
 
 export function formatDur(ms: number | null | undefined): string {

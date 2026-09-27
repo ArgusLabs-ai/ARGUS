@@ -1,4 +1,5 @@
 import type { RunSummary } from './types'
+import { displayNodes } from './run-utils'
 
 export type FilterKey = 'status' | 'node' | 'origin' | 'pipeline'
 
@@ -19,10 +20,8 @@ const ALL_KEYS: FilterKey[] = ['status', 'node', 'origin', 'pipeline']
 /* ── pipelines ─────────────────────────────────────────────────────
    Runs have no pipeline name; the graph's node list is its identity. */
 
-const SENTINELS = new Set(['__start__', '__end__', 'START', 'END'])
-
 export function pipelineNodes(run: RunSummary): string[] {
-  return (run.graph_node_names ?? []).filter((n) => !SENTINELS.has(n))
+  return displayNodes(run.graph_node_names)
 }
 
 /** Short stable key for a graph shape (djb2 over the node list). */

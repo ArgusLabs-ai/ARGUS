@@ -708,6 +708,8 @@ def _make_handler(
             return record
 
         def _list_runs(self) -> None:
+            from argus.hotspots import finding_index  # noqa: PLC0415
+
             all_files = _all_run_files(_project_dir)
             if not all_files:
                 self._send_json([])
@@ -722,6 +724,7 @@ def _make_handler(
                     if rid in seen:
                         continue
                     seen.add(rid)
+                    origins, finding_nodes = finding_index(run)
                     summaries.append(
                         {
                             "run_id": rid,
@@ -735,12 +738,33 @@ def _make_handler(
                             "parent_run_id": run.get("parent_run_id"),
                             "replay_from_step": run.get("replay_from_step"),
                             "alias": aliases.get(rid),
+                            "origins": origins,
+                            "finding_nodes": finding_nodes,
                         }
                     )
                 except Exception:
                     pass
             summaries.sort(key=lambda r: r["started_at"], reverse=True)
             self._send_json(summaries)
+
+        def _hotspots(self, tag: str | None) -> None:
+            """origin x node finding counts across every stored run (US-4.4)."""
+            from argus.hotspots import aggregate_hotspots  # noqa: PLC0415
+
+            runs: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for f in _all_run_files(_project_dir):
+                try:
+                    run = json.loads(f.read_text())
+                except Exception:
+                    continue
+                rid = run.get("run_id")
+                if not rid or rid in seen:
+                    continue
+                seen.add(rid)
+                runs.append(run)
+            runs.sort(key=lambda r: r.get("started_at") or "", reverse=True)
+            self._send_json(aggregate_hotspots(runs, tag=tag))
 
         def _get_run(self, run_id: str) -> None:
             for f in _all_run_files(_project_dir):
@@ -906,6 +930,9 @@ def _make_handler(
                     self._send_json({"error": "not logged in"}, 401)
             elif path == "/api/runs":
                 self._list_runs()
+            elif path == "/api/hotspots":
+                qs = parse_qs(parsed.query)
+                self._hotspots(qs.get("tag", [""])[0] or None)
             elif path.startswith("/api/runs/") and path.endswith("/children"):
                 rid = path[len("/api/runs/") : -len("/children")]
                 self._get_run_children(rid)
@@ -915,7 +942,7 @@ def _make_handler(
             elif path.startswith("/api/runs/") and path.endswith("/fix"):
                 rid = unquote(path[len("/api/runs/") : -len("/fix")])
                 qs = parse_qs(parsed.query)
-                node = (qs.get("node", [None])[0] or None) or None
+                node = qs.get("node", [None])[0] or None
                 sanitized = (qs.get("sanitized", [""])[0] or "").lower() in (
                     "1",
                     "true",

@@ -9,7 +9,7 @@ import { Fragment, useMemo, useState, type ReactNode } from 'react'
 import type { NodeEvent, RunRecord } from '@/lib/types'
 import { formatDuration } from '@/lib/workspace'
 import { stepFlag, stepNote, stepTone, stepWord } from '@/lib/run-detail'
-import { SENTINEL_NODES } from '@/lib/run-utils'
+import { SENTINEL_NODES, displayTopology } from '@/lib/run-utils'
 import { segmentEvents } from '@/lib/topology'
 import ReplayControls, { type NodeDiffData } from './ReplayControls'
 import JsonGutter from './JsonGutter'
@@ -31,8 +31,7 @@ function statusColor(run: RunRecord, node: string): string | undefined {
 
 function Tree({ run }: { run: RunRecord }) {
   const lines = useMemo(() => {
-    const names = run.graph_node_names ?? []
-    const edges = run.graph_edge_map ?? {}
+    const { nodes: names, edges } = displayTopology(run.graph_node_names, run.graph_edge_map)
     const indeg = new Map<string, number>(names.map((n) => [n, 0]))
     for (const tos of Object.values(edges)) for (const t of tos) if (indeg.has(t)) indeg.set(t, (indeg.get(t) ?? 0) + 1)
     let roots = names.filter((n) => (indeg.get(n) ?? 0) === 0)

@@ -6,13 +6,14 @@ import EvalBadge from './EvalBadge'
 import type { EvalState } from './EvaluationBuilder'
 import EmptyRunsState from './EmptyRunsState'
 import { useServingInfo } from '@/lib/hooks'
+import { displayNodes } from '@/lib/run-utils'
 
 function getRunShape(run: RunSummary): { label: string; color: string } | null {
   if (run.overall_status === 'clean' && !run.first_failure_step) {
     return { label: 'clean', color: 'var(--ok)' }
   }
   if (!run.first_failure_step) return null
-  const firstNode = run.graph_node_names.find((n) => !n.startsWith('__'))
+  const firstNode = displayNodes(run.graph_node_names)[0]
   if (run.first_failure_step === firstNode) {
     return { label: 'early fail', color: 'var(--tool)' }
   }
@@ -38,7 +39,7 @@ function formatDuration(ms: number | null): string {
 }
 
 function truncateNodes(names: string[]): string {
-  const filtered = names.filter((n) => !n.startsWith('__'))
+  const filtered = displayNodes(names)
   if (filtered.length <= 4) return filtered.join(' \u2192 ')
   return filtered.slice(0, 3).join(' \u2192 ') + ` +${filtered.length - 3}`
 }

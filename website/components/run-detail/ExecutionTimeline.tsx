@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react'
 import { Search } from 'lucide-react'
 import type { RunRecord } from '@/lib/types'
-import { SENTINEL_NODES } from '@/lib/run-utils'
+import { displayNodes } from '@/lib/run-utils'
 import { topologyLines, segmentEvents } from '@/lib/topology'
 import type { NodeDiffData } from './ReplayControls'
 import StepRow from './StepRow'
@@ -29,12 +29,12 @@ export default function ExecutionTimeline({
 }) {
   const steps = run.steps ?? []
   const nameCol = steps.length > 0 ? Math.max(...steps.map((e) => e.node_name.length)) + 2 : 10
-  const displayNodes = (run.graph_node_names ?? []).filter((n) => !SENTINEL_NODES.has(n))
-  const topo = displayNodes.length > 1 ? topologyLines(run.graph_edge_map ?? {}, run.graph_node_names ?? []) : []
+  const shownNodes = displayNodes(run.graph_node_names)
+  const topo = shownNodes.length > 1 ? topologyLines(run.graph_edge_map ?? {}, run.graph_node_names ?? []) : []
   const segments = segmentEvents(steps, run.graph_edge_map)
 
   const [locating, setLocating] = useState(false)
-  const hasIncompleteSourcePaths = displayNodes.some((n) => !run.node_fn_paths?.[n])
+  const hasIncompleteSourcePaths = shownNodes.some((n) => !run.node_fn_paths?.[n])
 
   const handleLocateSources = useCallback(async () => {
     setLocating(true)

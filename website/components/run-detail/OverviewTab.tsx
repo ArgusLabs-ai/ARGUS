@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'react'
 import type { RunRecord, RunSummary } from '@/lib/types'
 import { useWorkspace, formatDuration } from '@/lib/workspace'
+import { displayNodes } from '@/lib/run-utils'
 import {
   culpritNode, failureChain, headlineFinding,
   fmtCost, fmtTokens, totalCalls,
@@ -129,7 +130,7 @@ export default function OverviewTab({
   const { setNote } = useWorkspace()
   const findings = run.findings ?? []
   const who = culpritNode(run)
-  const nodes = (run.graph_node_names ?? []).length
+  const nodes = displayNodes(run.graph_node_names).length
   const canFix = findings.some((f) => !f.suppressed) || run.overall_status !== 'clean'
 
   useEffect(() => {

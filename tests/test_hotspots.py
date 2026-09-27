@@ -70,6 +70,21 @@ def test_aggregate_filters_status_tag() -> None:
     assert result["cells"] == []
 
 
+def test_tag_filter_is_exact_not_substring() -> None:
+    """`env:pro` must not match `{"env": "prod"}`, nor a bare tag the repr."""
+    runs = [_run("a", [{"node": "answer", "origin_node": "search"}])]
+    runs[0]["tags"] = {"env": "prod", "suite": ["nightly", "smoke"]}
+
+    assert aggregate_hotspots(runs, tag="env:pro")["run_count"] == 0
+    assert aggregate_hotspots(runs, tag="env:prod")["run_count"] == 1
+    assert aggregate_hotspots(runs, tag="suite:nightly")["run_count"] == 1
+    assert aggregate_hotspots(runs, tag="suite:night")["run_count"] == 0
+    # Bare tag: a key, or an exact value — never a slice of the dict repr.
+    assert aggregate_hotspots(runs, tag="env")["run_count"] == 1
+    assert aggregate_hotspots(runs, tag="prod")["run_count"] == 1
+    assert aggregate_hotspots(runs, tag="pro")["run_count"] == 0
+
+
 def test_finding_index_dedupes() -> None:
     origins, nodes = finding_index(
         _run(

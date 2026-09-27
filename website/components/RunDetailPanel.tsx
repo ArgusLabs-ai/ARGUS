@@ -69,7 +69,10 @@ export default function RunDetailPanel({
   const { openRun, serving } = useWorkspace()
   const [activeTab, setActiveTab] = useState<Tab>('Overview')
   const [showReport, setShowReport] = useState(false)
-  const fix = useFixPrompt(runId ?? '', undefined, { autoload: true })
+  /* `GET /api/runs/<id>/fix` 400s on a clean run — only prefetch when the run
+     actually has something to fix. */
+  const canFix = !!run && ((run.findings ?? []).some((f) => !f.suppressed) || run.overall_status !== 'clean')
+  const fix = useFixPrompt(runId ?? '', undefined, { autoload: canFix })
 
   useEffect(() => { setActiveTab('Overview') }, [runId])
 
@@ -110,7 +113,7 @@ export default function RunDetailPanel({
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowReport(true)}>Report issue</button>
           <button type="button" className="btn btn-sm btn-ghost" onClick={exportJson}>Export</button>
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => setActiveTab('Pipeline')}>Replay</button>
-          {((run.findings ?? []).some((f) => !f.suppressed) || run.overall_status !== 'clean') && (
+          {canFix && (
             <button
               type="button"
               className="btn btn-sm"

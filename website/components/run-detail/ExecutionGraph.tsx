@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import type { RunRecord, StepStatus } from '@/lib/types'
 import { getFailureMeta } from '@/lib/failure-labels'
+import { displayTopology } from '@/lib/run-utils'
 
 const W = 178          // node width — spec
 const NODE_H = 52      // node box height used for edge anchoring — spec
@@ -71,7 +72,8 @@ function mapStatus(s: StepStatus | undefined): S {
     case 'degraded_input': return 'degraded'
     case 'fail': case 'retried': return 'fail'
     case 'skipped': case undefined: return 'skipped'
-    default: return 'pass'
+    /* A status this UI does not know yet must not render as green. */
+    default: return 'skipped'
   }
 }
 
@@ -166,8 +168,9 @@ export default function ExecutionGraph({
   flush?: boolean
   selectedNode?: string | null
 }) {
-  const names = useMemo(() => run.graph_node_names ?? [], [run])
-  const edgeMap = useMemo(() => run.graph_edge_map ?? {}, [run])
+  const topo = useMemo(() => displayTopology(run.graph_node_names, run.graph_edge_map), [run])
+  const names = topo.nodes
+  const edgeMap = topo.edges
   const chain = useMemo(() => run.root_cause_chain ?? [], [run])
 
   const initial = useMemo<GNode[]>(() => {

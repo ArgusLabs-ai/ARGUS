@@ -69,6 +69,24 @@ function readTabs(): WsTab[] {
   }
 }
 
+/* Identity for the 6 s live-tail poll: keep the previous array (no re-render)
+   only when nothing a row can show has moved. An in-flight run keeps its
+   status while its step count and duration grow, so those count too. */
+function sameRuns(prev: RunSummary[], next: RunSummary[]): boolean {
+  if (prev.length !== next.length) return false
+  return prev.every((p, i) => {
+    const n = next[i]
+    return (
+      n !== undefined &&
+      p.run_id === n.run_id &&
+      p.overall_status === n.overall_status &&
+      p.step_count === n.step_count &&
+      p.duration_ms === n.duration_ms &&
+      p.first_failure_step === n.first_failure_step
+    )
+  })
+}
+
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
@@ -84,12 +102,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     fetch('/api/runs', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('unavailable'))))
       .then((data: RunSummary[]) => {
-        setRuns((prev) => {
-          if (prev.length === data.length && prev.every((p, i) => p.run_id === data[i]?.run_id && p.overall_status === data[i]?.overall_status)) {
-            return prev
-          }
-          return data
-        })
+        setRuns((prev) => (sameRuns(prev, data) ? prev : data))
         setRunsLoading(false)
       })
       .catch(() => setRunsLoading(false))
