@@ -224,6 +224,13 @@ so the graders cannot tell the two apart. The active recorder is resolved for yo
 `recorder=` or `config=` to be explicit. It never raises into your code: a call that cannot be
 placed logs one warning on the `argus` logger and returns `False`.
 
+**Async nodes on Python 3.9 / 3.10.** Before 3.11, asyncio cannot hand LangChain's callback
+context to a child task. A tool awaited inside `async def node(state)` therefore fires no
+callback, and its errors are never graded. Pass the node's `config` on
+(`async def node(state, config)` … `await tool.ainvoke(args, config)`), call
+`report_tool_call`, or run 3.11+. `attach` logs a warning naming your async nodes when this
+applies.
+
 ### `ArgusWatcher` (legacy path)
 
 ```python
@@ -254,8 +261,10 @@ result = app.invoke(initial_state)
 | **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field — unless the `KeyError` came from the node's *own* conditional edge, which is that node's bug, not its predecessor's |
 | **Blank final answer** | A ReAct agent's last turn returns empty `content` with no tool calls — the customer gets nothing back. An intermediate tool-calling turn with empty `content` is still exempt |
 | **Wrong subject entirely** | The [judge](#semantic-judge) reviews *rule flags* (is this really a refusal?). It does not walk a clean graph looking for helicopters — that painted healthy nodes red |
-| **Contract violations** | A field a later node needs was never written, written empty, or dropped in between — blamed on the node responsible ([`consumers=`](#declaring-who-reads-what)) |
-| **Barren subgraphs** | Every node inside a subgraph returned something, but all of it landed on keys that exist only in the subgraph's own schema — the parent graph gains nothing and the next node reads unchanged state. Each inner update looks busy; only the subgraph as a whole shows the no-op (`subgraph_no_contribution`) |
+| **Contract violations** | A field a later node needs was never written, written empty, or dropped in between — blamed on the node responsible ([`consumers=`](#declaring-who-reads-what)), including a supervisor that routes with `Command(goto=...)` straight past the node that should have written it |
+| **Failed lookups** | A tool answered 200 with nothing in it — `documents` / `hits` / `results` / `items` / `sources`, a FHIR Bundle's `entry`, a metrics query's `series` — and the node carried on. Critical unless the field is declared `allow_empty` |
+| **Unfinished templates** | A node wrote a template instruction into its output — `[INSERT CAP AMOUNT]`, `[ENTER DATE]`, `[YOUR NAME]`. Other placeholders (`[TOPIC]`, `[Your Name]`, `{var}`, all-caps labels like `[EXTERNAL EMAIL]`) are warnings, since real text contains them |
+| **Barren subgraphs** | Every node inside a subgraph returned something, but all of it landed on keys that exist only in the subgraph's own schema — the parent graph gains nothing and the next node reads unchanged state. Each inner update looks busy; only the subgraph as a whole shows the no-op (`subgraph_no_contribution`), blamed on the subgraph's exit node — the last inner node that ran |
 | **Not a failure** | A node's own verdict — `{"status": "denied"}` or a linter's `errors: [...]` — is a warning on that node's update, not a CI fail. The same shape from a **tool** response stays critical |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
 | **Conditional path confusion** | Unchosen branches correctly shown as "skipped" — not false "crashed" |
@@ -266,7 +275,7 @@ result = app.invoke(initial_state)
 
 Runs in order, each more expensive — only fires when needed. Every status a layer can assign, and how node statuses roll up into the run verdict, is specified in [`docs/STATUS.md`](docs/STATUS.md).
 
-1. **Heuristics** — 150+ failure signatures (placeholders, empty results, error keys, semantic degradation). Zero cost. On a node's *own* update, a status word (`denied` / `declined`) or a findings list (`errors: [...]`) is warning-severity; a singular truthy `error`, bare `success: False`, and numeric HTTP status stay critical. Tool payloads are always graded critically.
+1. **Heuristics** — 150+ failure signatures (placeholders, empty results, error keys, semantic degradation). Zero cost. On a node's *own* update, a status word (`denied` / `declined` / `voided`) or a findings list (`errors: [...]`) is warning-severity; a singular truthy `error`, bare `success: False`, and numeric HTTP status stay critical. Tool payloads are always graded critically. An empty lookup list fails unless declared `allow_empty`; a placeholder inside prose warns, except a template instruction (`[INSERT …]`, `[ENTER …]`, `[YOUR …]`, `[ADD …]`) the node wrote itself, which fails.
 2. **Validators** — custom per-node business-logic constraints. Deterministic.
 3. **Anomaly detector** — statistical checks for output size anomalies, timing outliers. Deterministic.
 4. **Correlator** — traces failure propagation across nodes. Points at the *origin*, not the crash site.
@@ -541,7 +550,7 @@ state to export.
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.9+ (3.11+ to capture tool calls inside `async` nodes without forwarding `config`)
 - LangGraph 0.2+ (only for `ArgusWatcher`)
 - A provider key (OpenAI, Anthropic, or Google) for semantic features — set via `argus key set [--provider ...]` (optional; all heuristic detection works without it)
 
