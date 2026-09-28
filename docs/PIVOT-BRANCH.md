@@ -1147,3 +1147,27 @@ unchanged.
 
 Not changed: the finding still lands on the subgraph's **first** inner node,
 as the matrix pins (`test_a_subgraph_writing_only_inner_keys_is_caught`).
+
+### Async nodes on Python < 3.11 hide their tool calls (S8)
+
+`async def post_journal(state)` awaiting `netsuite.ainvoke(args)` without
+`config`: before 3.11, asyncio cannot pass langchain's callback context into
+the child task, so the tool never fires a callback and a swallowed NetSuite 500
+grades clean. Identical graphs grade correctly on 3.12, and on 3.9 when the node
+forwards `config`.
+
+Not fixable from the outside without patching the graph. `attach` now logs one
+warning on the `argus` logger naming the async nodes, when Python < 3.11. No
+verdict changes. Remedies: forward `config`, call `argus.report_tool_call`, or
+run 3.11+.
+
+### Not fixed in code, on purpose
+
+- **S7** (a 403 on `ingest` also blamed `classify_clauses` through an undeclared
+  subgraph scratch key): declaring the intermediate field —
+  `{"sections": ["classify_clauses"]}`, which `argus consumers propose` suggests —
+  makes blame exact. Widening the victim rule to undeclared fields would also
+  hide real second failures in every pipeline.
+- **S3** (`[PATIENT NAME]`, "Unable to determine root cause." are warnings, so
+  CI stays green): soft flags not gating is the reviewer-judge design. Whether a
+  judge-*confirmed* soft flag should fail CI is an open decision, not a bug.

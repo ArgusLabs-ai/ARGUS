@@ -30,7 +30,9 @@ The LLM judge is on by default when a key is configured (``argus key set`` or
 
 from __future__ import annotations
 
+import inspect
 import logging
+import sys
 import threading
 import time
 from typing import Any, Callable
@@ -41,6 +43,11 @@ from argus.grading import IncompleteTraceError, finish, new_session
 from argus.llm_tracker import call_from_llm_outputs, usage_from_calls
 from argus.models import LLMCallInfo, ToolFailure
 from argus.session import ArgusSession
+
+# Before 3.11 asyncio cannot hand langchain's callback context to a child task,
+# so a tool awaited inside an `async def` node without `config` fires no
+# callback and its I/O never reaches the trace (S8).
+_CONTEXT_PROPAGATES = sys.version_info >= (3, 11)
 
 try:  # pragma: no cover - exercised only when langchain-core is absent
     from langchain_core.callbacks import BaseCallbackHandler
@@ -403,6 +410,8 @@ class ArgusRecorder(BaseCallbackHandler):
         self._reducers = _reducer_fields(app)
         self._judge = self._resolve_judge()
         self._attached = True
+        if not _CONTEXT_PROPAGATES:
+            _warn_async_nodes(app)
         # A binding, not `app.with_config(callbacks=[self])` (#87). LangGraph's
         # own `ensure_config` overwrites the callbacks key instead of merging
         # it, so a Pregel's bound callbacks are dropped the moment a caller
@@ -898,6 +907,34 @@ class ArgusRecorder(BaseCallbackHandler):
     def _require_attached(self) -> None:
         if not self._attached:
             raise RuntimeError("ArgusRecorder.attach(app) must be called before invoking the app")
+
+
+def _async_node_names(app: Any) -> list[str]:
+    """Nodes defined as ``async def``. Read-only; unknown shapes are skipped."""
+    names = []
+    for name, node in (getattr(app, "nodes", None) or {}).items():
+        bound = getattr(node, "bound", None)
+        if getattr(bound, "func", True) is None and inspect.iscoroutinefunction(
+            getattr(bound, "afunc", None)
+        ):
+            names.append(name)
+    return names
+
+
+def _warn_async_nodes(app: Any) -> None:
+    try:
+        names = _async_node_names(app)
+    except Exception:  # a warning must never break attach
+        return
+    if names:
+        logging.getLogger("argus").warning(
+            "argus: async nodes %s on Python %d.%d — tool calls inside them are only "
+            "recorded if the node passes its `config` on (`await tool.ainvoke(args, config)`) "
+            "or calls argus.report_tool_call. Python 3.11+ records them automatically. "
+            "A tool error swallowed there will not be graded.",
+            ", ".join(names),
+            *sys.version_info[:2],
+        )
 
 
 def report_tool_call(
