@@ -100,3 +100,9 @@ docs/generate_contributor_brief.py
 
 # Real-team pipeline suite + judge-contract + live-LLM eval (pivot architecture, local only)
 pivot_eval/
+
+# Sales proof suite: production-shaped agent pipelines (local only, not the product)
+agent_ship_suite/
+
+# Enterprise ship-readiness suite: prior-auth, SRE, recruiting, travel, CLM, async close (pivot architecture, local only)
+ship_eval/
