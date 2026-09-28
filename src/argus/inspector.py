@@ -281,6 +281,13 @@ def _coerce_http_status(value: Any) -> int | None:
     return None
 
 
+_NO_VALUE = object()
+
+# A template instruction left in finished output (S3). Upper-case only: the
+# softer forms (`[Your Name]`, `[TOPIC]`, `[EXTERNAL EMAIL]`) stay PH-015 warnings.
+_INSTRUCTION_SLOT_RE = re.compile(r"\[(?:INSERT|ENTER|YOUR|ADD)\b[^\]]*\](?!\()")
+
+
 def _leaf_key(field_path: str) -> str:
     """Last path component, without list-index suffixes."""
     leaf = field_path.rsplit(".", 1)[-1]
@@ -304,15 +311,8 @@ def _signature_is_builtin(sig_id: str) -> bool:
     return True
 
 
-def _is_the_whole_answer(output_dict: dict[str, Any] | None, field_path: str) -> bool:
-    """Is `field_path` a main output field whose entire value is a short token?
-
-    Distinguishes ``{"answer": "N/A"}`` — the node produced nothing and said so
-    — from a paragraph that happens to contain "n/a" somewhere inside it. Only
-    the first is a silent failure.
-    """
-    if not output_dict or _leaf_key(field_path).lower() not in _MAIN_LLM_OUTPUT_KEYS:
-        return False
+def _value_at(output_dict: dict[str, Any] | None, field_path: str) -> Any:
+    """The value at a signal's dotted path, or ``_NO_VALUE`` if it does not resolve."""
     value: Any = output_dict
     for part in field_path.split("."):
         # `messages.[0].content` — list hops are path segments too. Without
@@ -322,18 +322,52 @@ def _is_the_whole_answer(output_dict: dict[str, Any] | None, field_path: str) ->
         index = re.fullmatch(r"\[(\d+)\]", part)
         if index is not None:
             if not isinstance(value, list):
-                return False
+                return _NO_VALUE
             position = int(index.group(1))
             if position >= len(value):
-                return False
+                return _NO_VALUE
             value = value[position]
             continue
         if not isinstance(value, dict) or part not in value:
-            return False
+            return _NO_VALUE
         value = value[part]
+    return value
+
+
+def _is_the_whole_answer(output_dict: dict[str, Any] | None, field_path: str) -> bool:
+    """Is `field_path` a main output field whose entire value is a short token?
+
+    Distinguishes ``{"answer": "N/A"}`` — the node produced nothing and said so
+    — from a paragraph that happens to contain "n/a" somewhere inside it. Only
+    the first is a silent failure.
+    """
+    if not output_dict or _leaf_key(field_path).lower() not in _MAIN_LLM_OUTPUT_KEYS:
+        return False
+    value = _value_at(output_dict, field_path)
     # ponytail: length is the proxy for "this is the whole answer, not a mention
     # inside one". A real answer that fits in 40 characters is not one.
     return isinstance(value, str) and len(value.strip()) <= 40
+
+
+def _is_instruction_slot(
+    output_dict: dict[str, Any] | None,
+    field_path: str,
+    input_state: dict[str, Any] | None,
+) -> bool:
+    """Did this node write a template instruction — ``[INSERT …]``, ``[ENTER …]``,
+    ``[YOUR …]``, ``[ADD …]`` — outside a template / prompt field? (S3)
+
+    Only a slot the node *authored*: one already in its input was forwarded,
+    and the node that wrote it first is the one to blame.
+    """
+    leaf = _leaf_key(field_path).lower()
+    if "template" in leaf or "prompt" in leaf:
+        return False
+    value = _value_at(output_dict, field_path)
+    if not isinstance(value, str):
+        return False
+    inherited = json.dumps(input_state, default=str) if input_state else ""
+    return any(m.group(0) not in inherited for m in _INSTRUCTION_SLOT_RE.finditer(value))
 
 
 def _is_retrieval_list_key(field_path: str) -> bool:
@@ -836,6 +870,15 @@ def inspect_tool_outputs(
             # ("numeric instead of JSON", warning) from the shared cache was
             # promoted the same way and failed every pipeline whose answer
             # was a number.
+            severity = "critical"
+        if (
+            severity == "warning"
+            and own_output
+            and signal.sig_id == "PH-015"
+            and _is_instruction_slot(output_dict, signal.dotted_path, input_state)
+        ):
+            # `[INSERT CAP AMOUNT]` in a redline is an unfinished deliverable,
+            # not a suspicious phrase. Own output only: a tool may return a template.
             severity = "critical"
         _add(
             ToolFailure(

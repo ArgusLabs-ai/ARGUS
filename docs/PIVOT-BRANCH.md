@@ -1176,9 +1176,38 @@ run 3.11+.
   `{"sections": ["classify_clauses"]}`, which `argus consumers` suggests —
   makes blame exact. Widening the victim rule to undeclared fields would also
   hide real second failures in every pipeline.
-- **S3** (`[PATIENT NAME]`, "Unable to determine root cause." are warnings, so
-  CI stays green): soft flags not gating is the reviewer-judge design. Whether a
-  judge-*confirmed* soft flag should fail CI is an open decision, not a bug.
+- **S3, the rest** (`[PATIENT NAME]` in a letter, "Unable to determine root
+  cause." as a diagnosis): still warnings. See the next section.
 - **S9 / S10** (`argus consumers` misses graph-input fields and readers on an
   untaken branch): S9 is pinned by `test_a_field_nobody_wrote_is_omitted`, and
   S10 is inherent to reading one run. README now says both.
+
+### A template instruction in finished output now fails CI (S3)
+
+`"Limit Vendor liability to [INSERT CAP AMOUNT]."` went into a contract redline
+and CI stayed green: PH-015 matched it, but PH-015 is a warning because most of
+what it matches (`[TOPIC]`, `[Your Name]`, `{var}`) can be legitimate prose
+(E5, #132).
+
+**Rejected: let a judge-confirmed soft flag fail CI.** That reopens the path
+this branch closed on purpose (`_corroborating_signal` / "only the rules fail a
+build"). It would make the gate depend on which model the user has, whether a
+key is set at all, and on a non-deterministic call. In the eval, gpt-4o-mini
+confirmed 14 of 30 noise flags.
+
+**Done instead, deterministic and narrow.** A PH-015 match is promoted to
+critical only when all of these hold:
+- it is an instruction slot, upper-case `[INSERT …]`, `[ENTER …]`, `[YOUR …]` or
+  `[ADD …]`, which never belongs in finished output;
+- it is in the node's **own** output (a tool may legitimately return a template);
+- it is not in a field named like a template or prompt;
+- the node **authored** it: a slot already in its input was forwarded, and
+  blaming the forwarder added a bystander (`compliance` in the support desk)
+  until this was checked.
+
+Still warnings: `[TOPIC]`, `[Your Name]`, `{var}`, and all-caps labels like
+`[PATIENT NAME]`, which collide with `[EXTERNAL EMAIL]` / `[URGENT REQUEST]`
+banners in real mail. A non-answer written as prose ("Unable to determine root
+cause.") has no deterministic shape. Those two belong to the parallel monitor
+as advisory findings, not to the gate. Snapshot diff: the redline case is the
+only verdict that moved.
