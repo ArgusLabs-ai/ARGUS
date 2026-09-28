@@ -148,7 +148,7 @@ _FINDINGS_KEYS = {"errors", "issues", "violations", "warnings", "findings", "fai
 _RESULT_NOUNS = frozenset(
     """result results item items document documents doc docs source sources
     record records row rows hit hits entry entries match matches finding findings
-    output content data response answer text body payload""".split()
+    output content data response answer text body payload series""".split()
 )
 # Split on separators and at camelCase humps, so `responseData` and
 # `response_data` both end on the word `data` while `metadata` does not.
@@ -177,7 +177,10 @@ _SEVERITY_RANK = {"critical": 2, "warning": 1}
 _MAX_TOOL_SCAN_DEPTH = 5
 
 # Empty lists on these keys are failed retrievals, not optional blanks.
-_RETRIEVAL_LIST_KEYS = frozenset({"documents", "docs", "results", "hits", "sources", "items"})
+# `entry` is a FHIR Bundle's matches, `series` a metrics query's (S1 / S2).
+_RETRIEVAL_LIST_KEYS = frozenset(
+    {"documents", "docs", "results", "hits", "sources", "items", "entry", "series"}
+)
 
 # Main LLM text fields — truncated output here is a node failure.
 # The field a node's *deliverable* lives in. Drives whole-value placeholder

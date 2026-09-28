@@ -1115,3 +1115,19 @@ A DocuSign envelope voided because the signer's email bounced came back as
 `voided` joins the status-word vocabulary. Same scope as every other word: a
 tool response is critical, a node's own `{"status": "voided"}` is a warning
 (E1/E9) — voiding a contract can be the node's decision.
+
+### An empty FHIR `entry` or metrics `series` graded clean (S1 / S2)
+
+`{"resourceType": "Bundle", "total": 0, "entry": []}` is a FHIR search that
+found no patient; the prior-auth agent routed on and CI passed on a warning.
+`{"status": "ok", "series": []}` from Datadog is a query that matched nothing;
+it was not flagged at all, because `series` was not a result noun.
+
+`entry` and `series` join `_RETRIEVAL_LIST_KEYS` (and `series` the result
+nouns), so they grade exactly like `documents: []` — critical, softened to a
+warning when the node writes an `allow_empty` field. Exact key match only:
+`journal_entry: []` is untouched.
+
+Side effect, accepted: a node that falls back to `{"series": []}` after a
+failed call is now caught on its own update even when the call itself was
+invisible (a plain HTTP client with no `report_tool_call`).
