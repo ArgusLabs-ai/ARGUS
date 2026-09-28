@@ -427,3 +427,54 @@ def test_top_level_declaration_still_ignores_blanked_nested_leaf(monkeypatch):
     record = load_run(recorder.session.run_id)
 
     assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+class _Trip(TypedDict, total=False):
+    request: str
+    flight: str
+    payment: str
+    itinerary: str
+
+
+def _supervisor_app(skip_payment: bool):
+    from typing import Literal
+
+    from langgraph.types import Command
+
+    def supervisor(s) -> Command[Literal["book", "pay", "summarise"]]:
+        if "flight" not in s:
+            return Command(goto="book")
+        if "payment" not in s and not skip_payment:
+            return Command(goto="pay")
+        return Command(goto="summarise")
+
+    def book(s) -> Command[Literal["supervisor"]]:
+        return Command(goto="supervisor", update={"flight": "LH455"})
+
+    def pay(s) -> Command[Literal["supervisor"]]:
+        return Command(goto="supervisor", update={"payment": "pi_3P"})
+
+    def summarise(s):
+        return {"itinerary": f"{s['flight']} paid with {s.get('payment', '?')}"}
+
+    g = StateGraph(_Trip)
+    for name, fn in [("supervisor", supervisor), ("book", book), ("pay", pay), ("summarise", summarise)]:
+        g.add_node(name, fn)
+    g.add_edge(START, "supervisor")
+    g.add_edge("summarise", END)
+    return g.compile()
+
+
+@pytest.mark.parametrize("skip_payment", [False, True])
+def test_contextual_blame_on_a_router_only_node_is_kept(monkeypatch, skip_payment):
+    """A `Command(goto=...)` supervisor returns no update, so its step has no
+    inspection. Blame landing there used to be dropped and the run graded clean."""
+    _no_patching(monkeypatch)
+    rec = ArgusRecorder(consumers={"payment": ["summarise"]}, semantic_judge=False)
+    rec.attach(_supervisor_app(skip_payment)).invoke({"request": "SFO-BER"})
+    verdict = evaluate_run(load_run(rec.session.run_id))
+    if skip_payment:
+        assert not verdict.passed
+        assert set(verdict.failing_nodes) == {"supervisor"}
+    else:
+        assert verdict.passed, verdict.failing_nodes

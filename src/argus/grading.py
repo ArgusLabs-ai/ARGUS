@@ -16,7 +16,7 @@ from typing import Any
 
 from argus.contextual import ConsumerMap, contextual_findings
 from argus.ledger import build_ledger
-from argus.models import Finding, LLMInvestigationConfig
+from argus.models import Finding, InspectionResult, LLMInvestigationConfig
 from argus.session import ArgusSession
 
 __all__ = ["IncompleteTraceError", "finish", "new_session"]
@@ -159,9 +159,22 @@ def _blame_origins(session: ArgusSession, findings: list[Finding]) -> None:
     by_node = {event.node_name: event for event in session._events}
     for finding in findings:
         event = by_node.get(finding.node)
-        if event is None or event.inspection is None or finding.field_path is None:
+        if event is None or finding.field_path is None:
             continue
         insp = event.inspection
+        created = insp is None
+        if created:
+            # A router-only step (`Command(goto=...)`, no update) is never
+            # inspected. Skipping it dropped the blame and graded the run clean.
+            # A crashed step keeps `crashed`; the omit is still named.
+            insp = event.inspection = InspectionResult(
+                is_silent_failure=True,
+                missing_fields=[],
+                empty_fields=[],
+                type_mismatches=[],
+                severity="critical",
+                message=finding.reason,
+            )
         if finding.field_path not in insp.missing_fields:
             insp.missing_fields.append(finding.field_path)
         insp.is_silent_failure = True
@@ -173,7 +186,8 @@ def _blame_origins(session: ArgusSession, findings: list[Finding]) -> None:
             insp.message = finding.reason
         elif finding.reason not in insp.message:
             insp.message = f"{insp.message}; {finding.reason}"
-        event.status = "fail"
+        if not (created and event.status == "crashed"):
+            event.status = "fail"
 
 
 def _refuse(session: ArgusSession, why: str) -> None:

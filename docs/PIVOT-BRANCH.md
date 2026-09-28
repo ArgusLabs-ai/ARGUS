@@ -1088,3 +1088,22 @@ Resolved keeping both: #139's E7 branch sits above the
 `_apply_tool_shape_rules` dispatch, which now takes #142's `allow_empty`
 argument. Adjacent, not competing. Full suite green afterwards (1191 passed),
 both matrices included.
+
+## Enterprise-pipeline eval defects (S1–S10)
+
+A local suite of six enterprise-shaped pipelines (prior auth, SRE incident,
+recruiting, multi-agent travel, contract review, async month-end close) found
+these. Every fix below was checked against a verdict snapshot of every local
+and tracked suite: the only verdicts allowed to move are the targeted ones.
+
+### Blame on a router-only node was dropped (S4)
+
+A supervisor that routes with `Command(goto=...)` returns no update, so its
+step is never inspected. When the contextual layer blamed it — a supervisor
+that routed straight past `payment_agent` to the customer-facing summary —
+`grading._blame_origins` found `inspection is None`, skipped the finding, and
+the run graded **clean**. The finding itself was right; it was thrown away.
+
+`_blame_origins` now builds the inspection the way `_blame_crash_origins`
+already does for a crash site. A crashed step it had to build one for keeps
+`crashed`; every other path is unchanged.
