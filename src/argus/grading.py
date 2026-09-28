@@ -170,12 +170,13 @@ def _blame_origins(session: ArgusSession, findings: list[Finding]) -> None:
         if event is None or finding.field_path is None:
             continue
         insp = event.inspection
-        created = insp is None
-        if created:
+        created = False
+        if insp is None:
+            created = True
             # A router-only step (`Command(goto=...)`, no update) is never
             # inspected. Skipping it dropped the blame and graded the run clean.
             # A crashed step keeps `crashed`; the omit is still named.
-            insp = event.inspection = InspectionResult(
+            insp = InspectionResult(
                 is_silent_failure=True,
                 missing_fields=[],
                 empty_fields=[],
@@ -183,6 +184,7 @@ def _blame_origins(session: ArgusSession, findings: list[Finding]) -> None:
                 severity="critical",
                 message=finding.reason,
             )
+            event.inspection = insp
         if finding.field_path not in insp.missing_fields:
             insp.missing_fields.append(finding.field_path)
         insp.is_silent_failure = True

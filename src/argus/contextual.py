@@ -193,7 +193,11 @@ def contextual_findings(
         readers, allow_empty = _normalise(spec)
         for reader_at in _reader_indices(ledger, readers):
             result = _blame(
-                ledger, field, reader_at, allow_empty=allow_empty, blamed_elsewhere=blamed_elsewhere
+                ledger,
+                field,
+                reader_at,
+                allow_empty=allow_empty,
+                blamed_elsewhere=blamed_elsewhere,
             )
             if result is None:
                 continue
