@@ -16,8 +16,9 @@ from typing import Any
 
 from argus.contextual import ConsumerMap, contextual_findings
 from argus.ledger import build_ledger
-from argus.models import Finding, InspectionResult, LLMInvestigationConfig
+from argus.models import Finding, InspectionResult, LLMInvestigationConfig, ToolFailure
 from argus.session import ArgusSession
+from argus.trace_rules import PRODUCED_NOTHING, Hit, run_rules
 
 __all__ = ["IncompleteTraceError", "finish", "new_session"]
 
@@ -67,6 +68,8 @@ def new_session(
     max_field_size: int,
     state_keys: list[str] | None = None,
     consumers: ConsumerMap | None = None,
+    node_state_keys: dict[str, list[str]] | None = None,
+    baseline: dict[str, Any] | None = None,
 ) -> ArgusSession:
     """A session for one graph run, ready for ``on_node_start`` / ``on_node_end``.
 
@@ -78,6 +81,10 @@ def new_session(
     ``consumers`` is the same map :func:`finish` grades with. The session keeps
     it so the judge can scope the run history it is shown to the fields a node
     declares it reads (#85); blame itself still happens in :mod:`argus.contextual`.
+
+    ``node_state_keys`` are a subgraph node's own schema keys (it writes those,
+    not the parent's). ``baseline`` is a healthy-run shape from ``argus
+    baseline``; without one the baseline rules in :mod:`argus.trace_rules` are off.
     """
     session = ArgusSession(
         max_field_size=max_field_size,
@@ -98,6 +105,8 @@ def new_session(
     session.reducer_fields = reducer_fields
     session.state_keys = list(state_keys or ())
     session.consumers = dict(consumers or {})
+    session.node_state_keys = dict(node_state_keys or {})
+    session.baseline = baseline
     # The caller owns finalize: the ledger and contextual layers run over the
     # complete trace, before the run is graded and saved.
     session._defer_auto_finalize = True
@@ -126,15 +135,30 @@ def finish(
     ledger = build_ledger(
         session._events, session._initial_state, session.reducer_kinds, session.state_keys
     )
-    # A barren subgraph is already failed by the recorder; "never written"
-    # should not also blame whichever step ran first (S5).
-    barren = frozenset(
+    # Whole-trace rules first, so the contextual layer below can defer to them.
+    hits = run_rules(
+        session._events,
+        state_keys=session.state_keys,
+        node_state_keys=session.node_state_keys,
+        consumers=consumers,
+        baseline=session.baseline,
+    )
+    _apply_hits(hits)
+    # A barren subgraph (S5), or a node that wrote its field under the wrong
+    # name or not at all, is already failed; "never written" should not also
+    # blame whichever step ran first.
+    produced_nothing = frozenset(
         e.node_name
         for e in session._events
         if e.inspection is not None
-        and any(t.failure_type == "subgraph_no_contribution" for t in e.inspection.tool_failures)
+        and any(
+            t.failure_type == "subgraph_no_contribution" or t.failure_type in PRODUCED_NOTHING
+            for t in e.inspection.tool_failures
+        )
     )
-    _blame_origins(session, contextual_findings(ledger, consumers, blamed_elsewhere=barren))
+    _blame_origins(
+        session, contextual_findings(ledger, consumers, blamed_elsewhere=produced_nothing)
+    )
 
     # The per-step judge already fired (its futures don't re-check this
     # flag); disabling it here only stops finalize from also running the
@@ -197,6 +221,44 @@ def _blame_origins(session: ArgusSession, findings: list[Finding]) -> None:
         elif finding.reason not in insp.message:
             insp.message = f"{insp.message}; {finding.reason}"
         if not (created and event.status == "crashed"):
+            event.status = "fail"
+
+
+def _apply_hits(hits: list[Hit]) -> None:
+    """Mark each trace-rule hit on its step, the way a subgraph no-op is marked.
+
+    A critical ``ToolFailure`` is what the roll-up, ``argus check`` and
+    ``collect_findings`` already read, so no second gate is needed.
+    """
+    for hit in hits:
+        event = hit.event
+        insp = event.inspection
+        if insp is None:
+            insp = InspectionResult(
+                is_silent_failure=True,
+                missing_fields=[],
+                empty_fields=[],
+                type_mismatches=[],
+                severity="critical",
+                message=hit.evidence,
+            )
+            event.inspection = insp
+        elif insp.message == "All checks passed":
+            insp.message = hit.evidence
+        elif hit.evidence not in insp.message:
+            insp.message = f"{insp.message}; {hit.evidence}"
+        insp.tool_failures.append(
+            ToolFailure(
+                failure_type=hit.failure_type,
+                field_name=hit.field_name,
+                severity="critical",
+                evidence=hit.evidence,
+            )
+        )
+        insp.has_tool_failure = True
+        insp.is_silent_failure = True
+        insp.severity = "critical"
+        if event.status != "crashed":
             event.status = "fail"
 
 

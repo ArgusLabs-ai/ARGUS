@@ -261,6 +261,18 @@ def _subgraph_shape(app: Any) -> tuple[dict[str, list[str]], set[str], set[str]]
     return inner, with_successors, outer_keys
 
 
+def _inner_state_keys(app: Any, inner: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Each subgraph node's own state keys: a subgraph node writes its subgraph's
+    schema, not the parent's. Best-effort; an unreadable subgraph is left out."""
+    out: dict[str, list[str]] = {}
+    for parent, names in inner.items():
+        node = (getattr(app, "nodes", None) or {}).get(parent)
+        keys = getattr(getattr(getattr(node, "bound", None), "builder", None), "channels", None)
+        if keys:
+            out.update({name: sorted(keys) for name in names})
+    return out
+
+
 def _bare(node_id: str) -> str:
     """``child:retrieve`` → ``retrieve``.
 
@@ -334,6 +346,7 @@ class ArgusRecorder(BaseCallbackHandler):
         semantic_judge: bool | None = None,
         max_field_size: int = 50_000,
         consumers: ConsumerMap | None = None,
+        baseline: dict[str, Any] | None = None,
     ) -> None:
         if not _HAS_LANGCHAIN:
             raise ImportError(
@@ -347,6 +360,8 @@ class ArgusRecorder(BaseCallbackHandler):
         self._max_field_size = max_field_size
         # Declared `field -> [reader nodes]`; a trace cannot tell us who reads what.
         self._consumers = consumers
+        # Healthy-run shape from `argus baseline` (argus.trace_rules D5/D6/D16).
+        self._baseline = baseline
 
         # The most recently started run's session. One attach can serve many
         # runs (a served app, a loop, `.batch()`), so the recorder keeps one
@@ -385,6 +400,8 @@ class ArgusRecorder(BaseCallbackHandler):
         self._subgraph_nodes: dict[str, list[str]] = {}
         self._subgraphs_with_successors: set[str] = set()
         self._outer_keys: set[str] = set()
+        # inner node -> its own subgraph's state keys (trace_rules D1)
+        self._inner_keys: dict[str, list[str]] = {}
         self._reducers: dict[str, Any] = {}
         self._judge = False
 
@@ -407,6 +424,7 @@ class ArgusRecorder(BaseCallbackHandler):
             self._subgraphs_with_successors,
             self._outer_keys,
         ) = _subgraph_shape(app)
+        self._inner_keys = _inner_state_keys(app, self._subgraph_nodes)
         self._reducers = _reducer_fields(app)
         self._judge = self._resolve_judge()
         self._attached = True
@@ -438,6 +456,8 @@ class ArgusRecorder(BaseCallbackHandler):
             max_field_size=self._max_field_size,
             state_keys=sorted(self._outer_keys),
             consumers=self._consumers,
+            node_state_keys=self._inner_keys,
+            baseline=self._baseline,
         )
 
     def _resolve_judge(self) -> bool:

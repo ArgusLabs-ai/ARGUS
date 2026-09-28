@@ -17,6 +17,7 @@ except ImportError:
     )
     raise SystemExit(1)
 
+from argus.cli.cmd_baseline import baseline_for_runs
 from argus.cli.cmd_check import check_run
 from argus.cli.cmd_consumers import propose_for_run
 from argus.cli.cmd_diff import diff_runs
@@ -79,6 +80,30 @@ def cmd_ingest_langsmith(
 ) -> None:
     """Grade a LangSmith export and save it as a run; then `argus check last`."""
     ingest_langsmith_file(path, allow_cloud=allow_cloud, edges=edges, consumers=consumers)
+
+
+@app.command("baseline")
+def cmd_baseline(
+    run_ids: list[str] = typer.Argument(
+        ..., help="Healthy run IDs (or 'last'). One per branch is best."
+    ),
+    write: Optional[Path] = typer.Option(
+        None, "--write", help="Write the baseline to this JSON file."
+    ),
+) -> None:
+    """Record what healthy runs write, per node, for the baseline rules.
+
+    Pass the file as ArgusRecorder(baseline=...). A node that later drops a key
+    it always writes, changes a field's type, or writes N/A / -1 where healthy
+    runs held data then fails CI. Holds kinds, never values.
+    """
+    from argus.storage import last_run_id
+
+    ids = [last_run_id() if r == "last" else r for r in run_ids]
+    if not all(ids):
+        _console.print("[red]Error:[/red] No runs found in .argus/runs/.")
+        raise typer.Exit(1)
+    baseline_for_runs(ids, write)
 
 
 @app.command("consumers")

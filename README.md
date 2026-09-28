@@ -193,10 +193,30 @@ its own update — the OFAC tool returns `{"hits": []}` on a clean customer, and
 critically failed every healthy KYC onboarding. A tool that raised, or a 4xx/5xx body, still
 fails hard. Undeclared empty retrieval lists keep the RAG default: critical.
 
-It is also the answer for a **final** node: `empty_output` only fires when a
-node has a successor waiting, so a last node that returns `{}` is exempt by
-design (a terminal `send_email` legitimately returns nothing). Declare the field
-the run is supposed to end with and that gap closes.
+A **final** node is different: `empty_output` only fires when a node has a
+successor waiting, so a last node that returns `{}` is exempt by design (a
+terminal `send_email` legitimately returns nothing), and no later node reads its
+field. A [healthy baseline](#healthy-baseline) closes that gap: a node that stops
+writing a key it writes on every healthy run fails.
+
+### Healthy baseline
+
+Record what healthy runs write, per node, and pass it in. A later run that drops a key the node
+always writes, changes a field's type, or writes `N/A` / `unknown` / `-1` where healthy runs held
+data then fails CI:
+
+```bash
+argus baseline <run-id> <run-id> --write argus.baseline.json   # one healthy run per branch
+```
+
+```python
+baseline = json.loads(Path("argus.baseline.json").read_text())
+app = ArgusRecorder(consumers=consumers, baseline=baseline).attach(compiled_graph)
+```
+
+Only what every given run agrees on is kept, so a key written on one branch is not required on
+another. The file holds kinds (`text`, `nonneg`, `object`), never values. Without it those three
+checks are off; everything else runs.
 
 ### Tools the callbacks cannot see
 
@@ -265,6 +285,13 @@ result = app.invoke(initial_state)
 | **Failed lookups** | A tool answered 200 with nothing in it — `documents` / `hits` / `results` / `items` / `sources`, a FHIR Bundle's `entry`, a metrics query's `series` — and the node carried on. Critical unless the field is declared `allow_empty` |
 | **Unfinished templates** | A node wrote a template instruction into its output — `[INSERT CAP AMOUNT]`, `[ENTER DATE]`, `[YOUR NAME]`. Other placeholders (`[TOPIC]`, `[Your Name]`, `{var}`, all-caps labels like `[EXTERNAL EMAIL]`) are warnings, since real text contains them |
 | **Barren subgraphs** | Every node inside a subgraph returned something, but all of it landed on keys that exist only in the subgraph's own schema — the parent graph gains nothing and the next node reads unchanged state. Each inner update looks busy; only the subgraph as a whole shows the no-op (`subgraph_no_contribution`), blamed on the subgraph's exit node — the last inner node that ran |
+| **Typo'd state keys** | A node writes `traige` instead of `triage`. LangGraph drops keys the state does not have, silently, so the field never arrives — blamed on the writer, not on whichever node ran first |
+| **Vendor error bodies** | Salesforce `[{"errorCode": …}]`, a SOAP `Fault`, AWS `__type: …Exception`, Jira `errorMessages`, an HTML 503 page — stored by the node as if it were data |
+| **Empty lookups, any key** | `{"totalSize": 0, "records": []}`, `{"Items": [], "Count": 0}`, a BigQuery response with `totalRows: "0"`, `"No results found."` |
+| **Pagination ignored** | The tool said `has_more` / `next_page_token` and the node passed page one on as the whole result |
+| **Regressions vs a healthy run** | With [`argus baseline`](#healthy-baseline): a node stops writing a key it always writes (including a final node returning `{}`), a field changes type (a list comes back as a JSON string), or `N/A` / `unknown` / `-1` appears where healthy runs hold data |
+| **Broken model output** | Unrendered `{{var}}`, lorem ipsum, `Dear [Customer Name]`; the model repeating itself; a generation cut at its token limit that was used anyway; JSON that did not parse, replaced by a default |
+| **Ungrounded claims** | A number in a model's output that nothing it was given supports (sums and % changes are allowed); an ID one or two characters off the one it was given (`A-1002` for `A-1001`); "I've refunded your order" with no refund call anywhere in the run; a loop repeating one tool call |
 | **Not a failure** | A node's own verdict — `{"status": "denied"}` or a linter's `errors: [...]` — is a warning on that node's update, not a CI fail. The same shape from a **tool** response stays critical |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
 | **Conditional path confusion** | Unchosen branches correctly shown as "skipped" — not false "crashed" |
@@ -286,8 +313,9 @@ Runs in order, each more expensive — only fires when needed. Every status a la
    actually recorded, the recording wins. A custom reducer (anything that is not `operator.add`
    or `add_messages`) is therefore approximated, never trusted over the trace, so a node whose
    `[]` your reducer discards is not reported as having dropped anything.
-5. **LLM semantic judge** — reviews warning-level signatures the rules already raised. Does not scan clean nodes. Can dismiss a false-positive warning; cannot fail CI on its own; cannot clear a hard rule fail (`{}`, missing field, HTTP 4xx).
-6. **LLM investigator** — root cause explanations and debugging suggestions. Only on ambiguous failures.
+5. **Whole-trace rules** (`argus.trace_rules`) — read the finished run once, for what one step cannot show: the state schema, a healthy baseline, the model's raw output, every tool call in the run. Deterministic, critical, blamed on the step that caused it. A step that runs after another node already failed is not blamed again. Measured on a 255-fault suite: coverage 51% → 90%, with no false positive on 63 healthy runs, 54 of them real model prose.
+6. **LLM semantic judge** — reviews warning-level signatures the rules already raised. Does not scan clean nodes. Can dismiss a false-positive warning; cannot fail CI on its own; cannot clear a hard rule fail (`{}`, missing field, HTTP 4xx).
+7. **LLM investigator** — root cause explanations and debugging suggestions. Only on ambiguous failures.
 
 ---
 

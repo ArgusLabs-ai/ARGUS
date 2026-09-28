@@ -399,6 +399,10 @@ class ArgusSession:
         # Declared consumer map (argus.contextual). Read by the judge to scope
         # the run history it is shown to the fields a node actually reads (#85).
         self.consumers: dict[str, Any] = {}
+        # A subgraph node's own schema keys, and the healthy-run shape from
+        # `argus baseline`. Read by argus.trace_rules at the end of the run.
+        self.node_state_keys: dict[str, list[str]] = {}
+        self.baseline: dict[str, Any] | None = None
 
         self._strict = strict
         self._redact_keys: frozenset[str] = frozenset(redact_keys or ())

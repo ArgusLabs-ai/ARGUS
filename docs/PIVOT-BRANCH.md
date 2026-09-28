@@ -1211,3 +1211,47 @@ banners in real mail. A non-answer written as prose ("Unable to determine root
 cause.") has no deterministic shape. Those two belong to the parallel monitor
 as advisory findings, not to the gate. Snapshot diff: the redline case is the
 only verdict that moved.
+
+## Whole-trace rules (`argus.trace_rules`) — coverage 51% → 90%
+
+A taxonomy suite (23 failure classes injected at every node they apply to, 6
+pipelines, 20 real vendor response shapes, 255 faults) measured ARGUS at 51%.
+Fifteen rules, prototyped over the recorded trace and then built in, bring it to
+**90.2%** with no false positive on 63 healthy runs, 54 of them real
+gpt-4o-mini prose, and no verdict change on any healthy run in any existing
+suite.
+
+They run once, in `grading.finish`, before the contextual layer, because their
+evidence spans steps or needs something one step does not carry. Each hit is a
+critical `ToolFailure` on the step that caused it — the same mark
+`subgraph_no_contribution` uses, so the roll-up, `argus check` and findings need
+no new plumbing.
+
+| rule | failure type | catches |
+|---|---|---|
+| D1 | `unknown_state_key` | a typo'd key LangGraph silently drops; blamed on the writer. Only when it is 1–2 edits from a *declared* key (consumer map or baseline) that is never written — extra keys (`reasoning` in a parsed reply, `result_a` beside `result_b`) are harmless and stay quiet |
+| D2 | `error_response` | vendor error bodies the inspector missed (Salesforce `errorCode` lists, SOAP `Fault`, AWS `__type`, `errorMessages`, `message`+code ≥ 400, HTML error pages) |
+| D3 | `empty_result` | an empty lookup whatever its keys (`totalSize: 0`, `Items: []`, `totalRows: "0"`, "No results found."). `None` / `""` are left alone: side-effect tools return them. Respects `allow_empty` |
+| D4 | `unfollowed_pagination` | `has_more` / `next_page_token` and the node passed page one on as the whole list. Taking the top item is fine |
+| D5 / D6 / D16 | `type_drift` / `sentinel_value` / `missing_output_key` | regressions against a healthy baseline (`argus baseline`): a type change, `N/A` / `unknown` / `-1` where data was, a key the node always writes gone (closes the terminal-`{}` gap) |
+| D8 / D9 / D10 / D11 | `unrendered_template` / `degenerate_repetition` / `truncated_output` / `unparseable_model_json` | model output only (nodes with a recorded model call): `{{var}}`, lorem ipsum, `Dear [Name]`; repetition; `finish_reason=length` and the cut text used; JSON that did not parse |
+| D12 / D13 / D14 / D15 | `ungrounded_number` / `near_miss_identifier` / `unperformed_action` / `stuck_loop` | a number nothing given supports (sums, differences, % changes allowed); an ID 1–2 edits off the one given; "I've refunded" with no such tool call in the run; one call repeated 3+ times |
+
+**Consequences are not re-blamed.** Rules stop at the first failing node: a
+lookup that comes back empty because the step before it passed a bad ID is that
+step's failure. The judge follows the same rule.
+
+**Loops.** A hit on an earlier loop visit moves to the node's last visit when
+that visit shows the same fault; otherwise the loop self-corrected and the hit
+is retired with the `retried` relabel. Known limit: an agent that names the
+wrong entity on one turn and never revisits it is retired too.
+
+**Recorder:** each `LLMCallInfo` keeps `output_text` (clipped to 4,000 chars),
+read by D11. **CLI:** `argus baseline <run…> --write` — keys, types and value
+kinds every healthy run agrees on; never values. **Recorder param:**
+`ArgusRecorder(baseline=...)`; without it D5 / D6 / D16 are off.
+
+Two tuning passes came out of the existing tests, not the new suite: D1 first
+flagged every extra key (the contextual tests write `noise_a`), then every
+near-miss sibling (`noise_a` / `noise_b`). Both would have been false positives
+in real code, so D1 now requires the key it meant to be declared.

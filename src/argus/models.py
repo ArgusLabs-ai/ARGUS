@@ -187,6 +187,9 @@ class LLMCallInfo:
     cost_usd: float | None = None
     # Why the model stopped: "stop", "length" (OpenAI), "max_tokens" (Anthropic)...
     finish_reason: str | None = None
+    # What the model returned, clipped. A node that falls back to a default after
+    # the model's JSON failed to parse leaves no other trace (trace_rules D11).
+    output_text: str | None = None
 
 
 @dataclass

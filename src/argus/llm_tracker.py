@@ -356,7 +356,21 @@ def call_from_llm_outputs(outputs: dict[str, Any], name: str = "") -> LLMCallInf
         total_tokens=total_tokens,
         cost_usd=calculate_cost(model_name, prompt_tokens, completion_tokens),
         finish_reason=str(finish_reason) if finish_reason else None,
+        output_text=_generation_text(first, message),
     )
+
+
+_MAX_OUTPUT_TEXT = 4000
+
+
+def _generation_text(generation: dict[str, Any], message: dict[str, Any]) -> str | None:
+    """The generation's text, clipped. Chat content may be a list of parts."""
+    text = generation.get("text") or message.get("content")
+    if isinstance(text, list):
+        text = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in text)
+    if not isinstance(text, str) or not text:
+        return None
+    return text[:_MAX_OUTPUT_TEXT]
 
 
 # ── Combine both strategies ─────────────────────────────────────────────────
