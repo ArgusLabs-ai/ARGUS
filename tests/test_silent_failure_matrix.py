@@ -670,9 +670,10 @@ def test_a_subgraph_writing_only_inner_keys_is_caught():
     )
 
     assert verdict.passed is False, "a subgraph that wrote nothing outward is not clean"
-    assert record.first_failure_step == "normalize"
+    # The exit node is the one whose writes become the subgraph's output (S5).
+    assert record.first_failure_step == "retrieve"
     assert [(f.node, f.type) for f in record.findings] == [
-        ("normalize", "subgraph_no_contribution")
+        ("retrieve", "subgraph_no_contribution")
     ], "one finding for one no-op — not one per inner node"
     assert rows["render"].update == {"out": "docs=None"}, "the downstream node did read nothing"
 

@@ -859,9 +859,9 @@ class ArgusRecorder(BaseCallbackHandler):
         Subgraph-level on purpose. Blaming each inner node would fire on the
         normal shape where an early node writes a scratch key purely to feed a
         later one — real work that legitimately contributes nothing outward. The
-        finding lands on the first inner step, which is where the existing
-        all-empty case already blames, and is skipped when that step is flagged
-        already so one no-op is not reported twice.
+        finding lands on the last inner step that ran (the exit node), and is
+        skipped when that step is flagged already so one no-op is not reported
+        twice.
         """
         if not self._outer_keys:
             return
@@ -876,15 +876,14 @@ class ArgusRecorder(BaseCallbackHandler):
                 continue
             if any(set(step.output_dict or {}) & self._outer_keys for step in steps):
                 continue
-            # Earliest inner node, but its *last* visit. Status cannot be read
-            # here — `retried` is assigned later, in finalize, which demotes
-            # every visit but the last. Blaming the first visit of a subgraph on
-            # a loop edge therefore parks the finding on a step that
-            # `check.evaluate_run` and `collect_findings` both drop, and the run
-            # goes out clean. Keeping the node but taking its final visit holds
-            # origin blame and stays visible.
-            first_node = steps[0].node_name
-            origin = [step for step in steps if step.node_name == first_node][-1]
+            # The last inner step that ran: the exit node on the path taken,
+            # whose writes are what the subgraph hands back (S5). An earlier
+            # node writing only scratch is the normal shape. It is also a final
+            # visit — `retried` is assigned later, in finalize, and demotes every
+            # visit but the last, so blame on an earlier visit of a subgraph on a
+            # loop edge would be dropped by `check.evaluate_run` and the run
+            # would go out clean.
+            origin = steps[-1]
             if origin.inspection is None or origin.inspection.has_tool_failure:
                 continue
             origin.inspection.tool_failures.append(

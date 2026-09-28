@@ -1145,8 +1145,16 @@ one upstream of the reader, "never written" defers, the way it already defers
 to a `{}` row, and the starved reader is recorded as a victim. The `{}` path is
 unchanged.
 
-Not changed: the finding still lands on the subgraph's **first** inner node,
-as the matrix pins (`test_a_subgraph_writing_only_inner_keys_is_caught`).
+**Blame moved to the exit node (decision reversed on record).** The finding
+used to land on the subgraph's *first* inner node, justified only as matching
+where the all-empty case blames. But what a subgraph hands back is whatever its
+exit node writes, and an early node writing only scratch is the normal shape
+(`test_a_scratch_key_feeding_a_later_inner_node_stays_clean`). So the finding
+now lands on the **last inner step that ran**, which is also a final visit, so
+loop-edge subgraphs stay visible. The matrix assertion moved from `normalize` to
+`retrieve`. Snapshot diff: only `subgraph_no_contribution` blame moved (matrix,
+contract review → `classify_clauses`, code-review bot → `collect`, due
+diligence → `select`); no pass/fail changed.
 
 ### Async nodes on Python < 3.11 hide their tool calls (S8)
 
