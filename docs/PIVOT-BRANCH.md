@@ -1255,3 +1255,70 @@ Two tuning passes came out of the existing tests, not the new suite: D1 first
 flagged every extra key (the contextual tests write `noise_a`), then every
 near-miss sibling (`noise_a` / `noise_b`). Both would have been false positives
 in real code, so D1 now requires the key it meant to be declared.
+
+### How far the 90% travels
+
+90.2% is measured on the suite the rules were designed against, so it is the
+optimistic number. On the older suites, which were written before the rules
+and never used to tune them (ship_eval s1–s6 and pivot_eval, 86 labelled
+faults, 33 healthy runs), ARGUS went from **57% to 58%** (49 → 50 of 86).
+
+That is not the rules failing. It is what those suites contain:
+
+- **Mechanical failures** (tool errors, empty results, dropped fields) were
+  already caught at ~88% there, and still are.
+- **Semantic failures** are about a third of those suites by design, and 30 of
+  the 37 misses. Rules cannot judge meaning.
+- Their "LLM" nodes are plain Python with no recorded model call, and there is
+  no baseline, so the text, grounding and baseline rules cannot run. Treating
+  every node as a model node (a stress mode only) takes held-out semantic
+  recall from 0% to 43%.
+
+Honest claim: **about 90% of mechanical silent failures, very little semantic.**
+Every fixture was written in-house, so even the held-out number is not
+independent. A trustworthy figure needs a blind test: rules frozen, pipelines
+and faults built by someone who has not seen them, or real traces with labelled
+incidents.
+
+## A whole-pipeline LLM monitor for semantic failures — measured, not built (#149)
+
+What rules miss is almost all semantic: a total that does not match the charge,
+a refund to the wrong order, an approval despite a sanctions hit, an invented
+statistic. The judge never sees these; it only reviews steps the rules already
+flagged. So a second model was tested that reads the whole finished run and
+reports what looks wrong. Same 99 runs throughout (39 true semantic failures,
+42 healthy runs), gpt-4.1, two repeats:
+
+| version | semantic failures caught | healthy runs flagged | repeats disagreed |
+|---|---|---|---|
+| whole trace, fields clipped | 85% | 40% | 5 / 99 |
+| full ledger rows, claim by claim | 82% | 36% | 7 / 99 |
+| **ledger + one-line purpose per node** | **72%** | **12%** | **3 / 99** |
+
+Reading the ledger instead of a clipped trace barely changed anything; the data
+was never the problem. **Telling the model what each node is for** is what cut
+false positives. Without it the model calls normal design a mistake, e.g. a
+reply step that says "refunded" runs before the refund step, by design. The
+purposes were written by the model from a *healthy* run only.
+
+Four of the five remaining flags were real inconsistencies in the test
+fixtures' "healthy" variants (a forced output that contradicted its own
+evidence, e.g. "2 weeks of therapy" beside `therapy_weeks: 8`), so the true
+false-positive rate was about 1 in 42. That is a judgement on a small sample:
+promising, not proven.
+
+Quote-verification (code checks every cited value exists in the ledger) did not
+help here: it halved recall without reducing false positives, because the model
+paraphrases.
+
+**Decision:** build it advisory. Findings appear in `argus show` and the UI and
+never change the verdict. Users mark each finding right or wrong; a finding type
+earns a place in the CI gate only once its measured precision on real traffic
+is high. **Open question, tracked in #149:** where the user writes each node's
+one-line purpose (a docstring on the node function, next to `add_node`, one
+mapping at the top or bottom of the file, or a draft in the `argus baseline`
+file for the team to edit), and what happens for nodes without one.
+
+The eval scripts and results live in the gitignored local suite
+(`ship_eval/coverage/`: `monitor_eval.py`, `monitor_verified.py`,
+`monitor_v2.py`, `REPORT.md`).
