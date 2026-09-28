@@ -126,7 +126,15 @@ def finish(
     ledger = build_ledger(
         session._events, session._initial_state, session.reducer_kinds, session.state_keys
     )
-    _blame_origins(session, contextual_findings(ledger, consumers))
+    # A barren subgraph is already failed by the recorder; "never written"
+    # should not also blame whichever step ran first (S5).
+    barren = frozenset(
+        e.node_name
+        for e in session._events
+        if e.inspection is not None
+        and any(t.failure_type == "subgraph_no_contribution" for t in e.inspection.tool_failures)
+    )
+    _blame_origins(session, contextual_findings(ledger, consumers, blamed_elsewhere=barren))
 
     # The per-step judge already fired (its futures don't re-check this
     # flag); disabling it here only stops finalize from also running the

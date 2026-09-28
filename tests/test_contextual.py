@@ -478,3 +478,43 @@ def test_contextual_blame_on_a_router_only_node_is_kept(monkeypatch, skip_paymen
         assert set(verdict.failing_nodes) == {"supervisor"}
     else:
         assert verdict.passed, verdict.failing_nodes
+
+
+class _Outer(TypedDict, total=False):
+    doc_id: str
+    text: str
+    clauses: list
+    review: str
+
+
+class _Inner(TypedDict, total=False):
+    text: str
+    sections: list
+    clauses: list
+
+
+def test_a_barren_subgraph_is_not_also_pinned_on_the_first_step(monkeypatch):
+    """S5: the subgraph wrote only its scratch key. `subgraph_no_contribution`
+    already names it; "no step wrote `clauses`" must not also blame `ingest`."""
+    _no_patching(monkeypatch)
+    inner = StateGraph(_Inner)
+    inner.add_node("split", lambda s: {"sections": s["text"].split(".")})
+    inner.add_node("classify", lambda s: {"sections": [x.upper() for x in s["sections"]]})
+    inner.add_edge(START, "split")
+    inner.add_edge("split", "classify")
+    inner.add_edge("classify", END)
+
+    g = StateGraph(_Outer)
+    g.add_node("ingest", lambda s: {"text": "Services. Liability."})
+    g.add_node("extract", inner.compile())
+    g.add_node("review", lambda s: {"review": f"{len(s.get('clauses') or [])} clauses"})
+    g.add_edge(START, "ingest")
+    g.add_edge("ingest", "extract")
+    g.add_edge("extract", "review")
+    g.add_edge("review", END)
+
+    rec = ArgusRecorder(consumers={"clauses": ["review"]}, semantic_judge=False)
+    rec.attach(g.compile()).invoke({"doc_id": "d1"})
+    verdict = evaluate_run(load_run(rec.session.run_id))
+    assert not verdict.passed
+    assert "ingest" not in verdict.failing_nodes, verdict.failing_nodes

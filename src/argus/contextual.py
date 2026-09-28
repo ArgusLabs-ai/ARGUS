@@ -166,26 +166,41 @@ def _written_paths(update: Any) -> list[str]:
     return paths
 
 
-def contextual_findings(ledger: list[Any], consumers: ConsumerMap | None) -> list[Finding]:
+def contextual_findings(
+    ledger: list[Any],
+    consumers: ConsumerMap | None,
+    *,
+    blamed_elsewhere: frozenset[str] = frozenset(),
+) -> list[Finding]:
     """Fields a declared reader needs that were never written, or were dropped.
 
     Returns one critical finding per missing field, blaming the origin row.
     ``node`` is the origin; ``field_path`` is the field; the reader is named in
     the reason. Callers attach these to the origin step — the run-status roll-up
     and ``argus check`` already fail on a step with missing fields.
+
+    ``blamed_elsewhere``: nodes another layer already failed for producing
+    nothing (a barren subgraph, S5). Like a ``{}`` row, one of them upstream of
+    the reader means "never written" defers instead of guessing the first row.
     """
     if not consumers or not ledger:
         return []
 
     found: list[tuple[Finding, str]] = []  # (finding, reader that was starved)
     seen: set[tuple[str, str]] = set()
+    deferred_victims: set[str] = set()  # starved, but blame belongs to another layer
     for field, spec in consumers.items():
         readers, allow_empty = _normalise(spec)
         for reader_at in _reader_indices(ledger, readers):
-            result = _blame(ledger, field, reader_at, allow_empty=allow_empty)
+            result = _blame(
+                ledger, field, reader_at, allow_empty=allow_empty, blamed_elsewhere=blamed_elsewhere
+            )
             if result is None:
                 continue
             finding, reader = result
+            if finding is None:
+                deferred_victims.add(reader)
+                continue
             key = (finding.node, field)
             if key in seen:
                 continue  # one finding per origin+field, however many readers it starved
@@ -195,7 +210,7 @@ def contextual_findings(ledger: list[Any], consumers: ConsumerMap | None) -> lis
     # A row that was itself starved is a victim of whatever starved it, not the
     # origin of what it then wrote empty. Keep the findings that name it as the
     # reader; drop the ones that name it as the origin.
-    victims = {reader for _finding, reader in found}
+    victims = {reader for _finding, reader in found} | deferred_victims
     return [f for f, _reader in found if f.node not in victims]
 
 
@@ -206,11 +221,17 @@ def _normalise(spec: Any) -> tuple[list[str], bool]:
 
 
 def _blame(
-    ledger: list[Any], field: str, reader_at: int, *, allow_empty: bool = False
-) -> tuple[Finding, str] | None:
+    ledger: list[Any],
+    field: str,
+    reader_at: int,
+    *,
+    allow_empty: bool = False,
+    blamed_elsewhere: frozenset[str] = frozenset(),
+) -> tuple[Finding | None, str] | None:
     """Who is answerable for `field` being missing when its reader ran.
 
-    Returns ``(finding, reader_node)`` or None.
+    Returns ``(finding, reader_node)``, ``(None, reader_node)`` when the reader
+    was starved but another layer owns the blame, or None.
     """
     lacks = _absent if allow_empty else _lacks
     before = ledger[:reader_at]
@@ -258,6 +279,8 @@ def _blame(
         # finding aimed at whoever happened to run first.
         if any(row.update == {} for row in before):
             return None
+        if any(row.node in blamed_elsewhere for row in before):
+            return None, reader.node  # starved by a barren subgraph: a victim
         origin_at = 0
         why = "no step wrote it"
 

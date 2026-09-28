@@ -1131,3 +1131,19 @@ warning when the node writes an `allow_empty` field. Exact key match only:
 Side effect, accepted: a node that falls back to `{"series": []}` after a
 failed call is now caught on its own update even when the call itself was
 invisible (a plain HTTP client with no `report_tool_call`).
+
+### A barren subgraph also pinned a bystander (S5)
+
+A clause-extraction subgraph wrote only its scratch key. `subgraph_no_contribution`
+caught it, and then the contextual layer added a second finding: "no step wrote
+`clauses`" → the first row, `ingest`. When that was deferred, the next reader
+(`playbook`, starved of `clauses`) was blamed for writing its own list empty.
+
+`contextual_findings` takes `blamed_elsewhere` — nodes another layer already
+failed for producing nothing (grading passes the barren-subgraph steps). With
+one upstream of the reader, "never written" defers, the way it already defers
+to a `{}` row, and the starved reader is recorded as a victim. The `{}` path is
+unchanged.
+
+Not changed: the finding still lands on the subgraph's **first** inner node,
+as the matrix pins (`test_a_subgraph_writing_only_inner_keys_is_caught`).
