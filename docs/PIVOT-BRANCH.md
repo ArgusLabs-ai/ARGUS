@@ -1165,9 +1165,12 @@ run 3.11+.
 
 - **S7** (a 403 on `ingest` also blamed `classify_clauses` through an undeclared
   subgraph scratch key): declaring the intermediate field —
-  `{"sections": ["classify_clauses"]}`, which `argus consumers propose` suggests —
+  `{"sections": ["classify_clauses"]}`, which `argus consumers` suggests —
   makes blame exact. Widening the victim rule to undeclared fields would also
   hide real second failures in every pipeline.
 - **S3** (`[PATIENT NAME]`, "Unable to determine root cause." are warnings, so
   CI stays green): soft flags not gating is the reviewer-judge design. Whether a
   judge-*confirmed* soft flag should fail CI is an open decision, not a bug.
+- **S9 / S10** (`argus consumers` misses graph-input fields and readers on an
+  untaken branch): S9 is pinned by `test_a_field_nobody_wrote_is_omitted`, and
+  S10 is inherent to reading one run. README now says both.

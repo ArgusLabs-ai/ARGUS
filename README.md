@@ -164,6 +164,11 @@ field and did not write it. Delete the nodes that only saw the field in shared
 state, then pass the file yourself. ARGUS does not load it, and does not fail
 CI on the guess.
 
+It only sees what that one run did. A reader on a branch the run did not take
+is not listed, so record one healthy run per branch and merge the files.
+Fields you passed in as the graph's input are not listed either. Add them by
+hand when a later node depends on them.
+
 ```bash
 argus consumers last --write argus.consumers.json
 ```
