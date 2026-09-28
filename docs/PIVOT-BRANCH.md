@@ -1107,3 +1107,11 @@ the run graded **clean**. The finding itself was right; it was thrown away.
 `_blame_origins` now builds the inspection the way `_blame_crash_origins`
 already does for a crash site. A crashed step it had to build one for keeps
 `crashed`; every other path is unchanged.
+
+### `voided` was not a failure word (S6)
+
+A DocuSign envelope voided because the signer's email bounced came back as
+`{"status": "voided"}`; the node recorded it as sent and the run graded clean.
+`voided` joins the status-word vocabulary. Same scope as every other word: a
+tool response is critical, a node's own `{"status": "voided"}` is a warning
+(E1/E9) — voiding a contract can be the node's decision.

@@ -207,7 +207,8 @@ _MAIN_LLM_OUTPUT_KEYS = frozenset(
 # A failure *word* in a status-like field. HTTP codes and `error` keys were
 # vocabulary; `{"status": "declined"}` from a payment provider was not, so goods
 # shipped on a declined card. `cancelled` is left out on purpose — it is a
-# legitimate business state, not a tool failure.
+# legitimate business state, not a tool failure. `voided` is in (S6): a
+# DocuSign envelope voided on a bounced email was never sent for signature.
 _STATUS_WORD_KEYS = frozenset({"status", "state", "outcome", "result_status", "payment_status"})
 _FAILURE_STATUS_WORDS = frozenset(
     {
@@ -222,6 +223,7 @@ _FAILURE_STATUS_WORDS = frozenset(
         "denied",
         "unauthorized",
         "unavailable",
+        "voided",
     }
 )
 

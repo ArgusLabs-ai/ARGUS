@@ -61,6 +61,7 @@ def _sev(result, field: str) -> str | None:
     [
         ({"decision": {"status": "denied", "rationale": "Peril not covered."}}, "decision.status"),
         ({"payment": {"status": "declined"}}, "payment.status"),
+        ({"contract": {"status": "voided"}}, "contract.status"),
         ({"lint": {"errors": ["syntax error at or near SELEC"]}}, "lint.errors"),
         ({"review": {"ok": False, "issues": ["missing test"]}}, "review.ok"),
     ],
@@ -97,6 +98,8 @@ def test_a_nodes_own_failure_is_still_critical(payload, field):
     "payload,field",
     [
         ({"status": "declined", "decline_code": "insufficient_funds"}, "psp.status"),
+        # S6: a DocuSign envelope that bounced and was voided was never sent.
+        ({"envelopeId": "e-91", "status": "voided", "voidedReason": "Recipient email bounced"}, "psp.status"),
         ({"error": "permission denied for relation orders"}, "psp.error"),
         ({"success": False}, "psp.success"),
     ],
