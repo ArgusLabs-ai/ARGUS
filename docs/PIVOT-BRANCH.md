@@ -140,6 +140,18 @@ Ordering matters in `session._finalize`: `_blame_crash_origins()` runs **after**
   nodes, and `ainvoke` all behave.
 - A skinny trace (node spans sampled away) raises `IncompleteTraceError`
   instead of "no findings, so clean".
+- A trace that is complete but **skinny in shape** — each step's output is the
+  merged state after the node, not the dict it returned — also refuses (#82,
+  `grading._merged_state_steps`). On merged state `{}` is unreachable, so
+  `empty_output` never fires and every run grades clean. A step "looks merged"
+  when every input key survives into its output and at least one is carried
+  unchanged (or, under an append reducer, only extended); `{"messages": [new]}`
+  does not start with the input's messages, so `MessagesState` agents pass.
+  Refuses at ≥ 2/3 of ≥ 3 steps with non-empty input — one pass-through node
+  (`{**state, ...}`) is a real update. Measured: 0 refusals over 1,377 real
+  traces (both matrices, pivot_eval, ship_eval; worst share 1/3), 425/429 of the
+  same traces refused once rewritten as merged state. The misses are graphs
+  where every node overwrites every key it received — indistinguishable by shape.
 
 ### The shipped-shapes matrix — and the nine defects it found
 
@@ -351,7 +363,7 @@ Ledger has tool callbacks. No urllib3 monkeypatch on this path. No fake `http=[]
 
 ### 6. Other frameworks / skinny traces
 
-Recorder is LangGraph-specific. Skinny traces (payloads stripped) must refuse, not “pass.” CrewAI etc. later.
+Recorder is LangGraph-specific. Skinny traces (payloads stripped) must refuse, not “pass.” CrewAI etc. later. Merged state posing as updates refuses too (#82) — re-measure its threshold when a new adapter lands.
 
 ### 7. Do not delete `patcher.py` / `ArgusWatcher` yet
 

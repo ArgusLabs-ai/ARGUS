@@ -131,6 +131,15 @@ def finish(
         )
     if not session._events:
         _refuse(session, "no steps were recorded — the trace is empty")
+    merged = _merged_state_steps(session._events)
+    if merged is not None:
+        _refuse(
+            session,
+            "step outputs look like merged graph state, not node updates "
+            f"(every input field carried into the output on {', '.join(merged)}) — "
+            "`empty_output` and blame cannot work on that; record each node's "
+            "returned dict",
+        )
 
     ledger = build_ledger(
         session._events, session._initial_state, session.reducer_kinds, session.state_keys
@@ -260,6 +269,57 @@ def _apply_hits(hits: list[Hit]) -> None:
         insp.severity = "critical"
         if event.status != "crashed":
             event.status = "fail"
+
+
+_MERGED_MIN_STEPS = 3
+_MERGED_SHARE = 2 / 3
+
+
+def _carried(before: Any, after: Any) -> bool:
+    """``after`` is ``before`` unchanged, or a list that only grew past it."""
+    if after == before:
+        return True
+    return (
+        isinstance(before, list)
+        and isinstance(after, list)
+        and bool(before)
+        and after[: len(before)] == before
+    )
+
+
+def _looks_merged(inp: dict[str, Any], out: dict[str, Any]) -> bool:
+    """Every input key survives into the output and at least one is carried.
+
+    Merged state keeps every key the node received and leaves the ones it did
+    not write untouched (or, under an append reducer, extended). An update
+    names only what the node wrote — ``{"messages": [new]}`` does not start
+    with the input's messages, so ``MessagesState`` agents are not caught.
+    """
+    return set(inp) <= set(out) and any(_carried(inp[k], out[k]) for k in inp)
+
+
+def _merged_state_steps(events: list[Any]) -> list[str] | None:
+    """Names of steps whose output is merged state, if most of them are (#82).
+
+    A trace with every step present can still be skinny: a tracer that logs
+    post-merge state instead of the node's return makes ``{}`` unreachable, so
+    ``empty_output`` never fires and every run grades clean. One step echoing
+    its input is a pass-through node (``{**state, "x": ...}``); two-thirds of
+    at least three is a recorder feeding the wrong dict.
+    """
+    # ponytail: share threshold picked against both matrices + ship_eval with
+    # 0 refusals; re-measure when a new adapter lands.
+    graded = [
+        e
+        for e in events
+        if isinstance(e.input_state, dict) and e.input_state and isinstance(e.output_dict, dict)
+    ]
+    if len(graded) < _MERGED_MIN_STEPS:
+        return None
+    merged = [e.node_name for e in graded if _looks_merged(e.input_state, e.output_dict)]
+    if len(merged) / len(graded) < _MERGED_SHARE:
+        return None
+    return list(dict.fromkeys(merged))
 
 
 def _refuse(session: ArgusSession, why: str) -> None:

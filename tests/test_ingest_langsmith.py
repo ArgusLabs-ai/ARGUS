@@ -338,6 +338,34 @@ def test_skinny_trace_with_no_node_runs_saves_nothing():
     assert list(Path(".argus/runs").iterdir()) == []
 
 
+def _merge_outputs(only: str | None = None):
+    """Rewrite node outputs as post-merge state, the way a skinny tracer logs them."""
+
+    def merge(row):
+        if row.get("parent_run_id") and (only is None or row.get("name") == only):
+            row["outputs"] = {**row["inputs"], **row["outputs"]}
+
+    return merge
+
+
+def test_merged_state_posing_as_updates_saves_nothing():
+    # #82: merged, the silent `summarize` ({}) reads as a full state and grades clean.
+    path = _skinny_copy(_merge_outputs())
+    result = CliRunner().invoke(app, ["ingest", "langsmith", str(path)])
+    assert result.exit_code == 2, result.output
+    assert "merged graph state" in result.output
+    assert list(Path(".argus/runs").iterdir()) == []
+
+
+def test_one_pass_through_node_is_not_merged_state():
+    # A node returning {**state, ...} is a real update; one of three is not a recorder fault.
+    path = _skinny_copy(_merge_outputs(only="search"))
+    runner = CliRunner()
+    assert runner.invoke(app, ["ingest", "langsmith", str(path)]).exit_code == 0
+    checked = runner.invoke(app, ["check", "last", "--format", "json"])
+    assert json.loads(checked.output)["first_failure_step"] == "summarize"
+
+
 def test_not_skinny_when_only_one_node_has_empty_outputs():
     # The fixture's summarize already arrives as {}; root outputs prove nothing was hidden.
     rows = [json.loads(line) for line in FIXTURE.read_text().splitlines() if line.strip()]
