@@ -48,4 +48,6 @@ def test_allow_empty_still_softens_it(payload):
 )
 def test_a_filled_lookup_or_other_key_is_not_critical(payload):
     found = inspect_tool_calls([{"name": "fhir", "output": payload}])
-    assert all(t.severity != "critical" for t in found), [(t.field_name, t.severity) for t in found]
+    assert all(t.severity != "critical" for t in found), [
+        (t.field_name, t.severity) for t in found
+    ]

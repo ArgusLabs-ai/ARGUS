@@ -108,7 +108,10 @@ def _ph015_severity(out, *, own_output=True):
 @pytest.mark.parametrize(
     "out,field",
     [
-        ({"redlines": [{"change": "Limit Vendor liability to [INSERT CAP AMOUNT]."}]}, "redlines.[0].change"),
+        (
+            {"redlines": [{"change": "Limit Vendor liability to [INSERT CAP AMOUNT]."}]},
+            "redlines.[0].change",
+        ),
         ({"letter": "Your appointment is on [ENTER DATE] at the clinic."}, "letter"),
         ({"email": {"body": "Thanks for your time. Regards, [YOUR NAME]"}}, "email.body"),
     ],
@@ -121,7 +124,13 @@ def test_an_instruction_slot_in_own_output_is_critical(out, field):
     "out",
     [
         {"letter": "Prior authorization request for [PATIENT NAME], CPT 72148."},
-        {"email": {"body": "[EXTERNAL EMAIL] Hi Dana, loved your post about [TOPIC]. Best, [Your Name]"}},
+        {
+            "email": {
+                "body": (
+                    "[EXTERNAL EMAIL] Hi Dana, loved your post about [TOPIC]. Best, [Your Name]"
+                )
+            }
+        },
         {"email_template": "Dear [INSERT NAME], thanks for your order."},
         {"system_prompt": "Reply to the customer. Sign off as [YOUR NAME]."},
     ],

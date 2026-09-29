@@ -458,7 +458,8 @@ def _supervisor_app(skip_payment: bool):
         return {"itinerary": f"{s['flight']} paid with {s.get('payment', '?')}"}
 
     g = StateGraph(_Trip)
-    for name, fn in [("supervisor", supervisor), ("book", book), ("pay", pay), ("summarise", summarise)]:
+    nodes = [("supervisor", supervisor), ("book", book), ("pay", pay), ("summarise", summarise)]
+    for name, fn in nodes:
         g.add_node(name, fn)
     g.add_edge(START, "supervisor")
     g.add_edge("summarise", END)

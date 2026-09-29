@@ -99,7 +99,10 @@ def test_a_nodes_own_failure_is_still_critical(payload, field):
     [
         ({"status": "declined", "decline_code": "insufficient_funds"}, "psp.status"),
         # S6: a DocuSign envelope that bounced and was voided was never sent.
-        ({"envelopeId": "e-91", "status": "voided", "voidedReason": "Recipient email bounced"}, "psp.status"),
+        (
+            {"envelopeId": "e-91", "status": "voided", "voidedReason": "Recipient email bounced"},
+            "psp.status",
+        ),
         ({"error": "permission denied for relation orders"}, "psp.error"),
         ({"success": False}, "psp.success"),
     ],

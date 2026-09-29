@@ -40,7 +40,9 @@ def _app(async_node: bool):
     "old_python,async_node,warned",
     [(True, True, True), (True, False, False), (False, True, False)],
 )
-def test_attach_warns_about_async_nodes_on_old_python(monkeypatch, caplog, old_python, async_node, warned):
+def test_attach_warns_about_async_nodes_on_old_python(
+    monkeypatch, caplog, old_python, async_node, warned
+):
     monkeypatch.setattr(recorder_mod, "_CONTEXT_PROPAGATES", not old_python)
     with caplog.at_level(logging.WARNING, logger="argus"):
         ArgusRecorder(semantic_judge=False).attach(_app(async_node))
