@@ -379,16 +379,11 @@ Recorder is LangGraph-specific. Skinny traces (payloads stripped) must refuse, n
 
 Blocked on (1) and (4). First `master` PR keeps the wrap beside the recorder.
 
-### 8. Subgraph node names are bare, so two subgraphs can collide
+### 8. ~~Subgraph node names are bare, so two subgraphs can collide~~ — done (#95)
 
-`get_graph(xray=True)` gives `child:retrieve`, but the callback stream reports
-`langgraph_node` as `retrieve`. We key on the bare name because the trace is
-what we have to match. Two different subgraphs that each contain a `retrieve`
-therefore collapse onto one registry entry.
-
-**Done when:** the trace carries qualified names, or we correlate by
-`parent_run_id` instead of by name. Not urgent — the ambiguity is in the trace,
-not in our mapping.
+Colliding names are now qualified (`a:retrieve`) from `langgraph_checkpoint_ns`;
+see "Behaviour changes" above. Remaining edge: a `Command(goto=...)` issued
+*inside* a subgraph to a colliding name is not merged into the edge map.
 
 ### 9. `test_1mb_dict_completes` hugs its own budget
 

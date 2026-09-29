@@ -159,6 +159,11 @@ consumers={"email.body": ["send_email"]}
 A top-level declaration means the whole value, so `{"email": {"subject": "Re: order", "body": ""}}`
 counts as a non-empty `email` — blanking a leaf is only caught if you declare the leaf.
 
+**Two subgraphs with a node of the same name** (two copies of one sub-agent, each
+with a `retrieve`) are kept apart as `a:retrieve` / `b:retrieve`, the subgraph name
+followed by the node name. Findings name them that way, and a consumer map must
+too (`{"docs": ["b:retrieve"]}`). Names that appear only once stay bare.
+
 On a healthy run, `argus consumers` lists every later node that was handed a
 field and did not write it. Delete the nodes that only saw the field in shared
 state, then pass the file yourself. ARGUS does not load it, and does not fail
