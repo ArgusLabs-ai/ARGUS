@@ -120,6 +120,16 @@ run green. If you have a branch asserting either of these, it will fail:
   a key configured. That is judge-last working as intended. Judge-authored
   `semantic_fail` is still covered by `test_async_judge_applies_fail_verdict`.
 
+- **A node name shared across subgraphs is qualified (#95).** Row 2 above strips
+  the `parent:` prefix. That merged two copies of one sub-agent into a single
+  `retrieve`, which shared its edges and rows, so a write in one satisfied a read
+  in the other. When a bare name occurs more than once (counting subgraph
+  parents, so an inner `a` inside subgraph `a` counts too), those nodes are now
+  recorded, blamed and edge-mapped as `a:retrieve` / `b:retrieve`. The name comes
+  from `langgraph_checkpoint_ns` with task ids stripped, which equals the xray id.
+  Names that do not collide stay bare. A consumer map for a colliding node must
+  use the qualified name.
+
 Ordering matters in `session._finalize`: `_blame_crash_origins()` runs **after**
 `overall_status` is decided (so a crashed run stays `crashed`) and **before**
 `first_failure` is computed (so the origin, not the victim, leads the report).

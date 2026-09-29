@@ -35,6 +35,7 @@ import logging
 import sys
 import threading
 import time
+from collections import Counter
 from typing import Any, Callable
 from uuid import UUID
 
@@ -224,7 +225,9 @@ def _reducer_fields(app: Any) -> dict[str, Any]:
         return {}
 
 
-def _subgraph_shape(app: Any) -> tuple[dict[str, list[str]], set[str], set[str]]:
+def _subgraph_shape(
+    app: Any, ambiguous: set[str]
+) -> tuple[dict[str, list[str]], set[str], set[str]]:
     """``{subgraph: [its inner nodes]}``, the ones with a successor, outer keys.
 
     Needed for the one question no inner step can answer on its own: did the
@@ -248,9 +251,8 @@ def _subgraph_shape(app: Any) -> tuple[dict[str, list[str]], set[str], set[str]]
         if ":" not in node_id:
             continue
         parent, _, _ = node_id.partition(":")
-        name = _bare(node_id)
-        if name not in _SENTINELS:
-            inner.setdefault(parent, []).append(name)
+        if _bare(node_id) not in _SENTINELS:
+            inner.setdefault(parent, []).append(_key(node_id, ambiguous))
 
     with_successors = {
         edge.source
@@ -277,18 +279,54 @@ def _bare(node_id: str) -> str:
     """``child:retrieve`` → ``retrieve``.
 
     ``get_graph(xray=True)`` qualifies a subgraph's nodes with their parent, but
-    the callback stream reports ``langgraph_node`` as the bare name. The trace
-    is what we have to match against, so the bare name is the key.
-
-    ponytail: two subgraphs that each contain a `retrieve` collapse onto one
-    entry. Not recoverable here — the callbacks report both as `retrieve`, so
-    the ambiguity is in the trace, not in this line. Fix it upstream (qualified
-    names in the trace) if it ever bites.
+    the callback stream reports ``langgraph_node`` as the bare name. The bare
+    name is the key unless two nodes share it — see :func:`_key`.
     """
     return node_id.rsplit(":", 1)[-1]
 
 
-def _topology(app: Any) -> tuple[list[str], dict[str, list[str]], set[str], set[str]]:
+def _ambiguous(app: Any) -> set[str]:
+    """Bare names more than one node shares (#95).
+
+    Two copies of one sub-agent both hold a ``retrieve``; keyed bare, their
+    edges, rows and blame merge and a write in one satisfies a read in the
+    other. Only these names are qualified, so every other graph keeps the bare
+    names its consumer map and tests are written against.
+    """
+    try:
+        ids = app.get_graph(xray=True).nodes
+    except Exception:  # pragma: no cover - older/patched LangGraph
+        return set()
+    # Parents count too, once per path: xray lists `a:a` but not the subgraph
+    # `a` it lives in.
+    parents = {node_id[:i] for node_id in ids for i, c in enumerate(node_id) if c == ":"}
+    counts = Counter(_bare(n) for n in [*ids, *parents] if _bare(n) not in _SENTINELS)
+    return {name for name, count in counts.items() if count > 1}
+
+
+def _key(node_id: str, ambiguous: set[str]) -> str:
+    """An xray node id as the recorder names it: bare, or qualified if shared."""
+    return node_id if _bare(node_id) in ambiguous else _bare(node_id)
+
+
+def _trace_key(metadata: dict[str, Any] | None, ambiguous: set[str]) -> str | None:
+    """The callback's node, qualified the way :func:`_key` qualifies the topology.
+
+    ``langgraph_checkpoint_ns`` is ``a:<task>|retrieve:<task>``; dropping the
+    task ids gives ``a:retrieve``, the node's xray id. No namespace (an older
+    LangGraph) leaves the bare name — the pre-#95 behaviour, not a crash.
+    """
+    m = metadata or {}
+    node = m.get("langgraph_node")
+    if node not in ambiguous:
+        return node
+    ns = str(m.get("langgraph_checkpoint_ns") or "")
+    return ":".join(seg.split(":", 1)[0] for seg in ns.split("|")) or node
+
+
+def _topology(
+    app: Any, ambiguous: set[str] | None = None
+) -> tuple[list[str], dict[str, list[str]], set[str], set[str]]:
     """Node names, ``{node: [successors]}``, conditional sources, subgraph parents.
 
     Read with ``xray=True`` so nodes *inside* a subgraph are known too. Without
@@ -313,9 +351,9 @@ def _topology(app: Any) -> tuple[list[str], dict[str, list[str]], set[str], set[
         graph = app.get_graph()
 
     parents = {n.split(":", 1)[0] for n in graph.nodes if ":" in n}
-    names = [
-        _bare(n) for n in graph.nodes if _bare(n) not in _SENTINELS and _bare(n) not in parents
-    ]
+    ambiguous = _ambiguous(app) if ambiguous is None else ambiguous
+    keys = [_key(n, ambiguous) for n in graph.nodes]
+    names = [k for k in keys if k not in _SENTINELS and k not in parents]
     for outer in app.get_graph().nodes:
         if outer not in _SENTINELS and outer not in names and outer not in parents:
             names.append(outer)
@@ -323,7 +361,7 @@ def _topology(app: Any) -> tuple[list[str], dict[str, list[str]], set[str], set[
     edge_map: dict[str, list[str]] = {}
     conditional_sources: set[str] = set()
     for edge in graph.edges:
-        source, target = _bare(edge.source), _bare(edge.target)
+        source, target = _key(edge.source, ambiguous), _key(edge.target, ambiguous)
         if source in _SENTINELS or target in _SENTINELS:
             continue
         edge_map.setdefault(source, []).append(target)
@@ -395,6 +433,7 @@ class ArgusRecorder(BaseCallbackHandler):
         # Set at attach; every per-run session is built from them.
         self._topology: tuple[list[str], dict[str, list[str]], set[str]] = ([], {}, set())
         self._subgraphs: set[str] = set()
+        self._ambiguous: set[str] = set()
         # {subgraph: [inner nodes]}, those with a node waiting after them, and
         # the keys the outer graph actually has — see _blame_barren_subgraphs.
         self._subgraph_nodes: dict[str, list[str]] = {}
@@ -417,13 +456,14 @@ class ArgusRecorder(BaseCallbackHandler):
         The returned app is reusable: every ``invoke`` / ``stream`` / ``batch``
         item gets its own session, its own run file and its own verdict.
         """
-        names, edges, conditionals, self._subgraphs = _topology(app)
+        self._ambiguous = _ambiguous(app)
+        names, edges, conditionals, self._subgraphs = _topology(app, self._ambiguous)
         self._topology = (names, edges, conditionals)
         (
             self._subgraph_nodes,
             self._subgraphs_with_successors,
             self._outer_keys,
-        ) = _subgraph_shape(app)
+        ) = _subgraph_shape(app, self._ambiguous)
         self._inner_keys = _inner_state_keys(app, self._subgraph_nodes)
         self._reducers = _reducer_fields(app)
         self._judge = self._resolve_judge()
@@ -490,7 +530,7 @@ class ArgusRecorder(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         self._require_attached()
-        node = (metadata or {}).get("langgraph_node")
+        node = _trace_key(metadata, self._ambiguous)
 
         # Route this callback to the run it belongs to. A parentless chain *is*
         # a run boundary; everything else inherits its parent's root.
@@ -550,8 +590,7 @@ class ArgusRecorder(BaseCallbackHandler):
             # that same node's name: LangGraph's own inner runnable, not a
             # second visit. Matching on the name rather than the `seq:step:N`
             # tag keeps a real subgraph's inner nodes (different names)
-            # recorded. A subgraph node sharing its parent's name is folded into
-            # the parent — the same collision `_bare()` documents.
+            # recorded.
             return
 
         input_snap = session.capture_state(inputs if isinstance(inputs, dict) else {})
@@ -805,7 +844,7 @@ class ArgusRecorder(BaseCallbackHandler):
                     step = self._parent_of.get(step)
                 if step is not None:
                     return step
-            node = (cfg.get("metadata") or {}).get("langgraph_node")
+            node = _trace_key(cfg.get("metadata"), self._ambiguous)
             if not node:
                 return None
             best: UUID | None = None

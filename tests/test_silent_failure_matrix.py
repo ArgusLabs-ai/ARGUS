@@ -793,6 +793,49 @@ def test_an_inner_only_key_never_reaches_the_notebook():
     assert [(f.node, f.type) for f in record.findings] == [("retrieve", "missing_field")]
 
 
+def _twin_subgraph_app(first, second):
+    """Two copies of one sub-agent, each with an inner node called `retrieve` (#95)."""
+
+    def copy(retrieve):
+        inner = StateGraph(NestedState)
+        inner.add_node("retrieve", retrieve)
+        inner.add_edge(START, "retrieve")
+        inner.add_edge("retrieve", END)
+        return inner.compile()
+
+    outer = StateGraph(NestedState)
+    outer.add_node("a", copy(first))
+    outer.add_node("b", copy(second))
+    outer.add_node("render", lambda s: {"out": f"docs={s.get('docs')}"})
+    outer.add_edge(START, "a")
+    outer.add_edge("a", "b")
+    outer.add_edge("b", "render")
+    outer.add_edge("render", END)
+    return outer.compile()
+
+
+def test_same_named_nodes_in_two_subgraphs_are_blamed_unambiguously():
+    """`retrieve` in `a` and `retrieve` in `b` are two nodes, not one (#95)."""
+    verdict, record, rows = _run(
+        _twin_subgraph_app(lambda s: {"docs": ["d"]}, lambda s: {}), {"query": "q"}
+    )
+
+    assert {"a:retrieve", "b:retrieve"} <= set(rows), "each copy gets its own rows"
+    assert verdict.passed is False
+    assert _finding_nodes(record, "empty_output") == {"b:retrieve"}, (
+        "blame must name which `retrieve` went silent"
+    )
+
+
+def test_same_named_nodes_in_two_healthy_subgraphs_stay_clean():
+    verdict, record, _rows = _run(
+        _twin_subgraph_app(lambda s: {"docs": ["d"]}, lambda s: {"docs": ["e"]}),
+        {"query": "q"},
+    )
+    assert verdict.passed is True, f"healthy twins flagged: {verdict.reasons}"
+    assert record.findings == []
+
+
 def test_the_notebook_agrees_live_and_reloaded_for_a_subgraph():
     """Scoping must come off the run file too, or replay disagrees with the run."""
     recorder = ArgusRecorder(semantic_judge=False)
