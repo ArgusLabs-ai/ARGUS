@@ -285,7 +285,7 @@ result = app.invoke(initial_state)
 
 | Problem | Example |
 |---------|---------|
-| **Silent failures** | Node returns `{}` or drops a required field — no exception, pipeline keeps running broken |
+| **Silent failures** | Node returns `{}` or drops a required field — no exception, pipeline keeps running broken. Caught on the node itself however it routes: a plain edge, a conditional edge with or without a path map, or `Command(goto=...)` with or without a return annotation. Healthy loops grade with no warnings |
 | **Semantic failures** | Output structure is fine but values are wrong (placeholders, refusals, degraded text) |
 | **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field — unless the `KeyError` came from the node's *own* conditional edge, which is that node's bug, not its predecessor's |
 | **Blank final answer** | A ReAct agent's last turn returns empty `content` with no tool calls — the customer gets nothing back. An intermediate tool-calling turn with empty `content` is still exempt |
