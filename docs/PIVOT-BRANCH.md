@@ -136,6 +136,14 @@ run green. If you have a branch asserting either of these, it will fail:
   but is there by the reader's next visit, is progressive fill and stays clean. A
   field that is still missing on the reader's last visit fails as before.
 
+- **Healthy loops no longer carry two warnings (#150).** `ordering_anomaly`
+  (TC-002) ignored `retried` visits when it worked out which node ran first. A
+  loop's first pass is exactly what gets relabelled `retried`, so `worker` looked
+  like it ran before `supervisor`. Retried visits count now; only `skipped` ones
+  (which never ran) are left out. Separately, `BA-005` no longer asks an
+  *inferred* `structured_json` node to be nested (see the limitations table).
+  `pivot_eval` / `ship_eval` pass counts are unchanged.
+
 Ordering matters in `session._finalize`: `_blame_crash_origins()` runs **after**
 `overall_status` is decided (so a crashed run stays `crashed`) and **before**
 `first_failure` is computed (so the origin, not the victim, leads the report).
@@ -251,8 +259,9 @@ Defect 10 is the important one, and it is a **deliberate semantics change**:
 > judge that always votes fail; a real failure still fails).
 
 Warning-level *behavioural* anomalies deliberately do not corroborate:
-`BA-005 structural malformation` fires on any flat dict, which is what a normal
-LangGraph node returns, so counting it would let the judge fail almost anything.
+`BA-005 structural malformation` used to fire on any flat dict, which is what a
+normal LangGraph node returns, so counting it would let the judge fail almost
+anything (the flat-dict case is fixed, #150; the rule still stays out of corroboration).
 
 Verified working end to end from the CLI: `argus check` exit codes (0 clean /
 1 unclean), `show`, `list`, `diff` (correctly reports "retrieve: silent failure
@@ -311,7 +320,7 @@ which is a different and more dangerous thing to leave undocumented.
 | **Token accounting** | `llm_tracker` reads usage off the node's output dict, so a node returning `{"category": "..."}` records none. Verified identical on the old wrap path — pre-existing, not a pivot regression. `on_llm_end` would fix it on this path |
 | **A victim flagged alongside the origin** | When an upstream `{}` starves a downstream model node, both are flagged. `first_failure_step` is still the origin, so the verdict is right and the extra finding is noise: `degraded_input` covers present-and-bad fields, not absent ones |
 | **A node that echoes its input** | The one true-positive miss: a researcher branch returned the question verbatim as its note and the run graded clean. Echo detection exists for main answer fields but not for a fan-in accumulator. Related signal worth adding: the reviewer loop hit its revision cap and shipped anyway, which is itself evidence |
-| **`BA-005 structural malformation`** | Warning-level noise on any flat dict — i.e. on most healthy nodes. It no longer gates anything (see defect 10) but still clutters `argus show` and the `argus fix` prompt |
+| ~~**`BA-005 structural malformation`**~~ | **Closed (#150).** The nesting demand now applies only to a *declared* behaviour type; an inferred `structured_json` (the fallback for any flat dict) no longer flags a flat dict for being flat |
 | **A healthy fan-out + review pipeline, judge on** | Closed: the judge is not called unless a warning-level signature is already on the step. `semantic_judge=False` remains the fully deterministic gate |
 | **Frameworks other than LangGraph** | The recorder is LangGraph-specific. CrewAI etc. later |
 

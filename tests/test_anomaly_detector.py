@@ -202,6 +202,16 @@ class TestBA005StructuralMalformation:
         )
         assert signal is None
 
+    def test_inferred_type_does_not_demand_nesting(self):
+        """A flat update falls back to structured_json; it is not malformed for it (#150)."""
+        _type, signals = detect_anomalies("supervisor", {"rounds": 1})
+        assert "BA-005" not in {s.anomaly_id for s in signals}
+
+    def test_declared_structured_json_still_demands_nesting(self):
+        config = BehaviorConfig(node_behaviors={"supervisor": "structured_json"})
+        _type, signals = detect_anomalies("supervisor", {"rounds": 1}, config)
+        assert "BA-005" in {s.anomaly_id for s in signals}
+
 
 # ── BA-006: Shallow empty ────────────────────────────────────────────────────
 

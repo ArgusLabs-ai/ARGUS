@@ -111,10 +111,12 @@ def _detect_ordering_anomalies(
 
     reachable = _build_reachable(edge_map)
 
-    # Build first execution index per node (skip skipped/retried)
+    # First execution index per node. A `retried` visit still ran — it is the
+    # earlier pass of a loop — so it counts; skipping it made a loop's second
+    # node look like it ran before the first (#150). Only `skipped` never ran.
     first_exec: dict[str, int] = {}
     for e in events:
-        if e.status in ("skipped", "retried"):
+        if e.status == "skipped":
             continue
         if e.node_name not in first_exec:
             first_exec[e.node_name] = e.step_index

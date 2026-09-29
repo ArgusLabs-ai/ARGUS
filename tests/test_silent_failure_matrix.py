@@ -214,7 +214,8 @@ def test_a_field_filled_in_by_the_second_loop_pass_is_clean():
     verdict, record, _rows = _run(app, {}, {"brief": ["worker"]})
 
     assert verdict.passed is True, verdict.reasons
-    assert _finding_nodes(record, "missing_field") == set()
+    # Nor the loop noise: `ordering_anomaly` / flat-dict `BA-005` (#150).
+    assert record.findings == []
 
 
 # ── pipeline 2: map-reduce fan-out ───────────────────────────────────────────

@@ -709,12 +709,21 @@ def detect_anomalies(
     behavior_type = resolve_behavior_type(node_name, output_dict, config)
     profile = BEHAVIOR_PROFILES.get(behavior_type, BEHAVIOR_PROFILES["structured_json"])
 
+    # An inferred type was read off this same output, and the fallback is
+    # `structured_json` for any flat dict — so demanding nesting of it flags
+    # every flat update (`{"rounds": 1}`) for being flat (#150). Only a declared
+    # type is a claim the output can fail.
+    declared = bool(
+        config and (node_name in config.node_behaviors or config.default_behavior_type)
+    )
+    shape_profile = profile if declared else {**profile, "expects_nested": False}
+
     checks = [
         _check_length_collapse(output_dict, profile, behavior_type),
         _check_repetitive_filler(output_dict),
         _check_info_density(output_dict, profile, behavior_type),
         _check_generic_response(output_dict, input_state),
-        _check_structural_malformation(output_dict, profile, behavior_type),
+        _check_structural_malformation(output_dict, shape_profile, behavior_type),
         _check_shallow_empty(output_dict, profile, behavior_type, input_state),
         _check_incomplete_reasoning(output_dict, behavior_type),
         _check_abnormal_tool_response(output_dict, behavior_type),
