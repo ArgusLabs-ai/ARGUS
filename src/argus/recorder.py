@@ -206,6 +206,34 @@ def _command_goto(outputs: Any) -> list[str]:
     return [name for name in names if isinstance(name, str)]
 
 
+def _branch_route(outputs: Any) -> list[str]:
+    """Where a conditional edge's path function sent the run: ``"x"``, a
+    ``Send``, or a list of either. Anything else is not a route."""
+    targets = outputs if isinstance(outputs, (list, tuple)) else [outputs]
+    names = [getattr(target, "node", target) for target in targets]
+    return [name for name in names if isinstance(name, str)]
+
+
+def _unmapped_branch_sources(app: Any) -> set[str]:
+    """Nodes with a conditional edge added without a path map (bare names).
+
+    ``add_conditional_edges("worker", route)`` gives ``get_graph()`` nothing to
+    draw, so ``worker`` shows up as going straight to ``__end__`` and is exempt
+    from ``empty_output`` — a silent no-op there blamed its victim downstream.
+    Subgraphs are walked too. Best-effort: anything unreadable is left out.
+    """
+    out: set[str] = set()
+    builder = getattr(app, "builder", None)
+    for source, branches in (getattr(builder, "branches", None) or {}).items():
+        if any(getattr(b, "ends", None) is None for b in branches.values()):
+            out.add(source)
+    for node in (getattr(app, "nodes", None) or {}).values():
+        bound = getattr(node, "bound", None)
+        if bound is not app and getattr(bound, "builder", None) is not None:
+            out |= _unmapped_branch_sources(bound)
+    return out
+
+
 def _reducer_fields(app: Any) -> dict[str, Any]:
     """Reducers declared on the state schema, e.g. ``Annotated[list, operator.add]``.
 
@@ -434,6 +462,10 @@ class ArgusRecorder(BaseCallbackHandler):
         self._topology: tuple[list[str], dict[str, list[str]], set[str]] = ([], {}, set())
         self._subgraphs: set[str] = set()
         self._ambiguous: set[str] = set()
+        # Nodes whose conditional edge has no path map, and the routes their
+        # path function returned for each open step — see _branch_route.
+        self._unmapped: set[str] = set()
+        self._routes: dict[UUID, list[str]] = {}
         # {subgraph: [inner nodes]}, those with a node waiting after them, and
         # the keys the outer graph actually has — see _blame_barren_subgraphs.
         self._subgraph_nodes: dict[str, list[str]] = {}
@@ -466,6 +498,7 @@ class ArgusRecorder(BaseCallbackHandler):
         ) = _subgraph_shape(app, self._ambiguous)
         self._inner_keys = _inner_state_keys(app, self._subgraph_nodes)
         self._reducers = _reducer_fields(app)
+        self._unmapped = _unmapped_branch_sources(app)
         self._judge = self._resolve_judge()
         self._attached = True
         if not _CONTEXT_PROPAGATES:
@@ -659,7 +692,13 @@ class ArgusRecorder(BaseCallbackHandler):
         with self._lock:
             root = self._root_of.pop(run_id, None)
             self._node_of.pop(run_id, None)
-            self._parent_of.pop(run_id, None)
+            parent = self._parent_of.pop(run_id, None)
+            step = self._pending.get(parent) if parent is not None else None
+            if step is not None and _bare(step[0]) in self._unmapped:
+                # A child of an open step on an unmapped branch: the path
+                # function, which ends before the node's step does. Its return
+                # is the route `get_graph()` could not draw.
+                self._routes.setdefault(parent, []).extend(_branch_route(outputs))
         if root is None:
             return
         session = self._roots.get(root)
@@ -683,6 +722,7 @@ class ArgusRecorder(BaseCallbackHandler):
             entry = self._pending.pop(run_id, None)
             tools = self._tools.pop(run_id, [])
             llm_calls = self._llm.pop(run_id, [])
+            routes = self._routes.pop(run_id, [])
             if entry is None:
                 return False
 
@@ -700,7 +740,7 @@ class ArgusRecorder(BaseCallbackHandler):
             # Before the step is graded, not after: `empty_output` reads the
             # edge map inside `on_node_end` (#110).
             goto = _command_goto(outputs)
-            self._observe_route(session, node, goto)
+            self._observe_route(session, node, goto + routes)
 
             # Tools go in with the step, not onto the event afterwards: the
             # graders run inside on_node_end, so tools attached later were

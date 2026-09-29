@@ -169,6 +169,44 @@ def test_worker_no_op_is_caught_even_when_the_worker_owns_the_loop_edge():
     assert "worker" in verdict.failing_nodes
 
 
+def _unmapped_loop(worker):
+    """The supervisor loop routed with no path map: `get_graph()` cannot see
+    where `worker` goes, and draws it as `worker -> __end__`."""
+    g = StateGraph(SupervisorState)
+    g.add_node("supervisor", lambda s: {"rounds": s.get("rounds", 0) + 1})
+    g.add_node("worker", worker)
+    g.add_node("compile", lambda s: {"report": "; ".join(s.get("findings") or ["-"])})
+    g.add_edge(START, "supervisor")
+    g.add_edge("supervisor", "worker")
+    g.add_conditional_edges(
+        "worker", lambda s: "supervisor" if s.get("rounds", 0) < 2 else "compile"
+    )
+    g.add_edge("compile", END)
+    return g.compile()
+
+
+def test_a_worker_no_op_on_an_unmapped_conditional_edge_is_blamed():
+    """No path map must not make `worker` look terminal and exempt from `empty_output`."""
+    verdict, record, _rows = _run(_unmapped_loop(lambda s: {}), {"task": "research"})
+
+    assert verdict.passed is False
+    assert "worker" in _finding_nodes(record, "empty_output")
+    assert record.first_failure_step == "worker", "the origin leads, not the victim"
+
+
+def test_a_healthy_unmapped_loop_is_clean():
+    app = _unmapped_loop(
+        lambda s: {"findings": [f"round {s.get('rounds')}: supplier lead times rose 12%"]}
+    )
+    verdict, record, _rows = _run(app, {"task": "research"})
+
+    assert verdict.passed is True, verdict.reasons
+    assert record.findings == []
+    assert set(record.graph_edge_map["worker"]) == {"supervisor", "compile"}, (
+        "the routes the branch actually took reach the edge map"
+    )
+
+
 class BriefState(TypedDict, total=False):
     rounds: int
     brief: str

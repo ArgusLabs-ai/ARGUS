@@ -692,6 +692,20 @@ with no `update` to claim no update. `test_the_destination_annotation_does_not_
 change_the_verdict` runs the same supervisor loop both ways and asserts the
 verdicts are identical.
 
+**The same hole, other routing form (#151).** `add_conditional_edges("worker",
+route)` with **no path map** is just as invisible: `get_graph` draws
+`worker -> __end__`, so a `worker` returning `{}` looked terminal and the run
+blamed its victim downstream. LangGraph runs the path function as a child
+runnable inside the source node's task, and that child's output *is* the route
+(`"supervisor"`, a `Send`, or a list). It ends before the node's step closes,
+so `_end` collects it for sources listed by `_unmapped_branch_sources` (top-level
+and subgraph builders), and `_close_step` passes it to `_observe_route` together
+with any `goto`. Same filter, same bargain: only declared nodes, only the branch
+taken. Guarded by `test_a_worker_no_op_on_an_unmapped_conditional_edge_is_blamed`
+and `test_a_healthy_unmapped_loop_is_clean` in the silent-failure matrix.
+Limitation: a subgraph's path function returning a node name that is *qualified*
+(#95) is not matched.
+
 Eleven tests in `tests/test_shipped_shapes_matrix.py` section 6 now (#88 + #110).
 Each mechanism verified to fail when reverted: dropping the observed route fails
 4, dropping the known-nodes filter fails exactly the `goto=END` terminal guard,
