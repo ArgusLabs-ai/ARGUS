@@ -285,6 +285,13 @@ def _blame(
             return None
         if any(row.node in blamed_elsewhere for row in before):
             return None, reader.node  # starved by a barren subgraph: a victim
+        # A loop filling the field in progressively: not written *yet* on this
+        # visit, there by a later visit of the same reader (#93).
+        if any(
+            row.node == reader.node and not lacks(row.input_state, field)
+            for row in ledger[reader_at + 1 :]
+        ):
+            return None
         origin_at = 0
         why = "no step wrote it"
 

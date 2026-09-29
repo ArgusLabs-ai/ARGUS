@@ -169,6 +169,54 @@ def test_worker_no_op_is_caught_even_when_the_worker_owns_the_loop_edge():
     assert "worker" in verdict.failing_nodes
 
 
+class BriefState(TypedDict, total=False):
+    rounds: int
+    brief: str
+    findings: Annotated[list[str], operator.add]
+
+
+def _brief_loop(brief_on_round):
+    """supervisor writes `brief`, worker reads it, twice round the loop (#93)."""
+
+    def supervisor(state: BriefState) -> dict:
+        rounds = state.get("rounds", 0) + 1
+        update: dict = {"rounds": rounds}
+        if brief_on_round(rounds) is not None:
+            update["brief"] = brief_on_round(rounds)
+        return update
+
+    def worker(state: BriefState) -> dict:
+        return {"findings": [f"fact-{state.get('rounds')}"]}
+
+    g = StateGraph(BriefState)
+    g.add_node("supervisor", supervisor)
+    g.add_node("worker", worker)
+    g.add_edge(START, "supervisor")
+    g.add_edge("supervisor", "worker")
+    g.add_conditional_edges(
+        "worker", lambda s: "supervisor" if s.get("rounds", 0) < 2 else END
+    )
+    return g.compile()
+
+
+def test_a_field_dropped_on_the_second_loop_pass_is_caught():
+    """Pass 1 reads a brief; pass 2 reads a blank one. Only the first read was checked."""
+    app = _brief_loop(lambda r: "scope: EU" if r == 1 else "")
+    verdict, record, _rows = _run(app, {}, {"brief": ["worker"]})
+
+    assert verdict.passed is False, "the second read was starved"
+    assert _finding_nodes(record, "missing_field") == {"supervisor"}
+
+
+def test_a_field_filled_in_by_the_second_loop_pass_is_clean():
+    """Progressive fill: absent on pass 1, present by pass 2 — not a failure (#93)."""
+    app = _brief_loop(lambda r: "scope: EU" if r == 2 else None)
+    verdict, record, _rows = _run(app, {}, {"brief": ["worker"]})
+
+    assert verdict.passed is True, verdict.reasons
+    assert _finding_nodes(record, "missing_field") == set()
+
+
 # ── pipeline 2: map-reduce fan-out ───────────────────────────────────────────
 
 

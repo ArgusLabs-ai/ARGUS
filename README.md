@@ -159,6 +159,10 @@ consumers={"email.body": ["send_email"]}
 A top-level declaration means the whole value, so `{"email": {"subject": "Re: order", "body": ""}}`
 counts as a non-empty `email` — blanking a leaf is only caught if you declare the leaf.
 
+**Loops.** Every visit of a reader is checked, not just the first. A field
+present on pass 1 and dropped before pass 2 fails on the node that dropped it. A
+field that only shows up by a later pass (filled in as the loop goes) is fine.
+
 **Two subgraphs with a node of the same name** (two copies of one sub-agent, each
 with a `retrieve`) are kept apart as `a:retrieve` / `b:retrieve`, the subgraph name
 followed by the node name. Findings name them that way, and a consumer map must

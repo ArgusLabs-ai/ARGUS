@@ -130,6 +130,12 @@ run green. If you have a branch asserting either of these, it will fail:
   Names that do not collide stay bare. A consumer map for a colliding node must
   use the qualified name.
 
+- **The consumer map checks every visit of a reader, not the first (#93).**
+  In a loop, a field that is present on pass 1 and dropped before pass 2 fails on
+  the node that dropped it. The reverse, a field that is not written yet on pass 1
+  but is there by the reader's next visit, is progressive fill and stays clean. A
+  field that is still missing on the reader's last visit fails as before.
+
 Ordering matters in `session._finalize`: `_blame_crash_origins()` runs **after**
 `overall_status` is decided (so a crashed run stays `crashed`) and **before**
 `first_failure` is computed (so the origin, not the victim, leads the report).
