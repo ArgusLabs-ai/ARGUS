@@ -32,7 +32,11 @@ def _load_dotenv_call_sites() -> list[str]:
             if name != "load_dotenv":
                 continue
             for kw in node.keywords:
-                if kw.arg == "override" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                if (
+                    kw.arg == "override"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is True
+                ):
                     offenders.append(f"{path.relative_to(SRC_DIR.parent.parent)}:{node.lineno}")
     return offenders
 
