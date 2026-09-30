@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import TypedDict
 
 import pytest
+from conftest import make_run_record
 from langgraph.graph import END, StateGraph
 
 from argus.pytest_instrument import (
     install_auto_instrumentation,
     uninstall_auto_instrumentation,
 )
-from argus.storage import last_run_id, load_run
+from argus.storage import last_run_id, load_run, save_run
 
 pytest.importorskip("langgraph")
 
@@ -210,6 +212,22 @@ def test_uninstall_restores_uninstrumented_compile(auto_wrap):
 
 
 @pytest.mark.unit
+def test_run_capture_collects_runs_saved_by_worker_threads():
+    from argus.run_context import begin_run_capture, captured_run_ids, end_run_capture
+
+    capture = begin_run_capture()
+    try:
+        worker = threading.Thread(
+            target=lambda: save_run(make_run_record(run_id="thread-run")),
+        )
+        worker.start()
+        worker.join()
+        assert captured_run_ids(capture) == {"thread-run"}
+    finally:
+        end_run_capture(capture)
+
+
+@pytest.mark.unit
 def test_pregel_fallback_attaches_on_ainvoke():
     """Compile before install so only the Pregel class patch can attach."""
     uninstall_auto_instrumentation()
@@ -383,6 +401,59 @@ def test_silent():
     asyncio.run(_drain())
 """
 
+_PARALLEL_CLEAN = """
+import time
+from pathlib import Path
+from typing import TypedDict
+from langgraph.graph import END, StateGraph
+
+class S(TypedDict):
+    n: int
+
+def test_clean():
+    Path("clean-started").write_text("ready")
+    time.sleep(0.5)
+    g = StateGraph(S)
+    g.add_node("inc", lambda s: {"n": s["n"] + 1})
+    g.set_entry_point("inc")
+    g.add_edge("inc", END)
+    assert g.compile().invoke({"n": 0})["n"] == 1
+"""
+
+_PARALLEL_SILENT = """
+import time
+from pathlib import Path
+from typing import TypedDict
+from langgraph.graph import END, StateGraph
+
+class S(TypedDict, total=False):
+    n: int
+    results: list
+    error: str
+    status_code: int
+
+def test_silent():
+    deadline = time.monotonic() + 5
+    while not Path("clean-started").exists():
+        if time.monotonic() >= deadline:
+            raise AssertionError("clean test did not start")
+        time.sleep(0.01)
+
+    def api_call(state):
+        return {"results": [], "error": "Connection refused", "status_code": 503}
+
+    def process(state):
+        return {"n": 1}
+
+    g = StateGraph(S)
+    g.add_node("api_call", api_call)
+    g.add_node("process", process)
+    g.set_entry_point("api_call")
+    g.add_edge("api_call", "process")
+    g.add_edge("process", END)
+    g.compile().invoke({"n": 0})
+"""
+
 
 @pytest.mark.unit
 def test_pytest_argus_auto_wraps_clean_invoke(pytester: pytest.Pytester):
@@ -435,3 +506,13 @@ def test_pytest_argus_silent_astream_fails_test(pytester: pytest.Pytester):
     result.assert_outcomes(failed=1)
     combined = str(result.stdout) + str(result.stderr)
     assert "argus check failed" in combined
+
+
+@pytest.mark.unit
+def test_pytest_argus_binds_parallel_runs_to_their_own_tests(pytester: pytest.Pytester):
+    pytest.importorskip("xdist")
+    pytest.importorskip("argus.pytest_plugin")
+    _prepare_plugin_project(pytester)
+    pytester.makepyfile(test_clean=_PARALLEL_CLEAN, test_silent=_PARALLEL_SILENT)
+    result = pytester.runpytest("--argus", "-n", "2", "--dist=loadfile", "-q")
+    result.assert_outcomes(passed=1, failed=1)

@@ -15,9 +15,14 @@ from typing import Any
 import pytest
 
 from argus.check import evaluate_run
-from argus.storage import list_runs, load_run
+from argus.run_context import (
+    begin_run_capture,
+    captured_run_ids,
+    end_run_capture,
+)
+from argus.storage import load_run
 
-_ITEM_RUN_IDS = "_argus_run_ids_before"
+_ITEM_RUN_CAPTURE = "_argus_run_capture"
 _ARGUS_ENABLED = pytest.StashKey[bool]()
 
 
@@ -67,17 +72,18 @@ def _maybe_install_auto_instrumentation() -> None:
     install_auto_instrumentation()
 
 
-def _current_run_ids() -> set[str]:
-    try:
-        return {row["run_id"] for row in list_runs() if row.get("run_id")}
-    except Exception:
-        return set()
-
-
 def pytest_runtest_setup(item: pytest.Item) -> None:
     if not _argus_enabled(item.config):
         return
-    setattr(item, _ITEM_RUN_IDS, _current_run_ids())
+    setattr(item, _ITEM_RUN_CAPTURE, begin_run_capture())
+
+
+def _end_run_capture(item: pytest.Item) -> None:
+    capture = getattr(item, _ITEM_RUN_CAPTURE, None)
+    if capture is None:
+        return
+    end_run_capture(capture)
+    delattr(item, _ITEM_RUN_CAPTURE)
 
 
 def _fail_message(run_id: str, summary: str) -> str:
@@ -90,11 +96,10 @@ def _fail_message(run_id: str, summary: str) -> str:
 
 
 def _evaluate_new_runs(item: pytest.Item) -> str | None:
-    before: set[str] = getattr(item, _ITEM_RUN_IDS, set())
-    new_ids = _current_run_ids() - before
-    if not new_ids:
+    capture = getattr(item, _ITEM_RUN_CAPTURE, None)
+    if capture is None:
         return None
-    for run_id in sorted(new_ids):
+    for run_id in sorted(captured_run_ids(capture)):
         try:
             record = load_run(run_id)
         except (FileNotFoundError, ValueError):
@@ -112,13 +117,21 @@ def pytest_runtest_makereport(
     outcome = yield
     if call.when != "call":
         return
-    if not _argus_enabled(item.config):
-        return
-    report = outcome.get_result()
-    if report.outcome != "passed":
-        return
-    message = _evaluate_new_runs(item)
-    if message is None:
-        return
-    report.outcome = "failed"
-    report.longrepr = message
+    try:
+        if not _argus_enabled(item.config):
+            return
+        report = outcome.get_result()
+        if report.outcome != "passed":
+            return
+        message = _evaluate_new_runs(item)
+        if message is None:
+            return
+        report.outcome = "failed"
+        report.longrepr = message
+    finally:
+        _end_run_capture(item)
+
+
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """Clean up if setup prevented the call report from being generated."""
+    _end_run_capture(item)

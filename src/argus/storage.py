@@ -34,6 +34,7 @@ from argus.models import (
     ToolFailure,
     ValidatorResult,
 )
+from argus.run_context import record_run_id
 
 _ARGUS_DIR = ".argus"
 _RUNS_DIR = "runs"
@@ -109,6 +110,7 @@ def save_run(record: RunRecord) -> Path:
     data = _to_json_serializable(record)
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.rename(path)
+    record_run_id(record.run_id)
 
     # Update hit metadata for learned/shared signatures, then prune stale ones
     try:
