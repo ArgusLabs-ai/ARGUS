@@ -144,6 +144,15 @@ run green. If you have a branch asserting either of these, it will fail:
   *inferred* `structured_json` node to be nested (see the limitations table).
   `pivot_eval` / `ship_eval` pass counts are unchanged.
 
+- **A run leaves no recorder bookkeeping behind, however it ends (#92).**
+  `_finish` now calls `_forget(root)`, which drops every entry routed to that
+  run. Before, entries were removed only by their own end callback. A tool whose
+  end never arrived, or a step whose end never arrived (the trace `finish`
+  refuses), stayed for the life of a served app, input-state snapshot included.
+  Tools have their own `_tool_root` map, because putting them in `_root_of` would
+  let a chain started inside a tool be recorded as a second step of its node.
+  Normal, crashed, interrupted and cancelled runs already cleaned up.
+
 Ordering matters in `session._finalize`: `_blame_crash_origins()` runs **after**
 `overall_status` is decided (so a crashed run stays `crashed`) and **before**
 `first_failure` is computed (so the origin, not the victim, leads the report).

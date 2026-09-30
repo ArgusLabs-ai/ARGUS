@@ -544,3 +544,50 @@ def test_tool_at_graph_level_keeps_raw_parent_key():
     # current-recorder into later tests.
     with pytest.raises(IncompleteTraceError):
         recorder.on_chain_end({}, run_id=graph_run)
+
+
+_BOOKKEEPING = (
+    "_root_of", "_node_of", "_parent_of", "_pending",
+    "_tools", "_tool_owner", "_tool_root", "_llm", "_routes", "_roots",
+)
+
+
+def _leftovers(recorder):
+    return {name: len(getattr(recorder, name)) for name in _BOOKKEEPING if getattr(recorder, name)}
+
+
+def _orphaned_run(recorder, *, tool_ends: bool, step_ends: bool):
+    """One run through the callbacks, optionally losing a tool's or a step's end."""
+    graph_run, node_run, tool_run = uuid4(), uuid4(), uuid4()
+    recorder.on_chain_start(None, {}, run_id=graph_run)
+    recorder.on_chain_start(
+        None, {"query": "q"}, run_id=node_run, parent_run_id=graph_run,
+        metadata={"langgraph_node": "search"},
+    )
+    recorder.on_tool_start({"name": "fetch"}, "{}", run_id=tool_run, parent_run_id=node_run)
+    if tool_ends:
+        recorder.on_tool_end("ok", run_id=tool_run)
+    if step_ends:
+        recorder.on_chain_end({"docs": ["d"]}, run_id=node_run)
+    try:
+        recorder.on_chain_end({}, run_id=graph_run)
+    except IncompleteTraceError:
+        pass
+
+
+@pytest.mark.unit
+def test_a_run_leaves_no_bookkeeping_behind_however_it_ends():
+    """#92: a lost tool or step end used to keep its entries — and the step's
+    full input snapshot — alive for the life of a served app."""
+    recorder = ArgusRecorder(semantic_judge=False)
+    recorder.attach(_build_app({}))
+
+    _orphaned_run(recorder, tool_ends=False, step_ends=True)
+    assert _leftovers(recorder) == {}, "a tool whose end never arrived"
+
+    _orphaned_run(recorder, tool_ends=True, step_ends=False)
+    assert _leftovers(recorder) == {}, "a step whose end never arrived (run refused)"
+
+    for _ in range(3):
+        recorder.attach(_build_app({"summary": "a real summary"})).invoke({"query": "q"})
+    assert _leftovers(recorder) == {}, "clean runs through one attach"

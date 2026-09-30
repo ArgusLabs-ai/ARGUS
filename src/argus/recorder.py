@@ -442,6 +442,7 @@ class ArgusRecorder(BaseCallbackHandler):
         self._tools: dict[UUID, list[dict[str, Any]]] = {}
         # tool run_id -> that tool's own record, so concurrent tools don't cross
         self._tool_owner: dict[UUID, dict[str, Any]] = {}
+        self._tool_root: dict[UUID, UUID] = {}  # tool run → graph run, for _forget
         # node chain run_id -> model calls made anywhere beneath it
         self._llm: dict[UUID, list[LLMCallInfo]] = {}
         # chain run_id -> its parent, so a model call inside `prompt | llm`
@@ -803,6 +804,11 @@ class ArgusRecorder(BaseCallbackHandler):
         }
         with self._lock:
             self._tool_owner[run_id] = record
+            # Its run, so `_forget` can drop a tool whose end never arrives
+            # (#92). Not `_root_of`: a chain started inside a tool would then
+            # route through it and be recorded as a second step of the node.
+            if parent_run_id in self._root_of:
+                self._tool_root[run_id] = self._root_of[parent_run_id]
             # F-29: file under the nearest PENDING node step, mirroring the
             # llm re-parent below — a tool invoked inside an inner chain
             # parents to the chain's run id, not the node's, and the exact-key
@@ -825,6 +831,7 @@ class ArgusRecorder(BaseCallbackHandler):
         # Closed by the tool's own run_id, not "the last one started under this
         # node" — a node may have several tools in flight at once.
         with self._lock:
+            self._tool_root.pop(run_id, None)
             record = self._tool_owner.pop(run_id, None)
             if record is None:
                 return
@@ -944,7 +951,29 @@ class ArgusRecorder(BaseCallbackHandler):
         finally:
             # Exception-safe: a crashed grade must not leak this recorder into
             # report_tool_call's resolution after the run is over.
+            self._forget(root)
             _register_run_end(self)
+
+    def _forget(self, root: UUID) -> None:
+        """Drop everything routed to ``root``, however the run ended (#92).
+
+        Entries are otherwise removed only by their own end callback, so a step
+        or tool whose end never arrives — the very trace ``finish`` refuses —
+        kept its input snapshot alive for the life of a served app.
+        """
+        with self._lock:
+            dead = {root} | {
+                rid
+                for table in (self._root_of, self._tool_root)
+                for rid, owner in table.items()
+                if owner == root
+            }
+            for table in (
+                self._root_of, self._node_of, self._parent_of, self._pending, self._tools,
+                self._tool_owner, self._tool_root, self._llm, self._routes, self._roots,
+            ):
+                for rid in dead & table.keys():
+                    del table[rid]
 
     def _blame_barren_subgraphs(self, session: ArgusSession) -> None:
         """Fail a subgraph that ran and left the parent state untouched (#89).
