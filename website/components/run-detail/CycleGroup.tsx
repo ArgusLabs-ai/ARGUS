@@ -5,11 +5,11 @@ import type { NodeEvent, RunRecord, LoopAnalysisResult } from '@/lib/types'
 import type { NodeDiffData } from './ReplayControls'
 import StepRow from './StepRow'
 
-const C_GREEN = '#10b981'
-const C_AMBER = '#f59e0b'
-const C_RED = '#ef4444'
-const C_GRAY = '#6b7280'
-const C_CYAN = '#06b6d4'
+const C_GREEN = 'var(--ok)'
+const C_AMBER = 'var(--quality)'
+const C_RED = 'var(--tool)'
+const C_GRAY = 'var(--ink-3)'
+const C_CYAN = 'var(--coherence)'
 
 function iterationStatus(events: NodeEvent[]): { dot: string; color: string } {
   if (events.some((e) => e.status === 'crashed')) return { dot: '✗', color: C_RED }
@@ -103,12 +103,12 @@ export default function CycleGroup({
         </span>
         {/* Stall / unnecessary retry warnings */}
         {loopAnalysis?.is_stalled && (
-          <span className="rounded-[4px] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider" style={{ color: C_RED, background: 'color-mix(in srgb, #ef4444 10%, transparent)' }}>
+          <span className="rounded-[4px] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider" style={{ color: C_RED, background: 'color-mix(in srgb, var(--tool) 10%, transparent)' }}>
             stalled
           </span>
         )}
         {loopAnalysis && loopAnalysis.unnecessary_retries > 0 && (
-          <span className="rounded-[4px] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider" style={{ color: C_AMBER, background: 'color-mix(in srgb, #f59e0b 10%, transparent)' }}>
+          <span className="rounded-[4px] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider" style={{ color: C_AMBER, background: 'color-mix(in srgb, var(--quality) 10%, transparent)' }}>
             {loopAnalysis.unnecessary_retries} unnecessary
           </span>
         )}
@@ -118,7 +118,7 @@ export default function CycleGroup({
       {loopAnalysis && loopAnalysis.summary && (
         <div
           className="mx-1 rounded-[6px] border px-3 py-2"
-          style={{ borderColor: 'color-mix(in srgb, #06b6d4 20%, var(--border))', background: 'color-mix(in srgb, #06b6d4 4%, var(--card))' }}
+          style={{ borderColor: 'color-mix(in srgb, var(--coherence) 20%, var(--border))', background: 'color-mix(in srgb, var(--coherence) 4%, var(--card))' }}
         >
           <div
             className="flex items-center gap-2 cursor-pointer select-none"
@@ -137,12 +137,12 @@ export default function CycleGroup({
                 {loopAnalysis.summary}
               </p>
               {loopAnalysis.is_stalled && loopAnalysis.stall_details && (
-                <div className="rounded-[4px] px-2 py-1.5 text-[11px]" style={{ color: C_RED, background: 'color-mix(in srgb, #ef4444 8%, transparent)' }}>
+                <div className="rounded-[4px] px-2 py-1.5 text-[11px]" style={{ color: C_RED, background: 'color-mix(in srgb, var(--tool) 8%, transparent)' }}>
                   <span className="font-medium">Stall: </span>{loopAnalysis.stall_details}
                 </div>
               )}
               {loopAnalysis.unnecessary_retries > 0 && loopAnalysis.unnecessary_details && (
-                <div className="rounded-[4px] px-2 py-1.5 text-[11px]" style={{ color: C_AMBER, background: 'color-mix(in srgb, #f59e0b 8%, transparent)' }}>
+                <div className="rounded-[4px] px-2 py-1.5 text-[11px]" style={{ color: C_AMBER, background: 'color-mix(in srgb, var(--quality) 8%, transparent)' }}>
                   <span className="font-medium">Unnecessary retries: </span>{loopAnalysis.unnecessary_details}
                 </div>
               )}

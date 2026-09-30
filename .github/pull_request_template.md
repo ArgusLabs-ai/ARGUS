@@ -15,6 +15,7 @@
 ## Checklist
 
 - [ ] I have read the [Contributing guide](../CONTRIBUTING.md).
+- [ ] I have joined the [ARGUS Discord](https://discord.gg/67XTFTDSgd) (updates, questions, PR discussion).
 - [ ] I have signed the [CLA](../CLA.md) (the bot will prompt on first PR).
 - [ ] My change targets the **open-source core** only — I have **not** modified
       `cloud/` or `supabase/` (proprietary; maintainer-only).

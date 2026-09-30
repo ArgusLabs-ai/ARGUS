@@ -1,0 +1,284 @@
+'use client'
+
+/* Workspace state for the IDE frame: the run list the explorer reads, the
+   strip of open tabs, which tab is active (derived from the URL), and the
+   live-tail toggle. Tabs persist across reloads in localStorage. */
+
+import {
+  Suspense,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import type { RunSummary } from './types'
+import { useServingInfo, type ServingInfo } from './hooks'
+
+export type WsTab =
+  | { id: string; kind: 'run'; runId: string }
+  | { id: string; kind: 'compare'; a: string; b: string }
+
+export function compareTabId(a: string, b: string): string {
+  return `cmp:${a}:${b}`
+}
+
+/** Last segment of a timestamped run id: `20260815-224711-2e8a3c` → `2e8a3c`. */
+export function shortRunId(id: string): string {
+  const parts = id.split('-')
+  const tail = parts[parts.length - 1]
+  return tail && tail.length >= 4 && tail.length <= 8 ? tail : id.slice(-6)
+}
+
+interface WorkspaceValue {
+  runs: RunSummary[]
+  runsLoading: boolean
+  refreshRuns: () => void
+  serving: ServingInfo | null
+  live: boolean
+  setLive: (v: boolean) => void
+
+  tabs: WsTab[]
+  activeTabId: string | null
+  activeRunId: string | null
+  openRun: (runId: string, opts?: { replace?: boolean }) => void
+  openCompare: (a: string, b: string) => void
+  closeTab: (tabId: string) => void
+  goHome: () => void
+
+  note: { text: string; key: string } | null
+  setNote: (n: { text: string; key: string } | null) => void
+  dismissNote: () => void
+
+  /** Current query string. Read this instead of calling `useSearchParams`
+      again — see `SearchParamsBridge`. */
+  query: URLSearchParams
+}
+
+const Ctx = createContext<WorkspaceValue | null>(null)
+const NO_QUERY = new URLSearchParams()
+
+/* `useSearchParams` opts a component out of static prerendering up to its
+   nearest Suspense boundary. Calling it in the provider put the whole app —
+   rail, explorer and every page body — behind one boundary, so Next 14
+   prerendered the public /guide and /changelog routes as an empty shell. This
+   reads the params behind its own null-fallback boundary and hands them down,
+   which keeps the rest of the tree statically prerenderable. */
+function SearchParamsBridge({ onChange }: { onChange: (q: URLSearchParams) => void }) {
+  const sp = useSearchParams()
+  useEffect(() => { onChange(sp) }, [sp, onChange])
+  return null
+}
+/** `/compare/` → `/compare`; `/` stays `/`. */
+export function normalizePath(p: string | null): string {
+  return (p ?? '/').replace(/\/+$/, '') || '/'
+}
+
+const TABS_KEY = 'argus-ws-tabs'
+const POLL_MS = 6000
+
+function readTabs(): WsTab[] {
+  try {
+    const raw = localStorage.getItem(TABS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as WsTab[]
+    return Array.isArray(parsed) ? parsed.filter((t) => t && typeof t.id === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/* Identity for the 6 s live-tail poll: keep the previous array (no re-render)
+   only when nothing a row can show has moved. An in-flight run keeps its
+   status while its step count and duration grow, so those count too. */
+function sameRuns(prev: RunSummary[], next: RunSummary[]): boolean {
+  if (prev.length !== next.length) return false
+  return prev.every((p, i) => {
+    const n = next[i]
+    return (
+      n !== undefined &&
+      p.run_id === n.run_id &&
+      p.overall_status === n.overall_status &&
+      p.step_count === n.step_count &&
+      p.duration_ms === n.duration_ms &&
+      p.first_failure_step === n.first_failure_step
+    )
+  })
+}
+
+export function WorkspaceProvider({ children }: { children: ReactNode }) {
+  const router = useRouter()
+  /* The `argus ui` export uses `trailingSlash: true`, so the real pathname is
+     `/compare/` there but `/compare` in `next dev`. Compare the normalised form. */
+  const pathname = normalizePath(usePathname())
+  const [query, setQuery] = useState<URLSearchParams>(NO_QUERY)
+  const serving = useServingInfo()
+
+  /* ── run list ── */
+  const [runs, setRuns] = useState<RunSummary[]>([])
+  const [runsLoading, setRunsLoading] = useState(true)
+  const [live, setLiveState] = useState(true)
+
+  const fetchRuns = useCallback(() => {
+    fetch('/api/runs', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('unavailable'))))
+      .then((data: RunSummary[]) => {
+        setRuns((prev) => (sameRuns(prev, data) ? prev : data))
+        setRunsLoading(false)
+      })
+      .catch(() => setRunsLoading(false))
+  }, [])
+
+  useEffect(() => { fetchRuns() }, [fetchRuns])
+  useEffect(() => {
+    if (!live) return
+    const t = setInterval(fetchRuns, POLL_MS)
+    return () => clearInterval(t)
+  }, [live, fetchRuns])
+
+  const setLive = useCallback((v: boolean) => {
+    setLiveState(v)
+    if (v) fetchRuns()
+  }, [fetchRuns])
+
+  /* ── tabs ── */
+  const [tabs, setTabs] = useState<WsTab[]>([])
+  /* State, not a ref: with a ref the persist effect saw `hydrated` flip in the
+     same commit and wrote `[]` before the restored tabs rendered, and
+     StrictMode's second effect pass then restored that `[]`. */
+  const [hydrated, setHydrated] = useState(false)
+  useEffect(() => {
+    setTabs(readTabs())
+    setHydrated(true)
+  }, [])
+  useEffect(() => {
+    if (!hydrated) return
+    try { localStorage.setItem(TABS_KEY, JSON.stringify(tabs)) } catch { /* ignore */ }
+  }, [tabs, hydrated])
+
+  const activeRunId = pathname === '/' ? query.get('run') : null
+  const cmpA = pathname === '/compare' ? query.get('a') : null
+  const cmpB = pathname === '/compare' ? query.get('b') : null
+  const activeTabId = activeRunId ? `run:${activeRunId}` : cmpA && cmpB ? compareTabId(cmpA, cmpB) : null
+
+  /* A deep link to a run or a comparison opens its tab. */
+  useEffect(() => {
+    if (!hydrated) return
+    if (activeRunId) {
+      const id = `run:${activeRunId}`
+      setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, kind: 'run', runId: activeRunId }]))
+    } else if (cmpA && cmpB) {
+      const id = compareTabId(cmpA, cmpB)
+      setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, kind: 'compare', a: cmpA, b: cmpB }]))
+    }
+  }, [hydrated, activeRunId, cmpA, cmpB])
+
+  const openRun = useCallback((runId: string, opts?: { replace?: boolean }) => {
+    const id = `run:${runId}`
+    setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, kind: 'run', runId }]))
+    const href = `/?run=${encodeURIComponent(runId)}`
+    if (opts?.replace) router.replace(href, { scroll: false })
+    else router.push(href, { scroll: false })
+  }, [router])
+
+  const openCompare = useCallback((a: string, b: string) => {
+    const id = compareTabId(a, b)
+    setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, kind: 'compare', a, b }]))
+    router.push(`/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`, { scroll: false })
+  }, [router])
+
+  const goHome = useCallback(() => {
+    router.push('/', { scroll: false })
+  }, [router])
+
+  const closeTab = useCallback((tabId: string) => {
+    /* Navigate outside the updater: updaters must be pure, and StrictMode
+       double-invokes them, which pushed two history entries per close. */
+    const idx = tabs.findIndex((t) => t.id === tabId)
+    if (idx === -1) return
+    const next = tabs.filter((t) => t.id !== tabId)
+    setTabs(next)
+    if (tabId !== activeTabId) return
+    const neighbour = next[idx] ?? next[idx - 1]
+    if (!neighbour) router.push('/', { scroll: false })
+    else if (neighbour.kind === 'run') router.push(`/?run=${encodeURIComponent(neighbour.runId)}`, { scroll: false })
+    else router.push(`/compare?a=${encodeURIComponent(neighbour.a)}&b=${encodeURIComponent(neighbour.b)}`, { scroll: false })
+  }, [tabs, activeTabId, router])
+
+  /* ── workspace note (the pill at the top right) ── */
+  const [note, setNoteState] = useState<{ text: string; key: string } | null>(null)
+  const dismissed = useRef<Set<string>>(new Set())
+  const setNote = useCallback((n: { text: string; key: string } | null) => {
+    if (n && dismissed.current.has(n.key)) { setNoteState(null); return }
+    setNoteState(n)
+  }, [])
+  const dismissNote = useCallback(() => {
+    setNoteState((n) => { if (n) dismissed.current.add(n.key); return null })
+  }, [])
+
+  const value = useMemo<WorkspaceValue>(() => ({
+    runs, runsLoading, refreshRuns: fetchRuns, serving, live, setLive,
+    tabs, activeTabId, activeRunId, openRun, openCompare, closeTab, goHome,
+    note, setNote, dismissNote, query,
+  }), [runs, runsLoading, fetchRuns, serving, live, setLive, tabs, activeTabId, activeRunId, openRun, openCompare, closeTab, goHome, note, setNote, dismissNote, query])
+
+  return (
+    <Ctx.Provider value={value}>
+      <Suspense fallback={null}><SearchParamsBridge onChange={setQuery} /></Suspense>
+      {children}
+    </Ctx.Provider>
+  )
+}
+
+export function useWorkspace(): WorkspaceValue {
+  const v = useContext(Ctx)
+  if (!v) throw new Error('useWorkspace must be used inside WorkspaceProvider')
+  return v
+}
+
+/* ── status → glyph class used by explorer items, tabs and rows ── */
+export type StatusTone = 'ok' | 'bad' | 'warn' | 'sem' | 'live' | 'mute'
+
+export function toneFor(status: string | undefined): StatusTone {
+  switch (status) {
+    case 'clean': return 'ok'
+    case 'crashed': return 'bad'
+    case 'silent_failure': return 'warn'
+    case 'semantic_fail': return 'sem'
+    case 'interrupted': return 'live'
+    default: return 'mute'
+  }
+}
+
+export function statusWord(status: string | undefined): string {
+  switch (status) {
+    case 'clean': return 'clean'
+    case 'crashed': return 'crashed'
+    case 'silent_failure': return 'silent failure'
+    case 'semantic_fail': return 'semantic fail'
+    case 'interrupted': return 'interrupted'
+    default: return status ?? '—'
+  }
+}
+
+export function relativeAge(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const s = Math.max(0, Math.floor(diff / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24)
+  return `${d}d`
+}
+
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms == null) return '—'
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  return `${(ms / 1000).toFixed(2)}s`
+}

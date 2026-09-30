@@ -270,3 +270,101 @@ class TestNaturalUncertaintySignatures:
         matches = scan_value("N/A", registry)
         new_ids = {m.sig_id for m in matches if m.sig_id in {"SP-014", "SP-015", "SP-016"}}
         assert not new_ids
+
+
+@pytest.mark.unit
+class TestEtcLazyTruncation:
+    """SP-027 — enumeration abandoned with a trailing 'etc.'."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Pipeline stages: init, build, deploy, etc.",
+            "Fields: id, name, email, etc",
+            "Supported formats: json, yaml, toml, etc...",
+            "Items: a, b, c, et cetera.",
+            "Stages: init, build, ETC.",
+        ],
+    )
+    def test_trailing_etc_hits(self, registry, text):
+        ids = {m.sig_id for m in scan_value(text, registry)}
+        assert "SP-027" in ids
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "We use etc. for brevity in the list above.",
+            "The /etc/passwd file was modified during the run.",
+            "Config lives under /etc",
+            "The fetcher retried twice before giving up.",
+            "Sketch etcher tools are unrelated to this pipeline.",
+        ],
+    )
+    def test_no_false_positive(self, registry, text):
+        ids = {m.sig_id for m in scan_value(text, registry)}
+        assert "SP-027" not in ids
+
+    def test_severity_and_category(self, registry):
+        sig = next(s for s in registry if s["id"] == "SP-027")
+        assert sig["severity"] == "warning"
+        assert sig["category"] == "suspicious_phrases"
+
+
+@pytest.mark.unit
+class TestDegradationPhraseSignatures:
+    """SP-019..SP-026 — token-limit, self-reference, and lazy-truncation phrases."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("I have reached my token limit, so I'll stop here.", "SP-019"),
+            ("The output was cut short due to length constraints.", "SP-020"),
+            ("Note: the response was truncated by the provider.", "SP-021"),
+            ("As mentioned above, the totals reconcile.", "SP-022"),
+            ("As I said earlier, the retry failed.", "SP-023"),
+            ("The config, as previously mentioned, is invalid.", "SP-024"),
+            ("Affected files: a.py, b.py, c.py, and many more", "SP-025"),
+            ("Pipeline stages: init, build, deploy, and so on.", "SP-026"),
+        ],
+    )
+    def test_phrase_hits(self, registry, text, expected):
+        ids = {m.sig_id for m in scan_value(text, registry)}
+        assert expected in ids
+
+    def test_all_are_warning_severity(self, registry):
+        new = [s for s in registry if s["id"] in {f"SP-{n:03d}" for n in range(19, 27)}]
+        assert len(new) == 8
+        assert all(s["severity"] == "warning" for s in new)
+        assert all(s["category"] == "suspicious_phrases" for s in new)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Tesla stock rose 5.3% today on strong Q3 earnings, beating expectations.",
+            "We iterate and so on the process converges only after several more runs.",
+            "The dataset has many more rows than the sample shown in table 2.",
+            "The token limit for this model is 128k; we stayed well under it.",
+        ],
+    )
+    def test_no_false_positive_on_normal_prose(self, registry, text):
+        ids = {m.sig_id for m in scan_value(text, registry)}
+        assert not (ids & {f"SP-{n:03d}" for n in range(19, 27)})
+
+    def test_lazy_truncation_only_matches_at_end(self, registry):
+        """SP-025/026 are end-anchored — the phrase mid-sentence must not fire."""
+        mid = "The list goes on and so on until the loop exits and then we return."
+        ids = {m.sig_id for m in scan_value(mid, registry)}
+        assert "SP-026" not in ids
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("Affected files: a.py, b.py, c.py, and so on...", "SP-026"),
+            ("Stages: init, build, deploy, and many more...", "SP-025"),
+            ("Stages: init, build, deploy, and so on…", "SP-026"),
+        ],
+    )
+    def test_lazy_truncation_matches_ellipsis(self, registry, text, expected):
+        """SP-025/026 must catch the ellipsis-terminated form, not just a bare period."""
+        ids = {m.sig_id for m in scan_value(text, registry)}
+        assert expected in ids

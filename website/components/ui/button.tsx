@@ -5,29 +5,26 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 active:translate-y-px disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  // .btn is the spec primitive (globals.css): 32px tall, --r-ctl radius,
+  // token-driven colours. Variants map onto the spec's own modifiers.
+  'btn',
   {
     variants: {
       variant: {
-        default:
-          'bg-primary text-primary-foreground hover:bg-primary/80',
-        outline:
-          'border-border bg-background hover:bg-muted hover:text-foreground',
-        secondary:
-          'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-        ghost:
-          'hover:bg-muted hover:text-foreground',
-        destructive:
-          'bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20',
-        link: 'text-primary underline-offset-4 hover:underline',
+        default: 'btn-primary',
+        outline: 'btn-outline',
+        secondary: '',
+        ghost: 'btn-ghost',
+        destructive: 'btn-danger',
+        link: 'lnk border-0 bg-transparent px-0 h-auto',
       },
       size: {
-        default: 'h-8 gap-1.5 px-2.5',
-        xs: 'h-6 gap-1 rounded-md px-2 text-xs',
-        sm: 'h-7 gap-1 rounded-md px-2.5 text-[13px]',
-        lg: 'h-9 gap-1.5 px-3',
-        icon: 'size-8',
-        'icon-sm': 'size-7 rounded-md',
+        default: '',
+        xs: 'btn-sm',
+        sm: 'btn-sm',
+        lg: '',
+        icon: 'btn-icon',
+        'icon-sm': 'btn-icon btn-sm',
       },
     },
     defaultVariants: {

@@ -2,6 +2,12 @@
 
 Thanks for your interest in contributing. ARGUS is a production readiness platform for AI agent pipelines — there's a lot of surface area and we welcome help across the board.
 
+## Discord
+
+**Join the [ARGUS Discord](https://discord.gg/67XTFTDSgd) before opening a PR.**
+
+That is where we post updates, answer questions, and talk through PRs. GitHub is still the place issues and pull requests land — Discord is how you stay in the loop so you are not coding against a stale plan.
+
 ## Areas Where Contribution Is Needed
 
 ### Framework Adapters — Planned (Not Yet Open for PRs)
@@ -22,7 +28,7 @@ Building adapters now would mean rewriting them every few versions. Once the cor
 
 ### Detection Signatures
 
-The semantic signature registry (`src/argus/data/signatures.json`) ships with 61 patterns across 6 categories. More real-world patterns are needed:
+The semantic signature registry (`src/argus/data/signatures.json`) ships with 72 patterns across 8 categories. More real-world patterns are needed:
 
 - **LLM refusal variants** — new refusal phrasings from Claude, Gemini, Llama, Mistral
 - **Hallucination markers** — confident-sounding but fabricated outputs
@@ -44,14 +50,15 @@ ARGUS currently has no export integrations. These would be high-impact contribut
 
 ### Web UI — Planned Pages
 
-Several pages in the dashboard are stubbed but not yet implemented (marked "soon" in the sidebar):
+These pages are **planned**, not stubbed in the sidebar. The shipped dashboard shows
+Runs, Compare, Approvals, Guide, Changelog, and Settings. Maintainers can restore
+the planned list with `?preview=1` (documented in `website/README.md`).
 
 - **Traces** — distributed tracing view across pipeline runs
 - **Evaluation** — benchmark pipelines against golden datasets
 - **Graphs** — visualize pipeline topology and evolution over time
 - **Alerts** — configurable alert rules (failure rate thresholds, latency spikes)
 - **Datasets** — manage test datasets for regression testing
-- **Settings** — UI for configuration (currently CLI-only)
 - **Logs Comparison** — side-by-side log diff in the Compare view
 
 ### Unit Tests
@@ -153,6 +160,7 @@ entire roadmap in one pass. If you're using one on this repo, hold it to the sam
 
 ## Pull Requests
 
+- Join the [Discord](https://discord.gg/67XTFTDSgd) before you open the PR
 - Keep PRs focused — one fix or feature per PR
 - For new detection logic, include a fixture run that the old code misses and the new code catches
 - Don't add co-author attribution in commits

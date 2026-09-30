@@ -163,7 +163,11 @@ def approve_candidate(candidate_id: str) -> dict[str, Any] | None:
         "category": cand["proposed_category"],
         "pattern": cand["pattern"],
         "match_strategy": cand["match_strategy"],
-        "severity": cand["severity"],
+        # Approval promotes severity to critical: a candidate is a hedge
+        # (LLM-suggested, unconfirmed), but a developer explicitly approving
+        # it is a confirmed, recurring pattern — no longer ambiguous, so it
+        # should flag future runs on its own rather than sit as advisory-only.
+        "severity": "critical",
         "description": cand["description"],
         "source": "learned",
         "metadata": {
@@ -174,6 +178,7 @@ def approve_candidate(candidate_id: str) -> dict[str, Any] | None:
             "framework_specific": None,
             "original_pattern": cand.get("original_pattern"),
             "generalized": cand.get("generalized", False),
+            "suggested_severity": cand["severity"],
         },
     }
     custom["signatures"].append(new_sig)
@@ -234,7 +239,10 @@ def approve_candidate_shared(candidate_id: str) -> dict[str, Any] | None:
         "category": cand["proposed_category"],
         "pattern": cand["pattern"],
         "match_strategy": cand["match_strategy"],
-        "severity": cand["severity"],
+        # Same promotion as approve_candidate: an approved (and now
+        # community-shared) pattern is confirmed, not a hedge, so it should
+        # flag future runs on its own rather than sit as advisory-only.
+        "severity": "critical",
         "description": cand["description"],
         "source": "shared",
         "source_run_ids": cand.get("source_run_ids", []),
@@ -248,6 +256,7 @@ def approve_candidate_shared(candidate_id: str) -> dict[str, Any] | None:
             "framework_specific": None,
             "original_pattern": cand.get("original_pattern"),
             "generalized": cand.get("generalized", False),
+            "suggested_severity": cand["severity"],
         },
     }
 

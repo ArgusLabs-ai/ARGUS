@@ -1,7 +1,7 @@
 """Pytest plugin: ``pytest --argus`` fails tests whose ARGUS run was not clean.
 
 Loaded via the ``pytest11`` entry point. Without ``--argus`` the plugin is
-inert. Auto-wrapping LangGraph ``invoke`` during tests lives in
+inert. Auto-wrapping LangGraph runtime methods during tests lives in
 ``argus.pytest_instrument`` (imported if present) so the CLI gate and the
 auto-instrumentation can land on separate branches without duplicating the
 plugin.
