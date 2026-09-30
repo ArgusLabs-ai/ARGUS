@@ -164,6 +164,75 @@ def test_doctor_storage_explains_no_runs(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_doctor_runs_writable_ok(tmp_path, monkeypatch):
+    from argus.cli.cmd_doctor import _check_runs_writable
+
+    root = _git_project(tmp_path, monkeypatch)
+    ok, msg = _check_runs_writable()
+    assert ok is True
+    assert "writable" in msg.lower()
+    assert str(root / ".argus" / "runs") in msg or ".argus/runs" in msg.replace("\\", "/")
+
+
+@pytest.mark.unit
+def test_doctor_runs_writable_fails_when_not_writable(tmp_path, monkeypatch):
+    from argus.cli.cmd_doctor import _check_runs_writable
+
+    root = _git_project(tmp_path, monkeypatch)
+    runs = root / ".argus" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    runs.chmod(0o500)
+    try:
+        ok, msg = _check_runs_writable()
+        assert ok is False
+        assert "cannot write" in msg.lower()
+    finally:
+        runs.chmod(0o700)
+
+
+@pytest.mark.unit
+def test_doctor_storage_reports_disk_usage(tmp_path, monkeypatch):
+    from argus.cli.cmd_doctor import _check_storage
+
+    _git_project(tmp_path, monkeypatch)
+    runs = tmp_path / ".argus" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"run_id": "r1", "nodes": []})
+    (runs / "a.json").write_text(payload, encoding="utf-8")
+    (runs / "b.json").write_text(payload, encoding="utf-8")
+
+    ok, msg = _check_storage()
+    assert ok is True
+    assert "2 runs" in msg
+    assert "KB" in msg or "B" in msg
+
+
+@pytest.mark.unit
+def test_doctor_configured_keys_none(monkeypatch):
+    import argus.user_config as uc
+
+    import argus.cli.cmd_doctor as d
+
+    monkeypatch.setattr(uc, "configured_providers", lambda: [])
+    ok, msg = d._check_configured_keys()
+    assert ok is True
+    assert "none" in msg.lower()
+    assert "argus key set" in msg.lower()
+
+
+@pytest.mark.unit
+def test_doctor_configured_keys_lists_providers(monkeypatch):
+    import argus.user_config as uc
+
+    import argus.cli.cmd_doctor as d
+
+    monkeypatch.setattr(uc, "configured_providers", lambda: ["openai", "anthropic"])
+    ok, msg = d._check_configured_keys()
+    assert ok is True
+    assert msg == "openai, anthropic"
+
+
+@pytest.mark.unit
 def test_ui_startup_mentions_runs_dir_and_warns_when_empty(tmp_path):
     runs_dir = tmp_path / ".argus" / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
