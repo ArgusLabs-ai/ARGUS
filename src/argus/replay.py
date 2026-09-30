@@ -447,9 +447,10 @@ class ReplayEngine:
                 "the dashboard settings."
             )
 
-        # Unwrap compiled graphs
-        if hasattr(graph, "invoke") and hasattr(graph, "graph"):
-            graph = graph.graph
+        # Unwrap compiled graphs: `.builder` on langgraph 0.2+, `.graph` on older releases
+        if hasattr(graph, "invoke"):
+            builder = getattr(graph, "builder", None)
+            graph = builder if builder is not None else getattr(graph, "graph", graph)
 
         if hasattr(graph, "nodes") and not hasattr(graph, "invoke"):
             watcher = ArgusWatcher(max_field_size=self._max_field_size, investigate=True)

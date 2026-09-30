@@ -81,6 +81,23 @@ def test_a_trace_run_reruns_a_node_against_the_callers_graph():
 
 
 @pytest.mark.integration
+def test_an_app_factory_returning_a_compiled_graph_replays():
+    """`--app module:fn` where fn returns `graph.compile()` — the common shape.
+
+    A compiled graph carries its StateGraph as `.builder` (not `.graph`), and it
+    used to be refused as "must return a StateGraph or CompiledGraph".
+    """
+    run_id = _trace_run()
+
+    new_id = ReplayEngine().replay(run_id, "summarize", app_factory=_graph)
+
+    replayed = load_run(new_id)
+    assert replayed.parent_run_id == run_id
+    summarize = next(s for s in replayed.steps if s.node_name == "summarize")
+    assert summarize.output_dict["summary"] == "summary of 1 docs"
+
+
+@pytest.mark.integration
 def test_a_trace_run_without_a_graph_refuses_and_names_both_routes(capsys):
     """No `--app`: an error, not a cheerful exit 0, and it says what to do."""
     run_id = _trace_run()

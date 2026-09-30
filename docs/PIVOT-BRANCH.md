@@ -417,6 +417,8 @@ You can rerun `rerank` from the notebook. You cannot yet say “rerank is fixed 
 
 **Done when:** `argus replay <id> rerank --app ...` (without `--only`) continues the tail from the new update, still without wrapping compile.
 
+Until then that non-`--only` path runs through the legacy `ArgusWatcher` wrap (`_replay_with_factory`). Its factory may return the `StateGraph` or `graph.compile()`. The compiled form used to be refused ("must return a StateGraph or CompiledGraph. Got: CompiledStateGraph"): the unwrap looked for `.graph`, and LangGraph 0.2+ exposes the builder as `.builder`. Guarded by `test_an_app_factory_returning_a_compiled_graph_replays`.
+
 ### 2. Node function is read off a LangGraph-internal field
 
 Replay finds `app.nodes[name].bound.invoke`. That is LangGraph’s own handle, not a public “give me node X” API. It works on current LangGraph. A future rename could break `--app` replay until we swap the accessor.
