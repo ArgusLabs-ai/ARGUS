@@ -472,8 +472,6 @@ def test_prune_selective_removal():
 @pytest.mark.unit
 def test_load_disputes_corrupt_file_warns_and_returns_empty():
     """B-4 (F-16): a corrupt disputes file must warn loudly, never fail silent."""
-    import warnings as _warnings
-
     from argus.signature_stats import _disputes_path
 
     _ensure = _disputes_path()
@@ -501,5 +499,17 @@ def test_load_disputes_non_list_disputes_warns():
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"disputes": {"oops": "not-a-list"}}), encoding="utf-8")
 
-    with pytest.warns(RuntimeWarning, match="not a list"):
+    with pytest.warns(RuntimeWarning, match="no 'disputes' list"):
+        assert load_disputes() == []
+
+
+@pytest.mark.unit
+def test_load_disputes_top_level_list_warns():
+    from argus.signature_stats import _disputes_path
+
+    path = _disputes_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([{"id": "d1"}]), encoding="utf-8")
+
+    with pytest.warns(RuntimeWarning, match="no 'disputes' list"):
         assert load_disputes() == []

@@ -80,10 +80,11 @@ def load_disputes() -> list[dict[str, Any]]:
             stacklevel=2,
         )
         return []
-    disputes = data.get("disputes", []) if isinstance(data, dict) else []
+    disputes = data.get("disputes", []) if isinstance(data, dict) else None
     if not isinstance(disputes, list):
         warnings.warn(
-            f"argus: corrupt disputes file {path} ('disputes' is not a list); reading as no disputes",
+            f"argus: corrupt disputes file {path} (no 'disputes' list); "
+            "reading as no disputes",
             RuntimeWarning,
             stacklevel=2,
         )
