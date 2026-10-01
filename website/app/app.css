@@ -412,3 +412,18 @@
   font-family: var(--sans); font-size: 12.5px; color: var(--ink-3);
 }
 .fmore:hover{ background: var(--hover); color: var(--ink); }
+
+/* ── Root cause in plain words; the detector's text on request ── */
+.finding-impact{ margin: -4px 0 0; font-size: 14.5px; line-height: 1.65; color: var(--ink-2); max-width: 80ch; }
+.finding-impact code{ font-size: .88em; }
+.techlink{
+  border: none; background: transparent; padding: 0; cursor: pointer;
+  font-family: var(--sans); font-size: 12.5px; color: var(--ink-4); white-space: nowrap;
+}
+.techlink:hover{ color: var(--ink-2); text-decoration: underline; text-underline-offset: 3px; }
+.finding-tech{
+  margin: 0; max-width: 92ch; padding: 8px 0 8px 12px;
+  border-left: 2px solid var(--line-2);
+  font-size: 12.5px; line-height: 1.6; color: var(--ink-3);
+}
+.finding-tech code{ font-size: .92em; }
