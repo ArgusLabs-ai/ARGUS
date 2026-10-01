@@ -172,14 +172,21 @@ function Marker({ children }: { children: ReactNode }) {
   return <div className="srow group">{children}</div>
 }
 
-export default function PipelineTab({ run }: { run: RunRecord }) {
+export default function PipelineTab({
+  run, replayFrom = null, onReplayStarted,
+}: {
+  run: RunRecord
+  /** Start a full rerun from this node as soon as the tab mounts. */
+  replayFrom?: string | null
+  onReplayStarted?: () => void
+}) {
   const steps = useMemo(() => run.steps ?? [], [run.steps])
   const segments = useMemo(() => segmentEvents(steps, run.graph_edge_map), [steps, run.graph_edge_map])
   const reached = steps.filter((s) => s.status !== 'skipped').length
 
   return (
     <div className="wc">
-    <ReplayControls runId={run.run_id} run={run}>
+    <ReplayControls runId={run.run_id} run={run} autoReplayFrom={replayFrom} onAutoReplayStarted={onReplayStarted}>
       {(handleReplay, handleReplayNode, { replayingNode, nodeDiff, dismissDiff }) => {
         let n = 0
         const row = (s: NodeEvent, iter?: boolean) => {

@@ -181,7 +181,6 @@ function Analysis({ run, onViewFull }: { run: RunRecord; onViewFull: () => void 
     <section className="ov-sec">
       <div className="sh">
         <h3>AI analysis</h3>
-        {inv.model_used && <span className="chip chip-iris chip-mono">{inv.model_used}</span>}
         {pct != null && (
           <span className="sh-conf">
             <span className="meter"><i style={{ width: `${pct}%`, background: 'var(--iris)' }} /></span>
