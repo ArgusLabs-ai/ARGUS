@@ -18,6 +18,7 @@ import {
 } from '@/lib/run-detail'
 import { findingMeta } from '@/lib/failure-labels'
 import { pathBetween } from '@/lib/graph-model'
+import { explainRootCause } from '@/lib/plain-language'
 import Prose from './Prose'
 import ExecutionGraph from './ExecutionGraph'
 import FindingsPanel from './FindingsPanel'
@@ -77,6 +78,7 @@ function Verdict({ run, fix, canFix }: { run: RunRecord; fix?: FixHandle; canFix
   const head = headlineFinding(run)
   const who = culpritNode(run)
   const path = useMemo(() => blamePath(run), [run])
+  const [tech, setTech] = useState(false)
   const inv = run.llm_investigation
 
   if (!head) {
@@ -104,6 +106,7 @@ function Verdict({ run, fix, canFix }: { run: RunRecord; fix?: FixHandle; canFix
   const advisory = run.overall_status === 'clean'
   const conf = head.confidence ?? inv?.confidence ?? null
   const crashed = new Set(steps.filter((s) => s.status === 'crashed').map((s) => s.node_name))
+  const { summary, impact } = explainRootCause(run, head, path)
 
   return (
     <section className="ov-hero">
@@ -113,8 +116,15 @@ function Verdict({ run, fix, canFix }: { run: RunRecord; fix?: FixHandle; canFix
         <span className={`chip ${fm.chip}`}><span className="dot" />{fm.category} · {fm.label}</span>
       </div>
       <p className="finding" title={typeof conf === 'number' ? `confidence ${conf.toFixed(2)}` : undefined}>
-        <Prose text={head.reason} who={advisory ? null : who ?? head.node} />
+        <Prose text={summary} who={advisory ? null : who ?? head.node} />
       </p>
+      <p className="finding-impact">
+        {impact && <><Prose text={impact} />{' '}</>}
+        <button type="button" className="techlink" aria-expanded={tech} onClick={() => setTech((v) => !v)}>
+          {tech ? 'Hide technical detail' : 'Technical detail'}
+        </button>
+      </p>
+      {tech && <p className="finding-tech"><Prose text={head.reason} /></p>}
       {path.length > 1 && (
         <div className="ov-path">
           <span className="ov-path-l">Blame path</span>
