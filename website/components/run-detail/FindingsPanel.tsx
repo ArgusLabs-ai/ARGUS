@@ -1,10 +1,11 @@
 'use client'
 
 /* Findings, compartmentalised: one group per node (culprit first, then by
-   worst severity), and inside a group one row per flagged field — every
-   signal on that field becomes a capsule on the same row instead of a
-   near-duplicate sentence. "Fix prompt" fetches the real `argus fix`
-   markdown and opens it flush under the row. */
+   worst severity), and inside a group one row per flagged field. A row is
+   one capsule (its lead signal, "+N" for the rest), the field, and a
+   clamped sentence; source and confidence sit in the row's tooltip. The
+   first few rows show, the rest fold. "Fix prompt" fetches the real
+   `argus fix` markdown and opens it flush under the row. */
 
 import { useMemo, useState } from 'react'
 import type { Finding, RunRecord } from '@/lib/types'
@@ -16,6 +17,7 @@ import FixPromptButton from './FixPrompt'
 
 const SEV_RANK: Record<string, number> = { critical: 0, warning: 1, info: 2 }
 const SEV_COLOR: Record<string, string> = { critical: 'var(--tool)', warning: 'var(--quality)', info: 'var(--iris)' }
+const FOLD_AT = 5
 
 interface Row { key: string; lead: Finding; all: Finding[] }
 interface Group { node: string; rows: Row[]; worst: number; order: number }
@@ -57,6 +59,7 @@ export default function FindingsPanel({
   culprit?: string | null
 }) {
   const [showSuppressed, setShowSuppressed] = useState(false)
+  const [showAll, setShowAll] = useState(false)
   const active = findings.filter((f) => !f.suppressed)
   const suppressed = findings.filter((f) => f.suppressed)
   const groups = useMemo(
@@ -68,6 +71,17 @@ export default function FindingsPanel({
   const crit = active.filter((f) => f.severity === 'critical').length
   const warn = active.filter((f) => f.severity === 'warning').length
   const stepOf = (n: string) => (run.steps ?? []).find((s) => s.node_name === n)
+
+  /* Fold after FOLD_AT rows, keeping whole groups in their order. */
+  const totalRows = groups.reduce((k, g) => k + g.rows.length, 0)
+  let budget = showAll ? Infinity : FOLD_AT
+  const shown = groups
+    .map((g) => {
+      const rows = g.rows.slice(0, Math.max(0, budget))
+      budget -= rows.length
+      return { ...g, rows }
+    })
+    .filter((g) => g.rows.length)
 
   return (
     <section className="ov-sec">
@@ -85,16 +99,19 @@ export default function FindingsPanel({
       </div>
 
       <div className="fgroups">
-        {groups.map((g) => {
+        {shown.map((g) => {
           const step = stepOf(g.node)
-          const st = STATUS_META[g.node === culprit && step?.status === 'pass' ? 'fail' : mapStatus(step?.status)]
+          const st = STATUS_META[mapStatus(step?.status)]
+          const full = groups.find((x) => x.node === g.node) ?? g
+          const n = full.rows.reduce((k, r) => k + r.all.length, 0)
           return (
             <div key={g.node} className="fgroup">
               <div className="fgroup-h">
                 <button type="button" className="fgroup-n" onClick={() => onSelectNode(g.node)}>{g.node}</button>
-                {step && <span className={`chip ${st.chip}`}><span className="dot" />{st.label}</span>}
-                {g.node === culprit && <span className="chip chip-tool chip-solid">root cause</span>}
-                <span className="fgroup-c">{g.rows.reduce((k, r) => k + r.all.length, 0)} finding{g.rows.length === 1 && g.rows[0].all.length === 1 ? '' : 's'}</span>
+                {g.node === culprit
+                  ? <span className="chip chip-tool chip-solid">root cause</span>
+                  : step && <span className={`chip ${st.chip}`}><span className="dot" />{st.label}</span>}
+                <span className="fgroup-c">{n} finding{n === 1 ? '' : 's'}</span>
               </div>
               {g.rows.map((r) => {
                 const f = r.lead
@@ -102,12 +119,19 @@ export default function FindingsPanel({
                   const m = findingMeta(x)
                   return [`${m.category}${m.label}`, m] as const
                 })).values())
+                const lead = metas[0]
                 const conf = r.all.map((x) => x.confidence).filter((c): c is number => typeof c === 'number')
+                const tip = [
+                  Array.from(new Set(r.all.map((x) => x.source))).join(' + '),
+                  conf.length ? `confidence ${Math.max(...conf).toFixed(2)}` : '',
+                  f.origin_node && f.origin_node !== f.node ? `origin ${f.origin_node}` : '',
+                ].filter(Boolean).join(' · ')
                 return (
                   <div
                     key={r.key}
                     role="button"
                     tabIndex={0}
+                    title={tip}
                     className={`frow${f.suppressed ? ' off' : ''}`}
                     onClick={() => onSelectNode(f.node)}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectNode(f.node) } }}
@@ -115,18 +139,13 @@ export default function FindingsPanel({
                     <span className="frow-sev" style={{ background: SEV_COLOR[f.severity] ?? 'var(--ink-4)' }} />
                     <div style={{ minWidth: 0 }}>
                       <div className="frow-chips">
-                        {metas.map((m) => (
-                          <span key={m.category + m.label} className={`chip ${m.chip}`}>{m.category} · {m.label}</span>
-                        ))}
-                        {f.field_path && <code className="frow-field">{f.field_path}</code>}
+                        <span className={`chip ${lead.chip}`}>{lead.label}</span>
+                        {metas.length > 1 && (
+                          <span className="sh-n" title={metas.slice(1).map((m) => `${m.category} · ${m.label}`).join('\n')}>+{metas.length - 1}</span>
+                        )}
+                        {f.field_path && !f.reason.includes(f.field_path) && <code className="frow-field">{f.field_path}</code>}
                       </div>
-                      <p className="frow-text"><Prose text={sentence(f)} who={culprit} /></p>
-                      <p className="frow-meta">
-                        <span>{Array.from(new Set(r.all.map((x) => x.source))).join(' + ')}</span>
-                        {f.origin_node && f.origin_node !== f.node && <span>origin {f.origin_node}</span>}
-                        {conf.length > 0 && <span>confidence {Math.max(...conf).toFixed(2)}</span>}
-                        {r.all.length > 1 && <span>{r.all.length} signals on this field</span>}
-                      </p>
+                      <p className="frow-text clamp"><Prose text={sentence(f)} who={culprit} /></p>
                     </div>
                     {!f.suppressed && <FixPromptButton runId={run.run_id} node={f.origin_node ?? f.node} className="btn btn-sm btn-ghost frow-fix" />}
                   </div>
@@ -135,6 +154,11 @@ export default function FindingsPanel({
             </div>
           )
         })}
+        {totalRows > FOLD_AT && (
+          <button type="button" className="fmore" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? 'Show fewer' : `Show ${totalRows - FOLD_AT} more`}
+          </button>
+        )}
       </div>
     </section>
   )

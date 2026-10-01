@@ -397,3 +397,18 @@
 .ginsp .rc-node{ font-size: 11px; padding: 2px 7px; }
 .ginsp .chip{ height: 20px; font-size: 11px; padding: 0 7px; }
 .lg-pill.lg-t-empty{ border: 1px solid var(--coherence); background: var(--surf-coherence); }
+
+/* ── Calmer density: clamp long prose, fold the tail ── */
+.frow-text.clamp, .ov-prose.clamp{
+  display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden;
+}
+.frow-text.clamp{ -webkit-line-clamp: 2; }
+.ov-prose.clamp{ -webkit-line-clamp: 3; }
+.frow-chips{ margin-bottom: 5px; }
+.frow{ padding: 12px 34px; }
+.fmore{
+  width: 100%; border: none; border-bottom: 1px solid var(--line); background: transparent;
+  padding: 10px 34px; text-align: left; cursor: pointer;
+  font-family: var(--sans); font-size: 12.5px; color: var(--ink-3);
+}
+.fmore:hover{ background: var(--hover); color: var(--ink); }

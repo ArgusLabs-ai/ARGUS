@@ -2,9 +2,10 @@
 
 /* Overview — compartments, not boxes. Root cause first (verdict sentence,
    category capsule, the blame path as node capsules, the fix prompt one
-   click away), then the run's numbers, the graph, findings grouped by node,
-   the AI read, and the step detail. Each region opens on a hairline and a
-   heading; colour is reserved for signal. */
+   click away), then the run's numbers, the graph, findings grouped by node
+   and the AI read. Each region opens on a hairline and a heading; colour is
+   reserved for signal. Detail waits for a click: step detail opens from a
+   finding or a graph node, long prose is clamped. */
 
 import { useEffect, useMemo, useState } from 'react'
 import { Wand2, ChevronRight } from 'lucide-react'
@@ -47,7 +48,6 @@ function FixRow({ fix, node }: { fix: FixHandle; node: string | null }) {
           Fix prompt for <code>{p?.node ?? node ?? 'root cause'}</code>
           {p?.source_path && <span className="fixrow-m">{p.source_path}</span>}
         </span>
-        {p && <span className="chip chip-idle fixrow-chip">{fix.sanitized ? 'shapes only' : 'with recorded values'}</span>}
         <span style={{ flex: 1 }} />
         <button type="button" className="btn btn-sm btn-ghost" onClick={() => (fix.open ? fix.setOpen(false) : void fix.load())}>
           {fix.open ? 'Hide' : 'View'}
@@ -102,7 +102,6 @@ function Verdict({ run, fix, canFix }: { run: RunRecord; fix?: FixHandle; canFix
   const fm = findingMeta(head)
   /* A clean run can still carry advisory warnings — nothing to blame. */
   const advisory = run.overall_status === 'clean'
-  const surfaced = path.length > 1 ? path[path.length - 1] : null
   const conf = head.confidence ?? inv?.confidence ?? null
   const crashed = new Set(steps.filter((s) => s.status === 'crashed').map((s) => s.node_name))
 
@@ -112,13 +111,9 @@ function Verdict({ run, fix, canFix }: { run: RunRecord; fix?: FixHandle; canFix
         <span className={`eyebrow ${advisory ? 'warn' : 'bad'}`}>{advisory ? 'Advisory' : 'Root cause'}</span>
         {advisory && <span className="chip chip-ok"><span className="dot" />clean</span>}
         <span className={`chip ${fm.chip}`}><span className="dot" />{fm.category} · {fm.label}</span>
-        {typeof conf === 'number' && <span className="chip chip-idle chip-mono">confidence {conf.toFixed(2)}</span>}
       </div>
-      <p className="finding">
+      <p className="finding" title={typeof conf === 'number' ? `confidence ${conf.toFixed(2)}` : undefined}>
         <Prose text={head.reason} who={advisory ? null : who ?? head.node} />
-        {surfaced && surfaced !== (who ?? head.node) && (
-          <> The failure surfaced {path.length > 2 ? `${path.length - 1} nodes later` : 'downstream'} in <code>{surfaced}</code>.</>
-        )}
       </p>
       {path.length > 1 && (
         <div className="ov-path">
@@ -161,8 +156,8 @@ function Stats({ run }: { run: RunRecord }) {
           {warn > 0 && <span className="ov-sev warn">{warn} warn</span>}
         </dd>
       </div>
-      {run.total_tokens != null && <div><dt>Tokens</dt><dd>{fmtTokens(run.total_tokens)}</dd></div>}
-      {run.total_cost_usd != null && <div><dt>Cost</dt><dd>{fmtCost(run.total_cost_usd)}</dd></div>}
+      {!!run.total_tokens && <div><dt>Tokens</dt><dd>{fmtTokens(run.total_tokens)}</dd></div>}
+      {!!run.total_cost_usd && <div><dt>Cost</dt><dd>{fmtCost(run.total_cost_usd)}</dd></div>}
       {calls > 0 && <div><dt>LLM calls</dt><dd>{calls}</dd></div>}
     </dl>
   )
@@ -186,7 +181,7 @@ function Analysis({ run, onViewFull }: { run: RunRecord; onViewFull: () => void 
         <span className="sh-sp" />
         <button type="button" className="btn btn-sm btn-ghost" onClick={onViewFull}>Full analysis<ChevronRight /></button>
       </div>
-      <p className="ov-prose">{inv.root_cause_explanation}</p>
+      <p className="ov-prose clamp">{inv.root_cause_explanation}</p>
     </section>
   )
 }
@@ -243,9 +238,11 @@ export default function OverviewTab({
 
       <Analysis run={run} onViewFull={() => onSwitchTab('AI Analysis')} />
 
-      <div id="step-inspector">
-        <StepInspector run={run} selectedNodeName={selectedNode} onDismiss={() => setSelectedNode(null)} />
-      </div>
+      {selectedNode && (
+        <div id="step-inspector">
+          <StepInspector run={run} selectedNodeName={selectedNode} onDismiss={() => setSelectedNode(null)} />
+        </div>
+      )}
 
       <ReplayBranches run={run} allRuns={allRuns} onSwitchTab={onSwitchTab} />
     </div>

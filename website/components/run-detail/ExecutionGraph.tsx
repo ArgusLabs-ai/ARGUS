@@ -302,7 +302,6 @@ export default function ExecutionGraph({
       <div className="gbar">
         <span className="gbar-title">Execution graph</span>
         <span className="chip chip-idle gbar-count">{nodes.length} nodes</span>
-        {prop.length > 1 && <span className="chip chip-tool gbar-count"><span className="dot" />{prop.length - 1}-hop blame path</span>}
         <span className="gbar-sp" />
         {signalCount > 0 && (
           <label className="gbar-tgl">
@@ -443,7 +442,7 @@ export default function ExecutionGraph({
         {tones.has('sem') && <span className="glegend-i"><span className="lg-pill lg-t-sem" />signal · semantic</span>}
         {tones.has('slow') && <span className="glegend-i"><span className="lg-pill lg-t-slow" />signal · warning</span>}
         {tones.has('empty') && <span className="glegend-i"><span className="lg-pill lg-t-empty" />signal · coherence</span>}
-        <span className="glegend-hint">Drag nodes · drag canvas to pan · {flush ? '⌘ + scroll' : 'scroll'} to zoom</span>
+        <span className="glegend-hint" title={`Drag nodes · drag canvas to pan · ${flush ? '⌘ + scroll' : 'scroll'} to zoom`}>{flush ? '⌘ + scroll to zoom' : 'Scroll to zoom'}</span>
       </div>
     </div>
   )

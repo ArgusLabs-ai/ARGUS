@@ -8,7 +8,7 @@ import { useState, useEffect } from 'react'
 import { Flag, Download, RotateCcw, Wand2 } from 'lucide-react'
 import type { RunSummary } from '@/lib/types'
 import { useRunDetail } from '@/lib/hooks'
-import { useWorkspace, statusWord, formatDuration, shortRunId } from '@/lib/workspace'
+import { useWorkspace, statusWord, shortRunId } from '@/lib/workspace'
 import { fmtClock } from '@/lib/run-detail'
 import { pipelineLabel } from '@/lib/run-filters'
 import SendReportDialog from './SendReportDialog'
@@ -88,7 +88,6 @@ export default function RunDetailPanel({
   if (error || !run) return <Centered><span style={{ color: 'var(--tool)' }}>{error ?? 'Run not found'}</span></Centered>
 
   const steps = run.steps ?? []
-  const reached = steps.filter((s) => s.status !== 'skipped').length
   const summary = allRuns.find((r) => r.run_id === run.run_id)
   const pipeline = summary ? pipelineLabel(summary) : null
   const alias = summary?.alias
@@ -133,15 +132,8 @@ export default function RunDetailPanel({
           </div>
         </div>
         <div className="ws-sub">
-          {alias && <span className="m">{run.run_id}</span>}
-          {alias && <span>·</span>}
-          <span>Argus v{run.argus_version}</span>
-          {pipeline && <><span>·</span><span>{pipeline}</span></>}
-          <span>·</span>
-          <span>{reached} of {steps.length} steps</span>
-          <span>·</span>
-          <span className="m">{formatDuration(run.duration_ms)}</span>
-          <span>·</span>
+          {alias && <><span className="m">{run.run_id}</span><span>·</span></>}
+          {pipeline && <><span>{pipeline}</span><span>·</span></>}
           <span className="m">{fmtClock(run.started_at)}</span>
           {run.parent_run_id && (
             <>
@@ -161,6 +153,8 @@ export default function RunDetailPanel({
             </>
           )}
           {serving?.project_root && <><span>·</span><span className="m" title={serving.runs_dir}>{serving.project_root.split('/').pop()}</span></>}
+          <span>·</span>
+          <span>v{run.argus_version}</span>
         </div>
         <div className="tabs" role="tablist" aria-label="Run detail sections">
           {TABS.map((tab) => (

@@ -84,6 +84,7 @@ export default function ReplayBranches({
 
   const count = (nodes: ReplayTreeNode[]): number => nodes.reduce((n, c) => n + 1 + count(c.children ?? []), 0)
   const total = count(children)
+  if (total === 0 && !run.parent_run_id) return null
 
   return (
     <section className="ov-sec">
