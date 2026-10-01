@@ -84,13 +84,17 @@ export default function ReplayBranches({
 
   const count = (nodes: ReplayTreeNode[]): number => nodes.reduce((n, c) => n + 1 + count(c.children ?? []), 0)
   const total = count(children)
+  if (total === 0 && !run.parent_run_id) return null
 
   return (
-    <div>
-      <p className="cap">
-        <span>Reruns · {total}{run.parent_run_id && <> · this run is a replay of <span style={{ fontFamily: 'var(--mono)' }}>{shortRunId(run.parent_run_id)}</span></>}</span>
-        <a href="#" onClick={(e) => { e.preventDefault(); onSwitchTab('Pipeline') }}>Rerun from a step</a>
-      </p>
+    <section className="ov-sec">
+      <div className="sh">
+        <h3>Reruns</h3>
+        <span className="sh-n">{total}</span>
+        {run.parent_run_id && <span className="chip chip-iris chip-mono">replay of {shortRunId(run.parent_run_id)}</span>}
+        <span className="sh-sp" />
+        <button type="button" className="btn btn-sm btn-ghost" onClick={() => onSwitchTab('Pipeline')}>Rerun from a step</button>
+      </div>
       {total > 0 ? (
         <div className="blist">
           {children.map((c) => <Branch key={c.run_id} node={c} depth={0} open={(id) => openRun(id)} />)}
@@ -98,6 +102,6 @@ export default function ReplayBranches({
       ) : (
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--ink-4)' }}>No reruns yet. Open the Pipeline tab and rerun from any step.</p>
       )}
-    </div>
+    </section>
   )
 }

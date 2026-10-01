@@ -1,7 +1,8 @@
 'use client'
 
 /* The paste-ready coding-agent prompt `argus fix` emits. On a failing run
-   the overview loads it immediately so it is on the page, not behind a click.
+   the overview prefetches it so Copy is instant and the root-cause row can
+   name the file, but keeps it folded — the prompt opens on View or Copy.
    Copy still goes through the clipboard. */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -95,12 +96,10 @@ export function useFixPrompt(runId: string, node?: string | null, opts?: { autol
       .then((data) => {
         if (ticket.current !== id) return
         setPayload(data)
-        setOpen(true)
       })
       .catch((err) => {
         if (ticket.current !== id) return
         setError(err instanceof Error ? err.message : 'Could not build a fix prompt')
-        setOpen(true)
       })
       .finally(() => { if (ticket.current === id) setBusy(false) })
     return cleanup

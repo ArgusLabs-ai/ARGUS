@@ -5,9 +5,10 @@
    flush, none of them boxed. */
 
 import { useState, useEffect } from 'react'
+import { Flag, Download, RotateCcw, Wand2 } from 'lucide-react'
 import type { RunSummary } from '@/lib/types'
 import { useRunDetail } from '@/lib/hooks'
-import { useWorkspace, toneFor, statusWord, formatDuration, shortRunId } from '@/lib/workspace'
+import { useWorkspace, statusWord, shortRunId } from '@/lib/workspace'
 import { fmtClock } from '@/lib/run-detail'
 import { pipelineLabel } from '@/lib/run-filters'
 import SendReportDialog from './SendReportDialog'
@@ -20,6 +21,11 @@ import CliLogViewer from './CliLogViewer'
 import { useFixPrompt } from './run-detail/FixPrompt'
 
 const TABS = ['Overview', 'Pipeline', 'AI Analysis', 'Correlations', 'State', 'Logs'] as const
+
+const RUN_CHIP: Record<string, string> = {
+  clean: 'chip-ok', crashed: 'chip-tool', silent_failure: 'chip-quality',
+  semantic_fail: 'chip-semantic', interrupted: 'chip-run',
+}
 type Tab = typeof TABS[number]
 
 function LogsTab({ runId }: { runId: string }) {
@@ -82,7 +88,6 @@ export default function RunDetailPanel({
   if (error || !run) return <Centered><span style={{ color: 'var(--tool)' }}>{error ?? 'Run not found'}</span></Centered>
 
   const steps = run.steps ?? []
-  const reached = steps.filter((s) => s.status !== 'skipped').length
   const summary = allRuns.find((r) => r.run_id === run.run_id)
   const pipeline = summary ? pipelineLabel(summary) : null
   const alias = summary?.alias
@@ -108,32 +113,27 @@ export default function RunDetailPanel({
       <div className="ws-head">
         <div className="ws-head-row">
           <span className="ws-title">{alias ?? run.run_id}</span>
-          <span className={`stat ${toneFor(run.overall_status)}`}><i />{statusWord(run.overall_status)}</span>
-          {run.dry_run && <span className="stat mute"><i />dry run</span>}
+          <span className={`chip ${RUN_CHIP[run.overall_status] ?? 'chip-idle'}`}><span className="dot" />{statusWord(run.overall_status)}</span>
+          {run.dry_run && <span className="chip chip-idle">dry run</span>}
           <span style={{ flex: 1 }} />
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowReport(true)}>Report issue</button>
-          <button type="button" className="btn btn-sm btn-ghost" onClick={exportJson}>Export</button>
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setActiveTab('Pipeline')}>Replay</button>
-          {canFix && (
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => { setActiveTab('Overview'); void fix.copy() }}
-            >
-              {fix.label}
-            </button>
-          )}
+          <div className="ws-acts">
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowReport(true)}><Flag />Report issue</button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={exportJson}><Download />Export</button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setActiveTab('Pipeline')}><RotateCcw />Replay</button>
+            {canFix && (
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                onClick={() => { setActiveTab('Overview'); void fix.copy() }}
+              >
+                <Wand2 />{fix.label}
+              </button>
+            )}
+          </div>
         </div>
         <div className="ws-sub">
-          {alias && <span className="m">{run.run_id}</span>}
-          {alias && <span>·</span>}
-          <span>Argus v{run.argus_version}</span>
-          {pipeline && <><span>·</span><span>{pipeline}</span></>}
-          <span>·</span>
-          <span>{reached} of {steps.length} steps</span>
-          <span>·</span>
-          <span className="m">{formatDuration(run.duration_ms)}</span>
-          <span>·</span>
+          {alias && <><span className="m">{run.run_id}</span><span>·</span></>}
+          {pipeline && <><span>{pipeline}</span><span>·</span></>}
           <span className="m">{fmtClock(run.started_at)}</span>
           {run.parent_run_id && (
             <>
@@ -153,6 +153,8 @@ export default function RunDetailPanel({
             </>
           )}
           {serving?.project_root && <><span>·</span><span className="m" title={serving.runs_dir}>{serving.project_root.split('/').pop()}</span></>}
+          <span>·</span>
+          <span>v{run.argus_version}</span>
         </div>
         <div className="tabs" role="tablist" aria-label="Run detail sections">
           {TABS.map((tab) => (
@@ -164,7 +166,7 @@ export default function RunDetailPanel({
               onClick={() => setActiveTab(tab)}
             >
               {tab}
-              {counts[tab] != null && <span className="n">{counts[tab]}</span>}
+              {counts[tab] != null && <span className="tab-count">{counts[tab]}</span>}
             </button>
           ))}
         </div>

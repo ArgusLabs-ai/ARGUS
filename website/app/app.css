@@ -225,3 +225,190 @@
 @keyframes dash{ to{ stroke-dashoffset: -18; } }
 @keyframes pulse-border{ 0%,100%{ opacity:.4 } 50%{ opacity:1 } }
 .page-fade-in{ animation: wsIn var(--med) var(--ease); }
+
+/* ═══════ RUN PAGE — compartments, capsules, graph ═══════════════
+   Regions open on a full-bleed hairline and a heading instead of sitting
+   in boxes; status and signal family read as spec capsules (.chip-*). */
+
+.ws-acts{ display: flex; align-items: center; gap: 2px; }
+.ws-acts .btn svg{ width: 13px; height: 13px; }
+.ws-acts .btn-primary{ margin-left: 8px; }
+.ws-head-row .chip{ height: 22px; }
+
+.wc.ov{ gap: 28px; padding-top: 28px; padding-bottom: 48px; }
+.ov-sec{ border-top: 1px solid var(--line); margin: 0 -34px; padding: 24px 34px 0; }
+
+/* Section heading: title, a count pill, capsules, then actions right */
+.sh{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }
+.sh h3{ margin: 0 2px 0 0; font-size: 14.5px; font-weight: 600; letter-spacing: -0.012em; color: var(--ink); }
+.sh h4{ margin: 0 2px 0 0; font-size: 13px; font-weight: 600; color: var(--ink); }
+.sh.sh-sm{ margin-bottom: 10px; }
+.sh-sp{ flex: 1 1 auto; }
+.sh-n{
+  font-size: 11px; font-weight: 500; padding: 1px 6px; border-radius: 999px;
+  background: var(--fill-subtle); color: var(--ink-3); font-variant-numeric: tabular-nums;
+}
+.sh-conf{ display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+.sh-conf .meter{ width: 64px; }
+.sh .btn svg{ width: 13px; height: 13px; }
+
+.chip-mono{ font-family: var(--mono); font-size: 11px; }
+.chip-solid{ background: var(--tool); border-color: var(--tool); color: var(--on-signal); font-size: 11px; height: 20px; padding: 0 8px; }
+
+/* ── Root cause ── */
+.ov-hero{ display: flex; flex-direction: column; gap: 14px; }
+.ov-eyebrow{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.eyebrow{ font-size: 11px; font-weight: 600; letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); margin-right: 4px; }
+.eyebrow.bad{ color: var(--tool); }
+.eyebrow.ok{ color: var(--ok); }
+.eyebrow.warn{ color: var(--quality); }
+.ov-hero .finding{ font-size: 17px; line-height: 1.6; max-width: 80ch; }
+.ov-hero .finding .who{ font-size: 16px; }
+.ov-path{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ov-path-l{ font-size: 11.5px; color: var(--ink-4); }
+.ov-path .rc-chain{ margin: 0; gap: 6px; }
+.rc-arrow-i{ width: 13px; height: 13px; color: var(--ink-4); flex: none; }
+.rc-node em{ font-style: normal; font-family: var(--sans); font-size: 10.5px; opacity: .75; margin-left: 7px; }
+.rc-node.crashed{ border-color: color-mix(in srgb, var(--tool) 52%, transparent); border-style: dashed; color: var(--tool); }
+.rc-node.here{ border-color: var(--iris); box-shadow: 0 0 0 2px var(--iris-dim); }
+
+.fixrow-wrap{ max-width: 980px; }
+.fixrow{
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 7px 8px 7px 13px;
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  background: var(--panel);
+}
+.fixrow-ico{ width: 14px; height: 14px; color: var(--iris-bright); flex: none; }
+.fixrow-t{ font-size: 13px; color: var(--ink-2); min-width: 0; }
+.fixrow-m{ font-family: var(--mono); font-size: 11.5px; color: var(--ink-4); margin-left: 10px; }
+.fixrow-chip{ height: 20px; font-size: 11px; padding: 0 7px; }
+.fixrow-wrap .fix-panel{ margin-top: 12px; }
+
+/* ── Run numbers: one strip, label over value, hairline dividers ── */
+.ov-stats{
+  display: flex; flex-wrap: wrap; row-gap: 12px;
+  margin: 0 -34px; padding: 15px 34px;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.ov-stats > div{ padding: 0 30px; border-left: 1px solid var(--line); min-width: 0; }
+.ov-stats > div:first-child{ padding-left: 0; border-left: none; }
+.ov-stats dt{
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-4); margin: 0 0 5px;
+}
+.ov-stats dd{
+  margin: 0; display: flex; align-items: baseline; gap: 8px;
+  font-family: var(--mono); font-size: 17px; font-weight: 500; letter-spacing: -0.02em;
+  color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.ov-stats dd small{ font-size: 13px; color: var(--ink-3); font-weight: 400; }
+.ov-sev{ font-family: var(--sans); font-size: 11.5px; font-weight: 500; letter-spacing: 0; }
+.ov-sev.bad{ color: var(--tool); }
+.ov-sev.warn{ color: var(--quality); }
+.ov-stats.sm{ margin: 14px 0 0; padding: 0; border: none; background: none; }
+.ov-stats.sm > div{ padding: 0 22px; }
+.ov-stats.sm > div:first-child{ padding-left: 0; }
+.ov-stats.sm dd{ font-size: 13.5px; }
+
+/* ── Findings: a band per node, a row per flagged field ── */
+.fgroups{ margin: 0 -34px; border-top: 1px solid var(--line); }
+.fgroup-h{
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 34px; background: var(--band); border-bottom: 1px solid var(--line);
+}
+.fgroup-h .chip{ height: 20px; font-size: 11px; padding: 0 8px; }
+.fgroup-n{
+  border: none; background: transparent; padding: 0; margin-right: 4px; cursor: pointer;
+  font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em;
+}
+.fgroup-n:hover{ text-decoration: underline; text-underline-offset: 3px; }
+.fgroup-c{ margin-left: auto; font-size: 11.5px; color: var(--ink-4); }
+.frow{ padding: 14px 34px; }
+.frow-sev{ margin-top: 7px; }
+.frow-chips{ display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 7px; }
+.frow-chips .chip{ height: 20px; font-size: 11px; padding: 0 7px; }
+.frow-field{
+  font-family: var(--mono); font-size: 11.5px; color: var(--ink-2);
+  background: var(--fill-subtle); padding: 1.5px 6px; border-radius: 4px;
+}
+.frow-text{ font-size: 13.5px; }
+.frow .btn.frow-fix{
+  padding: 0 10px; font-size: 12px; color: var(--ink-3); text-decoration: none;
+  opacity: 0; transition: opacity var(--fast) var(--ease);
+}
+.frow:hover .btn.frow-fix, .frow:focus-within .btn.frow-fix, .frow .btn.frow-fix[aria-expanded="true"]{ opacity: 1; }
+.frow .btn.frow-fix:hover{ color: var(--ink); text-decoration: none; }
+
+.ov-prose{ margin: 0; font-size: 13.5px; line-height: 1.72; color: var(--ink-2); max-width: 82ch; }
+
+/* ── Step detail ── */
+.ndet-eyebrow{ font-size: 11px; font-weight: 600; letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-4); margin-bottom: 8px; }
+.ndet-head{ align-items: center; }
+.ndet-head .btn svg{ width: 13px; height: 13px; }
+.irow-chip{ height: 19px; font-size: 10.5px; padding: 0 6px; margin-right: 9px; vertical-align: 1px; }
+.disc-wrap{ margin: 0 -34px; border-top: 1px solid var(--line); }
+.disc-wrap:last-child{ border-bottom: 1px solid var(--line); }
+.disc{
+  width: 100%; display: flex; align-items: center; gap: 9px;
+  padding: 11px 34px; border: none; background: transparent; cursor: pointer;
+  text-align: left; font-family: var(--sans); color: var(--ink);
+}
+.disc:hover{ background: var(--hover); }
+.disc-tri{ width: 13px; height: 13px; color: var(--ink-4); flex: none; transition: transform var(--fast) var(--ease); }
+.disc.open .disc-tri{ transform: rotate(90deg); }
+.disc-t{ font-size: 13px; font-weight: 500; }
+.disc-keys{ font-family: var(--mono); font-size: 11.5px; color: var(--ink-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; margin-left: 6px; }
+.disc-body{ border-top: 1px solid var(--line); }
+.disc-body .gut{ margin: 0; border: none; }
+
+/* ── Graph additions over the spec rules in globals.css ── */
+.gbar-title{ font-size: 13px; font-weight: 600; color: var(--ink); }
+.chip.gbar-count{ height: 20px; padding: 0 7px; font-size: 11px; font-family: var(--mono); }
+.gbar-tgl{ display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-3); cursor: pointer; margin-right: 4px; }
+.gbar .btn svg{ width: 13px; height: 13px; }
+.gzoom .gzoom-fit{ width: 38px; font-size: 9.5px; font-weight: 600; letter-spacing: .1em; border-left: 1px solid var(--line-2); }
+.gworld{ position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+.gedges{ position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+.gnode-badge svg{ width: 9px; height: 9px; }
+.gnode-sig{ color: var(--ink-4); }
+.gtool .gtool-kind{ color: inherit; opacity: .72; }
+.gtool.t-ok .gtool-kind, .gtool.t-more .gtool-kind{ color: var(--ink-4); opacity: 1; }
+.gtool.t-sem{ border-style: solid; border-color: var(--semantic); background: var(--surf-semantic); color: var(--semantic); }
+.gtool.t-sem .gtool-ico{ color: var(--semantic); opacity: 1; }
+.gtool.t-more{ color: var(--ink-3); }
+.lg-key.lg-pass{ border-color: var(--line-2); background: var(--raised); }
+.lg-key.lg-crashed{ border-color: var(--tool); border-width: 1.5px; background: var(--surf-tool); }
+.lg-key.lg-fail{ border-color: var(--quality); background: var(--surf-quality); }
+.lg-key.lg-semantic{ border-color: var(--semantic); background: repeating-linear-gradient(135deg, var(--semantic-dim) 0 3px, transparent 3px 7px), var(--surf-semantic); }
+.lg-key.lg-degraded{ border-color: var(--coherence); border-style: dashed; background: var(--surf-coherence); }
+.lg-key.lg-running{ border-color: var(--iris); background: var(--iris-dim); }
+.lg-key.lg-skipped{ border-color: var(--line-2); border-style: dashed; background: transparent; opacity: .5; }
+.lg-pill.lg-t-error{ border: 1px solid var(--tool); background: var(--surf-tool); }
+.lg-pill.lg-t-sem{ border: 1px solid var(--semantic); background: var(--surf-semantic); }
+.lg-pill.lg-t-slow{ border: 1px solid var(--quality); background: var(--surf-quality); }
+.glegend-hint{ margin-left: auto; font-size: 11.5px; color: var(--ink-4); }
+.ginsp-f{ padding: 11px 14px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; }
+.ginsp-sig{ display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.ginsp-sev{ font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-4); }
+.ginsp-p{ margin: 6px 0 8px; font-size: 12px; color: var(--ink-2); line-height: 1.6; }
+.ginsp-p code{ font-size: .9em; }
+.ginsp .rc-node{ font-size: 11px; padding: 2px 7px; }
+.ginsp .chip{ height: 20px; font-size: 11px; padding: 0 7px; }
+.lg-pill.lg-t-empty{ border: 1px solid var(--coherence); background: var(--surf-coherence); }
+
+/* ── Calmer density: clamp long prose, fold the tail ── */
+.frow-text.clamp, .ov-prose.clamp{
+  display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden;
+}
+.frow-text.clamp{ -webkit-line-clamp: 2; }
+.ov-prose.clamp{ -webkit-line-clamp: 3; }
+.frow-chips{ margin-bottom: 5px; }
+.frow{ padding: 12px 34px; }
+.fmore{
+  width: 100%; border: none; border-bottom: 1px solid var(--line); background: transparent;
+  padding: 10px 34px; text-align: left; cursor: pointer;
+  font-family: var(--sans); font-size: 12.5px; color: var(--ink-3);
+}
+.fmore:hover{ background: var(--hover); color: var(--ink); }

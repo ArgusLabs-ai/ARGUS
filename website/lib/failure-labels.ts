@@ -44,3 +44,43 @@ const FALLBACK: FailureMeta = { label: 'Unknown', category: 'Tool', categoryColo
 export function getFailureMeta(failureType: string): FailureMeta {
   return FAILURE_META[failureType] ?? FALLBACK
 }
+
+/* ── Findings → category capsule ──────────────────────────────────
+   A Finding's `type` is a failure_type, a signature category, a tool-chain
+   finding, an anomaly id or `crash`. Each lands in one of the four signal
+   families so the UI can colour it: Tool red, Quality amber, Semantic
+   violet, Coherence cyan. */
+
+export const CATEGORY_CHIP: Record<FailureMeta['category'], string> = {
+  Tool: 'chip-tool', Quality: 'chip-quality', Semantic: 'chip-semantic', Coherence: 'chip-coherence',
+}
+
+const SIGNATURE_LABEL: Record<string, string> = {
+  placeholder_outputs: 'Placeholder', null_like_semantic: 'Null-like value',
+  suspicious_phrases: 'Suspicious phrase', corrupted_markers: 'Corrupted marker',
+  repeated_filler: 'Repeated filler', malformed_payload: 'Malformed payload',
+  empty_semantic_state: 'Empty state', semantic_refusal: 'Refusal',
+}
+const CHAIN_LABEL: Record<string, string> = {
+  unused_result: 'Unused result', retry_storm: 'Retry storm',
+  ordering_anomaly: 'Ordering anomaly', argument_degradation: 'Argument degradation',
+}
+
+function humanize(s: string): string {
+  const t = s.replace(/_/g, ' ').trim()
+  return t ? t[0].toUpperCase() + t.slice(1) : 'Signal'
+}
+
+export function findingMeta(f: { type: string; source?: string; severity?: string }): FailureMeta & { chip: string } {
+  const pick = (category: FailureMeta['category'], label: string) =>
+    ({ label, category, categoryColor: `var(--${category === 'Tool' ? 'tool' : category.toLowerCase()})`, chip: CATEGORY_CHIP[category] })
+  if (f.source === 'crash' || f.type === 'crash') return pick('Tool', 'Crash')
+  if (FAILURE_META[f.type]) { const m = FAILURE_META[f.type]; return { ...m, chip: CATEGORY_CHIP[m.category] } }
+  if (SIGNATURE_LABEL[f.type]) return pick('Semantic', SIGNATURE_LABEL[f.type])
+  if (CHAIN_LABEL[f.type]) return pick('Coherence', CHAIN_LABEL[f.type])
+  if (f.source === 'anomaly') return pick('Quality', `Anomaly ${f.type}`)
+  if (f.source === 'llm') return pick('Semantic', 'Judge')
+  if (f.source === 'validator') return pick('Semantic', 'Validator')
+  if (/missing/.test(f.type)) return pick('Tool', 'Missing field')
+  return pick(f.severity === 'critical' ? 'Tool' : 'Quality', humanize(f.type))
+}
