@@ -26,9 +26,14 @@ export default function ReplayControls({
   runId,
   run,
   children,
+  autoReplayFrom = null,
+  onAutoReplayStarted,
 }: {
   runId: string
   run: RunRecord
+  /** When set, start a full rerun from this node once, then report back. */
+  autoReplayFrom?: string | null
+  onAutoReplayStarted?: () => void
   children: (
     handleReplay: (node: string) => void,
     handleReplayNode: (node: string) => void,
@@ -157,6 +162,17 @@ export default function ReplayControls({
   function handleReplay(nodeName: string) {
     submitReplay(nodeName, 'full')
   }
+
+  /* The ref keeps StrictMode's double effect from starting two reruns; it
+     resets once the parent clears the request, so the next click works. */
+  const autoStarted = useRef<string | null>(null)
+  useEffect(() => {
+    if (!autoReplayFrom) { autoStarted.current = null; return }
+    if (autoStarted.current === autoReplayFrom) return
+    autoStarted.current = autoReplayFrom
+    onAutoReplayStarted?.()
+    submitReplay(autoReplayFrom, 'full')
+  }, [autoReplayFrom]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleReplayNode(nodeName: string) {
     submitReplay(nodeName, 'node')
