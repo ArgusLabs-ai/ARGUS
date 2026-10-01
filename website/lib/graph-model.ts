@@ -61,6 +61,7 @@ export function mapStatus(s: StepStatus | undefined): GStatus {
     case 'degraded_input': return 'degraded'
     case 'fail': case 'retried': return 'fail'
     case 'interrupted': return 'running'
+    case 'skipped': return 'skipped'
     /* A status this UI does not know yet must not render as green. */
     default: return 'skipped'
   }

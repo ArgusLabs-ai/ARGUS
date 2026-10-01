@@ -102,13 +102,13 @@ def test_every_step_status_is_coloured_in_the_graph() -> None:
     whatever the fallback happens to be rather than flagged — `interrupted`
     rendered as a green pass this way.
     """
-    src = (WEBSITE / "components" / "run-detail" / "ExecutionGraph.tsx").read_text()
+    src = (WEBSITE / "lib" / "graph-model.ts").read_text()
     block = re.search(r"function mapStatus\(.*?\n}", src, re.S)
-    assert block, "mapStatus not found in ExecutionGraph.tsx"
+    assert block, "mapStatus not found in lib/graph-model.ts"
     handled = set(re.findall(r"case '([a-z_]+)':", block.group(0)))
     missing = _step_statuses() - handled
     assert not missing, (
-        f"step statuses with no explicit case in ExecutionGraph.mapStatus "
+        f"step statuses with no explicit case in graph-model.mapStatus "
         f"(they fall through to the default colour): {sorted(missing)}"
     )
 
