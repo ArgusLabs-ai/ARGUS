@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.text import Text
@@ -16,6 +17,26 @@ from rich.text import Text
 from argus.cli import print_footer
 
 console = Console()
+
+
+def _format_byte_size(num_bytes: int) -> str:
+    if num_bytes < 1024:
+        return f"{num_bytes} B"
+    if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.1f} KB"
+    if num_bytes < 1024 * 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024):.1f} MB"
+    return f"{num_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+
+def _runs_json_files(runs_path: Path) -> list[Path]:
+    if not runs_path.exists():
+        return []
+    return list(runs_path.glob("*.json"))
+
+
+def _runs_disk_bytes(runs_path) -> int:
+    return sum(f.stat().st_size for f in _runs_json_files(runs_path))
 
 
 def _check_python_version() -> tuple[bool, str]:
@@ -81,7 +102,7 @@ def _check_storage() -> tuple[bool, str]:
     if not stored_runs.exists():
         return True, f".argus/runs/ not yet created at {stored_runs} — {hint}"
 
-    run_files = list(stored_runs.glob("*.json"))
+    run_files = _runs_json_files(stored_runs)
     if not run_files:
         return True, f"0 runs stored in {stored_runs}. {hint}"
 
@@ -94,9 +115,13 @@ def _check_storage() -> tuple[bool, str]:
             errors += 1
 
     total = len(run_files)
+    size_note = _format_byte_size(_runs_disk_bytes(stored_runs))
     if errors > 0:
-        return False, f"{total} runs stored, {errors} corrupted (of {min(5, total)} checked)"
-    return True, f"{total} runs stored, all healthy"
+        return (
+            False,
+            f"{total} runs ({size_note}), {errors} corrupted (of {min(5, total)} checked)",
+        )
+    return True, f"{total} runs ({size_note}), all healthy"
 
 
 def _check_replay_readiness() -> tuple[bool, str]:
@@ -174,6 +199,33 @@ def _check_optional_deps() -> tuple[bool, str]:
     return True, "no extra packages required (LLM: argus key set)"
 
 
+def _check_runs_writable() -> tuple[bool, str]:
+    """Verify ``.argus/runs/`` exists (or can be created) and accepts writes."""
+    from argus.storage import runs_dir  # noqa: PLC0415
+
+    target = runs_dir(create=True)
+    probe = target / ".doctor_write_probe"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as e:
+        return False, f"cannot write to {target} — {e}"
+    return True, f"writable at {target}"
+
+
+def _check_configured_keys() -> tuple[bool, str]:
+    """Report providers with a resolvable API key (saved or env)."""
+    from argus.user_config import configured_providers  # noqa: PLC0415
+
+    providers = configured_providers()
+    if providers:
+        return True, ", ".join(providers)
+    return True, (
+        "none — run argus key set or export OPENAI_API_KEY / "
+        "ANTHROPIC_API_KEY / GEMINI_API_KEY"
+    )
+
+
 def _check_llm_mode() -> tuple[bool, str]:
     """Report which LLM path is active: BYOK / hosted / heuristic-only."""
     import os
@@ -215,7 +267,9 @@ def doctor() -> None:
         ("python", _check_python_version),
         ("package", _check_package_identity),
         ("langgraph", _check_langgraph),
+        ("runs_write", _check_runs_writable),
         ("storage", _check_storage),
+        ("keys", _check_configured_keys),
         ("llm", _check_llm_mode),
         ("replay", _check_replay_readiness),
     ]
