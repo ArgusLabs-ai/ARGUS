@@ -1,12 +1,42 @@
 # Pivot branch — contributor update
 
 Branch: **`pivot/fat-traces`**  
-Last updated: 15 Sep 2026 (third update: `argus ingest langsmith` — grade a trace file with no app).
+Last updated: 2 Oct 2026 (brought current through `ae0c6532`; see **Where things stand** below).
 
 Same product: silent failures, origin blame, CI gate (`argus check`).  
 Different capture: fat traces → ledger (notebook) → rules → judge last. No wrapping the graph engine.
 
 **Do not merge wrap deletion into `master`.** The first PR into `master` is additive: `ArgusRecorder` sits next to `ArgusWatcher`.
+
+---
+
+## Where things stand (2 Oct 2026)
+
+Read this first; the sections below are the detail, in the order things landed.
+
+**Open work, by GitHub issue** (nothing else is tracked as open):
+
+| Issue | What | Blocks |
+|---|---|---|
+| #78 | Move `pytest --argus` onto the recorder (drop the compile / Pregel patch) | #83, the `master` PR |
+| #152 | `pytest --argus` binds runs by diffing `.argus/runs`, so parallel tests can steal each other's run. A fix (#153) is on `origin/pivot/fat-traces`; pull before touching the plugin | — |
+| #83 | Delete the wrap path (`patcher.py`, `watcher.py`, `http_recorder.py`). **Blocked** on #78 and on replay continuing the tail (below) | — |
+| #91 | Recorder lock is held across grading: fan-out serializes and LLM calls block every callback | — |
+| #149 | Advisory whole-pipeline LLM monitor. Measured, not built; open question is where a node's one-line purpose lives | — |
+| #57 | One-file GitHub Action for the CI gate | — |
+| #49, #25 | Re-triage signature severities; more `argus doctor` checks | — |
+
+**Eval defects (`test-cases.md` §6):** E1, E2, E4, E4b, E5, E6, E7, E8, E9 are
+fixed. E3 is fixed only for its narrow shape (a short policy decline that cites a
+number and a reason stays a warning); the broader "ambiguous tier" idea in #130 is
+not built.
+
+**Suite size:** 1,315 tests collected; the two matrices below are 89 tests between
+them (the per-section counts further down are the counts at the time and are
+older). Run both matrices after any detection change.
+
+**Not this milestone** (per `CLAUDE.md`): GitHub App / auto-PRs, production Slack,
+cloud UI polish, new framework adapters.
 
 ---
 
@@ -385,9 +415,9 @@ If retrieve already got `[]` (nothing in the library), the run still fails — w
 
 **Done when:** product decides whether empty-corpus is a pass (per-node opt-out) or stays a fail. Do not soften “retriever returned nothing” globally — that hides the flagship case.
 
-### 4. `pytest --argus` is still the old wrap
+### 4. `pytest --argus` is still the old wrap (#78)
 
-CI eat-own-cooking (`tests/test_argus_ci_gate.py`, #68) still patches `StateGraph.compile` and Pregel `invoke` / `stream` / `batch`.
+CI eat-own-cooking (`tests/test_argus_ci_gate.py`, #68) still patches `StateGraph.compile` and Pregel `invoke` / `stream` / `batch`. The run-binding race in it (#152) has a fix on origin (#153); that fixes the symptom, not the wrap.
 
 **Done when:** that test passes with `patch_graph` forced to raise.
 
@@ -399,9 +429,19 @@ Ledger has tool callbacks. No urllib3 monkeypatch on this path. No fake `http=[]
 
 Recorder is LangGraph-specific. Skinny traces (payloads stripped) must refuse, not “pass.” CrewAI etc. later. Merged state posing as updates refuses too (#82) — re-measure its threshold when a new adapter lands.
 
-### 7. Do not delete `patcher.py` / `ArgusWatcher` yet
+### 7. Do not delete `patcher.py` / `ArgusWatcher` yet (#83)
 
-Blocked on (1) and (4). First `master` PR keeps the wrap beside the recorder.
+Blocked on (1) and (4) (#78). First `master` PR keeps the wrap beside the recorder.
+
+### 11. Recorder lock is held across grading (#91)
+
+Fan-out serializes behind it, and a judge call blocks every other callback.
+Correct but slow; matters for wide fan-out and for a served app.
+
+### 12. Semantic failures are mostly invisible to the rules (#149)
+
+Rules catch about 90% of *mechanical* silent failures and very little semantic
+ones (see "How far the 90% travels"). The advisory monitor is the planned answer.
 
 ### 8. ~~Subgraph node names are bare, so two subgraphs can collide~~ — done (#95)
 
@@ -409,16 +449,10 @@ Colliding names are now qualified (`a:retrieve`) from `langgraph_checkpoint_ns`;
 see "Behaviour changes" above. Remaining edge: a `Command(goto=...)` issued
 *inside* a subgraph to a colliding name is not merged into the edge map.
 
-### 9. `test_1mb_dict_completes` hugs its own budget
+### 9. ~~`test_1mb_dict_completes` hugs its own budget~~ — done
 
-Pre-existing, unrelated to the pivot, but it will flake your CI. It asserts
-`inspect_tool_outputs` on a 1MB dict finishes in under 60s and actually takes
-33–55s on a dev machine — and >60s under any parallel load. It was written to
-catch a 1051s pathology, so the threshold has three orders of magnitude of
-slack against its real purpose and almost none against noise.
-
-**Done when:** the budget matches the pathology it guards (say 300s), or the
-test measures work done rather than wall clock.
+Threshold relaxed from 60s to 300s (`0fafe24c`); it still catches the 1051s
+pathology it was written for.
 
 ### 10. Type drift is invisible
 
@@ -436,7 +470,9 @@ Judge auto-on when a key/login exists (`semantic_judge=None`).
 
 ---
 
-## What we changed (this branch vs `master` @ 0.11.0)
+## What we changed (this branch vs `master` @ 0.11.0) — first slice
+
+Later changes are in their own sections; this table is the original pivot.
 
 | Area | Change |
 |---|---|
@@ -477,6 +513,10 @@ Demos: `demo/fat_trace/`, `demo/new_user_rag.py`.
 | `8b3fa2f` | Ledger-sourced replay |
 | `1b4f20e` | Green the pipeline |
 | *(this push)* | Silent-failure stress matrix (`tests/test_silent_failure_matrix.py`, 28 tests / 7 pipelines) and the six detection fixes it found: router `empty_output`, subgraph grading, crash origin, placeholder severity, RF-006, finding reason |
+
+This list stops at the first matrix. Everything after it is in the sections
+below, each tagged with its issue number; `git log pivot/fat-traces` is the
+authoritative history.
 
 ---
 
@@ -1377,3 +1417,34 @@ file for the team to edit), and what happens for nodes without one.
 The eval scripts and results live in the gitignored local suite
 (`ship_eval/coverage/`: `monitor_eval.py`, `monitor_verified.py`,
 `monitor_v2.py`, `REPORT.md`).
+
+---
+
+## Smaller fixes since the first update
+
+Each is a few lines of code; the *why* is what a contributor needs.
+
+| Issue / ref | Change |
+|---|---|
+| #146, `67966e89` | **BA-004 refusal wording.** A double-quoted span repeating the node's input is the customer's words and no longer fails the gate. A short decline that cites a number and a reason (refund window, order id) stays a warning; a bare "unable to answer" is still critical. The judge still cannot originate or clear it. This is all of E3 that was fixed |
+| E4b, `002340f9` | **A failed accumulator iteration is no longer hidden.** `_apply_loop_retries` keeps the verdict of an earlier iteration that wrote an `operator.add` field (kind `"add"`), so a swallowed timeout on page 1 fails. `add_messages` is still relabelled `retried`, so ReAct recovery and a writer/critic overwrite of `draft` stay clean |
+| E5, `51953f84` | **Bracketed placeholders inside prose.** PH-014 was whole-value only. PH-015 now warns on `[Your Name]` / `[TOPIC]` / `[INSERT …]` / `{{var}}` / `{var}` in a sentence, skipping citations, markdown links and `[Draft]`. Promotion to critical is the narrow S3 rule above |
+| #148 | **`argus consumers <run>`** lists later nodes handed each written field, as a starting consumer map. It loads nothing and nothing fails CI until someone passes the result as `consumers=`. It cannot see graph-input fields or readers on an untaken branch (S9, S10) |
+| #90, `c0a5e465` | `finish` no longer writes `ARGUS_RUN_ID`. One `attach` serves many runs and a process-global pointer graded whichever finished last. Bare `argus check` uses `last`; `ARGUS_RUN_ID` is opt-in for CI |
+| #80, #85, #79 | Ledger believes the trace; the judge gets the ledger; replay semantics decided. All written up above |
+| #75 | `ArgusWatcher._attach_compiled` keeps `store` / `cache` when recompiling (wrap path) |
+| B-2 | No `load_dotenv(override=True)` in library code: an ambient `.env` can no longer replace keys the host app already set. Pinned by an AST scan over `src/argus` |
+| B-3 | `add_candidate` compile-validates a regex before queueing it, with the registry's own flags |
+| B-4 | A corrupt or non-list `signature_disputes.json` warns (`RuntimeWarning`) instead of reading as silently empty |
+| B-8 | Wrap path: a non-callable node runnable (e.g. `RunnableLambda(...) \| tool`) is wrapped, not replaced, so the spec stays valid |
+| B-10 | Wrap path: `http_recorder` now has an httpcore backend, so httpx ≥ 0.28 traffic is recorded; a record session that captures nothing logs a warning |
+| B-9 / B-14 | Tool calls under an inner chain are re-parented to the node step; `report_tool_call` covers the ones callbacks never see (above) |
+
+B-3 / B-4 / B-8 / B-10 touch the **old** path or shared plumbing. Do not read
+them as pivot-path work, and do not extend the wrap path further (see the
+`CLAUDE.md` pivot notes).
+
+**Housekeeping.** Full suite is 1,315 tests. Fixtures that need a real model or
+a key are gitignored local suites (`pivot_eval/`, `ship_eval/`); they are not in
+CI, so a green CI is the tracked matrices and unit tests only.
+
