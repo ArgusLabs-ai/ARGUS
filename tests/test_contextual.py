@@ -519,3 +519,67 @@ def test_a_barren_subgraph_is_not_also_pinned_on_the_first_step(monkeypatch):
     verdict = evaluate_run(load_run(rec.session.run_id))
     assert not verdict.passed
     assert "ingest" not in verdict.failing_nodes, verdict.failing_nodes
+
+
+# ── "never written": optional reads, guesses, upstream failures ─────────────
+
+
+def _rows(*steps):
+    """(node, update) pairs → ledger rows with a running state."""
+    from argus.ledger import LedgerRow
+
+    state: dict = {}
+    rows = []
+    for i, (node, update) in enumerate(steps):
+        before = dict(state)
+        state.update(update or {})
+        rows.append(LedgerRow(i, node, before, update, dict(state)))
+    return rows
+
+
+FAQ_PATH = _rows(("classify", {"intent": "faq"}), ("draft_reply", {"reply": "3-5 days"}))
+
+
+@pytest.mark.unit
+def test_never_written_on_a_branch_is_fine_when_declared_optional():
+    required = contextual_findings(FAQ_PATH, {"order": ["draft_reply"]})
+    optional = contextual_findings(
+        FAQ_PATH, {"order": {"readers": ["draft_reply"], "required": False}}
+    )
+    assert [f.node for f in required] == ["classify"]
+    assert optional == []
+
+
+@pytest.mark.unit
+def test_optional_still_fails_a_drop():
+    rows = _rows(
+        ("lookup", {"order": {"id": 1}}),
+        ("clean", {"order": None}),
+        ("draft_reply", {"reply": "x"}),
+    )
+    found = contextual_findings(rows, {"order": {"readers": ["draft_reply"], "required": False}})
+    assert [f.node for f in found] == ["clean"]
+
+
+@pytest.mark.unit
+def test_never_written_is_a_guess_and_says_so():
+    (finding,) = contextual_findings(FAQ_PATH, {"order": ["draft_reply"]})
+    from argus.contextual import GUESS_CONFIDENCE
+
+    assert finding.confidence == GUESS_CONFIDENCE
+
+
+@pytest.mark.unit
+def test_never_written_lands_on_the_node_that_already_failed_not_a_bystander():
+    """GraphQL `errors` on `list_accounts` → nothing to fan out → `scored` never
+    written. The first row (`check_existing`) did nothing wrong."""
+    rows = _rows(
+        ("check_existing", {"sent": False}),
+        ("list_accounts", {"accounts": []}),
+        ("aggregate", {"summary": {}}),
+    )
+    (finding,) = contextual_findings(
+        rows, {"scored": ["aggregate"]}, failed=frozenset({"list_accounts"})
+    )
+    assert finding.node == "list_accounts"
+    assert "had already failed" in finding.reason

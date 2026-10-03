@@ -30,6 +30,16 @@ def _clean_graph() -> StateGraph:
     return g
 
 
+@pytest.fixture(autouse=True)
+def _no_engine_patching(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#78: the gate records through the callback hook, never the wrap path."""
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("pytest --argus reached patch_graph — the wrap path is back")
+
+    monkeypatch.setattr("argus.patcher.patch_graph", _boom)
+
+
 def _require_argus(request: pytest.FixtureRequest) -> None:
     # default=False: skip instead of crashing when the pytest11 plugin is not loaded
     # (stale venv, or pytest without `pip install -e .`).

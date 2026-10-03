@@ -21,9 +21,14 @@ Grading is unchanged: rows go to :mod:`argus.ledger`, then contextual
 existing structure / tool / semantic checks and the LLM judge last, inside
 ``ArgusSession``. The verdict is ``argus check``.
 
-The LLM judge is on by default when a key is configured (``argus key set`` or
-``argus login``) and off otherwise — no extra flag. Force it either way with
-``ArgusRecorder(semantic_judge=True|False)``.
+The run reviewer (:mod:`argus.review`) settles the rules' heuristic calls. It
+runs when node purposes are given (``purposes=`` or the ``purposes`` block of an
+``argus baseline --purposes`` file) and a key is configured; force it with
+``review=True|False``. Without it, the per-step LLM judge is on by default when
+a key is configured (``argus key set`` or ``argus login``) and off otherwise.
+Force it either way with ``ArgusRecorder(semantic_judge=True|False)``. When the
+reviewer runs, the per-step judge does not: it can only drop a warning, and the
+reviewer needs that warning to decide.
 
 ``ArgusWatcher`` still works and is untouched.
 """
@@ -43,7 +48,12 @@ from argus.contextual import ConsumerMap
 from argus.grading import IncompleteTraceError, finish, new_session
 from argus.llm_tracker import call_from_llm_outputs, usage_from_calls
 from argus.models import LLMCallInfo, ToolFailure
+from argus.review import Reviewer
 from argus.session import ArgusSession
+
+# Metadata an attached recorder puts on its runs, so `pytest --argus` (#78) does
+# not record them a second time.
+ATTACHED_MARK = "argus_recorder"
 
 # Before 3.11 asyncio cannot hand langchain's callback context to a child task,
 # so a tool awaited inside an `async def` node without `config` fires no
@@ -413,6 +423,8 @@ class ArgusRecorder(BaseCallbackHandler):
         max_field_size: int = 50_000,
         consumers: ConsumerMap | None = None,
         baseline: dict[str, Any] | None = None,
+        purposes: dict[str, str] | None = None,
+        review: bool | None = None,
     ) -> None:
         if not _HAS_LANGCHAIN:
             raise ImportError(
@@ -428,6 +440,15 @@ class ArgusRecorder(BaseCallbackHandler):
         self._consumers = consumers
         # Healthy-run shape from `argus baseline` (argus.trace_rules D5/D6/D16).
         self._baseline = baseline
+        # One sentence per node; the run reviewer cannot run without them.
+        self._purposes = dict(purposes or (baseline or {}).get("purposes") or {})
+        if review is True and not self._purposes:
+            raise ValueError(
+                "review=True needs node purposes: pass purposes={node: 'what it does'} or a "
+                "baseline written with `argus baseline <healthy runs> --purposes --write FILE`"
+            )
+        self._review = review
+        self._reviewer: Reviewer | None = None
 
         # The most recently started run's session. One attach can serve many
         # runs (a served app, a loop, `.batch()`), so the recorder keeps one
@@ -489,6 +510,28 @@ class ArgusRecorder(BaseCallbackHandler):
         The returned app is reusable: every ``invoke`` / ``stream`` / ``batch``
         item gets its own session, its own run file and its own verdict.
         """
+        self.bind(app)
+        # A binding, not `app.with_config(callbacks=[self])` (#87). LangGraph's
+        # own `ensure_config` overwrites the callbacks key instead of merging
+        # it, so a Pregel's bound callbacks are dropped the moment a caller
+        # passes its own — which composition always does. `prompt | app`, a
+        # graph used as a tool, a LangServe route: the handler was silently
+        # discarded and ARGUS recorded nothing and said nothing.
+        # `RunnableBinding` merges through langchain's `merge_configs`, which
+        # handles list-plus-manager correctly, and proxies the graph API
+        # (`nodes`, `get_graph`, `stream`, `batch`) so the returned object is
+        # still the graph as far as callers are concerned. The metadata mark
+        # tells `pytest --argus` this run already has a recorder (#78).
+        return RunnableBinding(
+            bound=app, config={"callbacks": [self], "metadata": {ATTACHED_MARK: True}}
+        )
+
+    def bind(self, app: Any) -> None:
+        """Read a compiled graph's shape — ``attach`` without the binding.
+
+        For a caller that already routes the graph's callbacks here, as the
+        ``pytest --argus`` hook does (:mod:`argus.pytest_instrument`).
+        """
         self._ambiguous = _ambiguous(app)
         names, edges, conditionals, self._subgraphs = _topology(app, self._ambiguous)
         self._topology = (names, edges, conditionals)
@@ -500,21 +543,11 @@ class ArgusRecorder(BaseCallbackHandler):
         self._inner_keys = _inner_state_keys(app, self._subgraph_nodes)
         self._reducers = _reducer_fields(app)
         self._unmapped = _unmapped_branch_sources(app)
-        self._judge = self._resolve_judge()
+        self._reviewer = self._resolve_reviewer()
+        self._judge = False if self._reviewer is not None else self._resolve_judge()
         self._attached = True
         if not _CONTEXT_PROPAGATES:
             _warn_async_nodes(app)
-        # A binding, not `app.with_config(callbacks=[self])` (#87). LangGraph's
-        # own `ensure_config` overwrites the callbacks key instead of merging
-        # it, so a Pregel's bound callbacks are dropped the moment a caller
-        # passes its own — which composition always does. `prompt | app`, a
-        # graph used as a tool, a LangServe route: the handler was silently
-        # discarded and ARGUS recorded nothing and said nothing.
-        # `RunnableBinding` merges through langchain's `merge_configs`, which
-        # handles list-plus-manager correctly, and proxies the graph API
-        # (`nodes`, `get_graph`, `stream`, `batch`) so the returned object is
-        # still the graph as far as callers are concerned.
-        return RunnableBinding(bound=app, config={"callbacks": [self]})
 
     def _new_session(self) -> ArgusSession:
         """A session for one graph run — the state the old ``attach`` set up."""
@@ -532,7 +565,27 @@ class ArgusRecorder(BaseCallbackHandler):
             consumers=self._consumers,
             node_state_keys=self._inner_keys,
             baseline=self._baseline,
+            reviewer=self._reviewer,
         )
+
+    def _resolve_reviewer(self) -> Reviewer | None:
+        """The run reviewer for this attach, or None.
+
+        Explicit ``review=False`` wins. Otherwise it needs purposes, and an LLM
+        path (a key or a login): ``review=True`` without one logs why it is off
+        rather than failing the user's graph.
+        """
+        if self._review is False or not self._purposes:
+            return None
+        from argus.llm_proxy import is_available
+
+        if not is_available():
+            if self._review:
+                logging.getLogger("argus").warning(
+                    "argus: review=True but no LLM key or login; grading by rules only"
+                )
+            return None
+        return Reviewer(purposes=self._purposes)
 
     def _resolve_judge(self) -> bool:
         """Decide whether the LLM judge runs for this attach.

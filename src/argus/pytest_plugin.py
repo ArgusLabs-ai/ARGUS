@@ -1,10 +1,9 @@
 """Pytest plugin: ``pytest --argus`` fails tests whose ARGUS run was not clean.
 
 Loaded via the ``pytest11`` entry point. Without ``--argus`` the plugin is
-inert. Auto-wrapping LangGraph runtime methods during tests lives in
-``argus.pytest_instrument`` (imported if present) so the CLI gate and the
-auto-instrumentation can land on separate branches without duplicating the
-plugin.
+inert. Recording every LangGraph run during tests lives in
+``argus.pytest_instrument``: a LangChain configure hook routes each graph run to
+an ``ArgusRecorder`` bound to that graph. Nothing in LangGraph is patched (#78).
 """
 
 from __future__ import annotations
@@ -45,10 +44,10 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
-    """Undo the LangGraph patch when the session ends.
+    """Switch the recording hook off when the session ends.
 
-    Without this, a `--argus` session run in-process (as `pytester` does) leaves
-    `Pregel.invoke` and friends patched in the host interpreter for good.
+    A `--argus` session run in-process (as `pytester` does) would otherwise keep
+    recording every graph the host interpreter runs afterwards.
     """
     if not _argus_enabled(config):
         return
@@ -64,7 +63,7 @@ def _argus_enabled(config: pytest.Config) -> bool:
 
 
 def _maybe_install_auto_instrumentation() -> None:
-    """Install LangGraph auto-wrap when the companion module is available."""
+    """Start recording LangGraph runs when the companion module is available."""
     try:
         from argus.pytest_instrument import install_auto_instrumentation
     except ImportError:

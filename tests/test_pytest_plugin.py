@@ -516,3 +516,60 @@ def test_pytest_argus_binds_parallel_runs_to_their_own_tests(pytester: pytest.Py
     pytester.makepyfile(test_clean=_PARALLEL_CLEAN, test_silent=_PARALLEL_SILENT)
     result = pytester.runpytest("--argus", "-n", "2", "--dist=loadfile", "-q")
     result.assert_outcomes(passed=1, failed=1)
+
+
+# ── #78: a configure hook, not a patch ───────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_install_replaces_nothing_on_langgraph():
+    from langgraph.graph.state import StateGraph
+    from langgraph.pregel import Pregel
+
+    names = ("invoke", "ainvoke", "stream", "astream", "batch", "abatch")
+    before = {n: getattr(Pregel, n) for n in names} | {"compile": StateGraph.compile}
+    install_auto_instrumentation()
+    try:
+        after = {n: getattr(Pregel, n) for n in names} | {"compile": StateGraph.compile}
+        assert after == before
+    finally:
+        uninstall_auto_instrumentation()
+
+
+@pytest.mark.unit
+def test_an_explicit_attach_is_not_recorded_twice(auto_wrap):
+    from argus import ArgusRecorder
+    from argus.storage import list_runs
+
+    before = {r["run_id"] for r in list_runs()}
+    ArgusRecorder(semantic_judge=False).attach(_silent_graph().compile()).invoke({"n": 0})
+    new = {r["run_id"] for r in list_runs()} - before
+    assert len(new) == 1
+
+
+@pytest.mark.unit
+def test_a_graph_invoked_from_a_plain_thread_is_recorded(auto_wrap):
+    """Threads a test starts itself do not inherit contextvars; the hook still sees them."""
+    app = _silent_graph().compile()
+    worker = threading.Thread(target=lambda: app.invoke({"n": 0}))
+    worker.start()
+    worker.join()
+    _assert_silent_failure_recorded()
+
+
+@pytest.mark.unit
+def test_a_graph_composed_under_another_runnable_is_recorded(auto_wrap):
+    from langchain_core.runnables import RunnableLambda
+
+    app = _silent_graph().compile()
+    (RunnableLambda(lambda x: x) | app).invoke({"n": 0})
+    _assert_silent_failure_recorded()
+
+
+@pytest.mark.unit
+def test_a_plain_chain_is_ignored(auto_wrap):
+    from langchain_core.runnables import RunnableLambda
+
+    before = last_run_id()
+    RunnableLambda(lambda x: x + 1).invoke(1)
+    assert last_run_id() == before

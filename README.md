@@ -202,6 +202,21 @@ its own update — the OFAC tool returns `{"hits": []}` on a clean customer, and
 critically failed every healthy KYC onboarding. A tool that raised, or a 4xx/5xx body, still
 fails hard. Undeclared empty retrieval lists keep the RAG default: critical.
 
+**Fields read on some paths only.** `draft_reply` reads `order` when the ticket
+is a refund; on the FAQ path nothing writes it, and that is the design. Say so,
+and a field that was never written is fine, while one that was written and then
+dropped or blanked still fails:
+
+```python
+consumers={"order": {"readers": ["draft_reply"], "required": False}}
+```
+
+Without that, "never written" blames the first step of the run, because a
+recording cannot say who was meant to write the field. That blame is a guess. When a
+node before the reader already failed, the guess lands on that node instead.
+With the [run reviewer](#run-reviewer) on, the guess only fails CI if the
+reviewer verified a problem on that step or on a node declared to read the field.
+
 A **final** node is different: `empty_output` only fires when a node has a
 successor waiting, so a last node that returns `{}` is exempt by design (a
 terminal `send_email` legitimately returns nothing), and no later node reads its
@@ -297,10 +312,10 @@ result = app.invoke(initial_state)
 | **Typo'd state keys** | A node writes `traige` instead of `triage`. LangGraph drops keys the state does not have, silently, so the field never arrives — blamed on the writer, not on whichever node ran first |
 | **Vendor error bodies** | Salesforce `[{"errorCode": …}]`, a SOAP `Fault`, AWS `__type: …Exception`, Jira `errorMessages`, an HTML 503 page — stored by the node as if it were data |
 | **Empty lookups, any key** | `{"totalSize": 0, "records": []}`, `{"Items": [], "Count": 0}`, a BigQuery response with `totalRows: "0"`, `"No results found."` |
-| **Pagination ignored** | The tool said `has_more` / `next_page_token` and the node passed page one on as the whole result |
+| **Pagination ignored** | The tool said `has_more` / `next_page_token` and the node passed page one on as the whole result. Heuristic: a web search's top page is the design, so with the [run reviewer](#run-reviewer) on this fails only when the reviewer agrees |
 | **Regressions vs a healthy run** | With [`argus baseline`](#healthy-baseline): a node stops writing a key it always writes (including a final node returning `{}`), a field changes type (a list comes back as a JSON string), or `N/A` / `unknown` / `-1` appears where healthy runs hold data |
 | **Broken model output** | Unrendered `{{var}}`, lorem ipsum, `Dear [Customer Name]`; the model repeating itself; a generation cut at its token limit that was used anyway; JSON that did not parse, replaced by a default |
-| **Ungrounded claims** | A number in a model's output that nothing it was given supports (sums and % changes are allowed); an ID one or two characters off the one it was given (`A-1002` for `A-1001`); "I've refunded your order" with no refund call anywhere in the run; a loop repeating one tool call |
+| **Ungrounded claims** | A number in a model's output that nothing it was given supports (sums and % changes are allowed); an ID one or two characters off the one it was given (`A-1002` for `A-1001`); "I've refunded your order" or "I've processed your refund" with no refund call anywhere in the run; a loop repeating one tool call. Heuristic: with the [run reviewer](#run-reviewer) on, these fail only when it agrees |
 | **Not a failure** | A node's own verdict — `{"status": "denied"}` or a linter's `errors: [...]` — is a warning on that node's update, not a CI fail. The same shape from a **tool** response stays critical |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
 | **Conditional path confusion** | Unchosen branches correctly shown as "skipped" — not false "crashed" |
@@ -323,7 +338,7 @@ Runs in order, each more expensive — only fires when needed. Every status a la
    or `add_messages`) is therefore approximated, never trusted over the trace, so a node whose
    `[]` your reducer discards is not reported as having dropped anything.
 5. **Whole-trace rules** (`argus.trace_rules`) — read the finished run once, for what one step cannot show: the state schema, a healthy baseline, the model's raw output, every tool call in the run. Deterministic, critical, blamed on the step that caused it. A step that runs after another node already failed is not blamed again. Measured on a 255-fault suite: coverage 51% → 90%, with no false positive on 63 healthy runs, 54 of them real model prose.
-6. **LLM semantic judge** — reviews warning-level signatures the rules already raised. Does not scan clean nodes. Can dismiss a false-positive warning; cannot fail CI on its own; cannot clear a hard rule fail (`{}`, missing field, HTTP 4xx).
+6. **Run reviewer** (when node purposes are given) — reads the whole run once and verifies what looks wrong; a *heuristic* rule hit fails CI only when the reviewer agrees, and a rule *warning* it agrees with fails CI. Never clears a strict fail, never fails a step alone. See [Run Reviewer](#run-reviewer). Without purposes, the **LLM semantic judge** runs instead: it reviews warning-level signatures the rules already raised, can dismiss a false-positive warning, and cannot fail CI or clear a hard rule fail.
 7. **LLM investigator** — root cause explanations and debugging suggestions. Only on ambiguous failures.
 
 ---
@@ -400,6 +415,66 @@ silently adding a field (use `--create-missing` to add new keys). Every patched 
 the patch it ran with, so the run explains its own divergence from the original.
 
 ---
+
+## Run Reviewer
+
+Rules come in two kinds.
+
+- **Strict**: nothing healthy produces them. A tool raised; a 5xx or an error body; `{}` with
+  nodes waiting; a blank final answer; a cut-off generation that was used; a JSON-parse
+  fallback; a regression against the healthy baseline. These fail CI on their own.
+- **Heuristic**: usually a failure, sometimes the design. "I've approved a refund" matched
+  against tool names; `has_more` on a web search (taking the top page *is* the design); a 404
+  that is the answer to "does this exist?" or a 409 "already exists" on an idempotent re-run; a
+  number or ID the rule could not trace; `N/A` where the baseline had data; one tool call
+  repeated (polling); a tool's `requires_approval` recorded as `scheduled`; "never written, so
+  blame the first step".
+
+Give ARGUS one sentence per node saying what it is for, and it runs a reviewer once per run.
+One model call reads the whole recording (each step's input, update, tool calls and model
+output) and lists what looks wrong. A second call checks each item against that step's own
+evidence only, must name the exact value the step should have written, and hands any
+arithmetic to code. What survives is *verified*.
+
+| The rules say | Reviewer verified that step? | `argus check` |
+|---|---|---|
+| strict failure | either | **fail** |
+| heuristic failure | yes | **fail** |
+| heuristic failure | no | pass (kept as a warning) |
+| a warning (e.g. `{customer_name}` left in a reply) | yes | **fail** (`review_confirmed`) |
+| nothing | yes, and a second, different model (`o4-mini`) verifies it too | **fail** (`review_verified`) |
+| nothing | yes, one model only | pass, with an advisory finding |
+| nothing | no | pass |
+
+Two independent checks must agree before a judgement call fails the build: a rule and the
+reviewer, or, where no rule can see the problem (paying 10× over the purchase order, the
+wrong vendor's bank account), two different models verifying the same item cold. The reviewer
+never clears a strict failure.
+
+```bash
+argus baseline <healthy-run> <healthy-run> --purposes --write argus.baseline.json
+```
+
+That drafts a `purposes` block next to the baseline. **Edit it**: it is what lets the
+reviewer tell "the reply is written before the refund runs, by design" from a defect.
+Then pass the file as usual:
+
+```python
+baseline = json.loads(Path("argus.baseline.json").read_text())
+app = ArgusRecorder(consumers=consumers, baseline=baseline).attach(compiled_graph)
+# or: ArgusRecorder(purposes={"draft_reply": "Writes the customer reply ..."})
+# review=False turns it off; review=True raises if there are no purposes
+```
+
+Everything it verified, gating or advisory, is listed under **Run reviewer** in
+`argus show <run>`. It runs when there are purposes and a key (or `argus login`). Without purposes it does not
+run: the same model with no purposes flagged about 40% of healthy runs.
+
+**Cost.** One call per run plus one per reported item (at most 8), `gpt-4.1` by default
+(mapped to your provider's capable model). It runs when the run finishes, so `invoke()`
+returns a few seconds later. Use it for CI and pre-deploy test runs, not on every
+production request. If any reviewer call fails, the run is graded by the rules alone.
+When the reviewer runs, the per-step judge below does not.
 
 ## Semantic Judge
 
@@ -524,7 +599,7 @@ Silent failures become test failures without changing how you invoke the graph:
 pytest --argus
 ```
 
-ARGUS auto-wraps `StateGraph.compile()` / compiled `invoke()` for the test session. A clean pipeline stays a passing test; missing fields, tool failures, crashes, and semantic degradation fail that test. Each test is graded against the run IDs saved during that test, so parallel `pytest -n` workers cannot grade one another's runs. Tests that never invoke a graph are unchanged. After a standalone CI run, pass its exact id with `argus check <id>` or `ARGUS_RUN_ID=<id> argus check`; `argus check last` only means the newest file and can select a stale or unrelated run in a shared workspace.
+ARGUS records every LangGraph run in the test session through LangChain's public callback hook — nothing in LangGraph is patched or wrapped — and grades it exactly as `ArgusRecorder().attach(graph)` would. A graph you attached yourself is not recorded twice. A clean pipeline stays a passing test; missing fields, tool failures, crashes, and semantic degradation fail that test. Each test is graded against the run IDs saved during that test, so parallel `pytest -n` workers cannot grade one another's runs. Tests that never invoke a graph are unchanged. After a standalone CI run, pass its exact id with `argus check <id>` or `ARGUS_RUN_ID=<id> argus check`; `argus check last` only means the newest file and can select a stale or unrelated run in a shared workspace.
 
 ---
 

@@ -16,6 +16,7 @@ Uses only stdlib urllib — no new dependency.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from typing import Any
@@ -130,13 +131,18 @@ def call_openai(
     response_format: dict[str, str] | None = None,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
-    """Call OpenAI chat completions. Response already matches the target shape."""
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    }
+    """Call OpenAI chat completions. Response already matches the target shape.
+
+    Reasoning models (``o1`` / ``o3`` / ``o4-mini`` …) reject ``temperature`` and
+    ``max_tokens``; they take ``max_completion_tokens``, which also has to cover
+    their hidden reasoning.
+    """
+    payload: dict[str, Any] = {"model": model, "messages": messages}
+    if re.match(r"o\d", model):
+        payload["max_completion_tokens"] = max(max_tokens, 4000)
+    else:
+        payload["max_tokens"] = max_tokens
+        payload["temperature"] = temperature
     if response_format:
         payload["response_format"] = response_format
     return _post_json(

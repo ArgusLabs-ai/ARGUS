@@ -311,6 +311,24 @@ def _event_findings(event: NodeEvent) -> list[Finding]:
                 confidence=sc.confidence,
             )
         )
+
+    for item in event.review:
+        role = item.get("role", "advisory")
+        lead = {
+            "promoted": "a rule warned and the run reviewer verified it",
+            "confirms": "the run reviewer verified it too",
+            "two_models": "two models verified it independently; no rule flagged this step",
+        }.get(role, "advisory, not gating; no rule flagged this step")
+        fix = f" Should be: {item['correction']}." if item.get("correction") else ""
+        out.append(
+            _mk(
+                node=name,
+                type_=f"review_{item.get('kind') or 'finding'}",
+                severity="critical" if role in ("promoted", "two_models") else "warning",
+                reason=f"Node `{name}` ({lead}): {item.get('why') or item.get('claim')}{fix}",
+                source="llm",
+            )
+        )
     return out
 
 
