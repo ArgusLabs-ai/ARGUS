@@ -602,3 +602,141 @@ def test_the_model_call_keeps_its_output_text_clipped():
         {"generations": [[{"message": parts}]], "llm_output": {"token_usage": {"total_tokens": 3}}}
     )
     assert call is not None and call.output_text == "hi there"
+
+
+def test_d14_the_object_of_the_claim_can_match_the_tool():
+    """Blind probe: "I've approved a refund" after `create_refund` succeeded was
+    flagged (the verb stem `appro` is in no tool name)."""
+    ev = [
+        Ev(
+            "issue",
+            tool_calls=[
+                {
+                    "name": "create_refund",
+                    "input": "{}",
+                    "output": {"status": "succeeded"},
+                    "error": None,
+                }
+            ],
+        ),
+        Ev(
+            "answer",
+            input_state={"order_id": "A-1001"},
+            output_dict={"reply": "Hi Dana, I've approved a refund for order A-1001."},
+            llm_usage=_llm(),
+        ),
+    ]
+    assert _run(ev) == []
+
+
+def test_d14_a_generic_verb_is_checked_through_its_object():
+    """Blind probe: "I've processed your refund" with no refund call was missed
+    ("processed" was not a claim verb)."""
+    ev = [
+        Ev(
+            "answer",
+            output_dict={"reply": "Good news - I've processed your refund of $12.00."},
+            input_state={"total": "$12.00"},
+            llm_usage=_llm(),
+        )
+    ]
+    assert _kinds(_run(ev)) == [("answer", "unperformed_action")]
+    vague = [
+        Ev(
+            "answer",
+            output_dict={"reply": "Thanks, I've processed it and will follow up."},
+            llm_usage=_llm(),
+        )
+    ]
+    assert _run(vague) == []
+
+
+def test_d2_names_the_http_code_so_a_404_can_be_reviewed():
+    ev = [
+        Ev(
+            "check",
+            tool_calls=[
+                {
+                    "name": "get_report",
+                    "input": "{}",
+                    "output": {"status": 404, "message": "Not Found"},
+                    "error": None,
+                }
+            ],
+        )
+    ]
+    (hit,) = _run(ev)
+    assert "(HTTP 404)" in hit.evidence
+
+
+# ── final-check vocabulary (blind_eval/final_probe.py) ───────────────────────
+
+
+def _tool(name, output, update):
+    return Ev(
+        "node",
+        output_dict=update,
+        tool_calls=[{"name": name, "input": "{}", "output": output, "error": None}],
+    )
+
+
+def test_d2_a_relay_that_refused_every_recipient():
+    ev = [
+        _tool(
+            "send_email",
+            {"accepted": [], "rejected": ["p@corp.io"], "response": "550 5.1.1"},
+            {"sent": True},
+        )
+    ]
+    assert _kinds(_run(ev)) == [("node", "error_response")]
+    ok = [
+        _tool(
+            "send_email", {"accepted": ["p@corp.io"], "rejected": [], "id": "m1"}, {"sent": True}
+        )
+    ]
+    assert _run(ok) == []
+
+
+def test_d4_an_unfinished_query_is_strict_not_pagination():
+    rows = [{"region": "EMEA", "q3": 472000}]
+    ev = [
+        _tool(
+            "warehouse", {"rows": rows, "jobComplete": False, "pageToken": "BEHC2"}, {"rows": rows}
+        )
+    ]
+    assert _kinds(_run(ev)) == [("node", "incomplete_result")]
+    done = [
+        _tool("warehouse", {"rows": rows, "jobComplete": True, "totalRows": "1"}, {"rows": rows})
+    ]
+    assert _run(done) == []
+
+
+def test_d17_a_pending_status_recorded_as_done():
+    out = {"id": "pay_9", "status": "requires_approval"}
+    ev = [_tool("create_payment", out, {"payment": {"id": "pay_9", "status": "scheduled"}})]
+    assert _kinds(_run(ev)) == [("node", "status_overstated")]
+    honest = [
+        _tool("create_payment", out, {"payment": {"id": "pay_9", "status": "requires_approval"}})
+    ]
+    assert _run(honest) == []
+
+
+def test_404_and_an_already_exists_409_are_judgement_calls():
+    from argus.review import is_heuristic
+
+    exists = _tool("create_account", {"status": 409, "message": "User already exists"}, {})
+    stage = _tool(
+        "update_ats", {"status_code": 409, "message": "Application is not in a stage"}, {}
+    )
+    ev = "returned an error payload (HTTP 409) the node stored as data"
+    assert is_heuristic(
+        "error_response",
+        f"create_account {ev}",
+        exists,
+        "create_account",
+    )
+    assert not is_heuristic("error_response", f"update_ats {ev}", stage, "update_ats")
+    assert not is_heuristic("error_response", f"x {ev}")  # 409 with nothing to read: strict
+    assert is_heuristic("error_response", "tool `get_report`: HTTP 404 error response")
+    assert not is_heuristic("error_response", "tool `get_po`: HTTP 500 error response")
+    assert is_heuristic("status_overstated")

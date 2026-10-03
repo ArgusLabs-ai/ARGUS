@@ -15,12 +15,16 @@ from argus.trace_rules import build_baseline
 console = Console()
 
 
-def baseline_for_runs(run_ids: list[str], write: Path | None = None) -> dict[str, Any]:
+def baseline_for_runs(
+    run_ids: list[str], write: Path | None = None, *, purposes: bool = False
+) -> dict[str, Any]:
     """Keys, types and leaf kinds every given run agrees on. Optionally write it.
 
     Grading uses it only when passed as ``ArgusRecorder(baseline=...)``. It holds
-    kinds (``text``, ``nonneg``), never values.
+    kinds (``text``, ``nonneg``), never values. ``purposes`` adds a drafted
+    sentence per node (an LLM call per run) for the run reviewer.
     """
+    records = []
     runs = []
     for run_id in run_ids:
         try:
@@ -34,8 +38,17 @@ def baseline_for_runs(run_ids: list[str], write: Path | None = None) -> dict[str
                 "a baseline must come from healthy runs"
             )
             raise typer.Exit(1)
+        records.append(record)
         runs.append(record.steps)
     baseline = build_baseline(runs)
+    if purposes:
+        from argus.review import draft_purposes  # noqa: PLC0415
+
+        try:
+            baseline["purposes"] = draft_purposes(records)
+        except Exception as exc:  # noqa: BLE001 — name the cause, keep the shape
+            console.print(f"[red]Error:[/red] could not draft node purposes: {exc}")
+            raise typer.Exit(1) from exc
     text = json.dumps(baseline, indent=2) + "\n"
     if write is not None:
         write.write_text(text, encoding="utf-8")
@@ -43,6 +56,11 @@ def baseline_for_runs(run_ids: list[str], write: Path | None = None) -> dict[str
             f"wrote {write} from {len(runs)} healthy run(s). "
             "Pass it as ArgusRecorder(baseline=...)."
         )
+        if purposes:
+            console.print(
+                "Edit the drafted `purposes`: the run reviewer reads them to tell a "
+                "node's design from a defect."
+            )
     else:
         console.print(text, end="")
     return baseline

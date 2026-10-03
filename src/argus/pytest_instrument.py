@@ -1,198 +1,207 @@
-"""Auto-instrument LangGraph graphs during ``pytest --argus``.
+"""Record every LangGraph run during ``pytest --argus`` — without patching anything (#78).
 
-Patches ``StateGraph.compile`` and all Pregel runtime methods matching
-``ArgusWatcher`` (``invoke`` / ``ainvoke`` / ``stream`` / ``astream`` /
-``batch`` / ``abatch``) so test code that starts a graph without an explicit
-``ArgusWatcher.attach()`` is still watched. Idempotent; call
-``uninstall_auto_instrumentation()`` to restore originals (used by tests).
+LangChain's public ``register_configure_hook`` adds one handler to every runnable
+invoked in the process. That handler, :class:`_AutoRecorder`, watches for a graph
+starting. It runs inline (``run_inline``), so at that moment the compiled graph is
+on the call stack inside ``Pregel.stream`` / ``astream``; it binds an
+:class:`~argus.recorder.ArgusRecorder` to that graph exactly as ``attach()`` would
+(same topology, reducers, subgraphs) and forwards the run's callbacks to it.
+Nothing on ``StateGraph`` or ``Pregel`` is replaced. The old version patched
+``StateGraph.compile`` and six ``Pregel`` methods; an install → uninstall →
+install cycle once left LangGraph patched in the host interpreter for good.
+
+A graph the test already attached (``ArgusRecorder().attach(app)`` tags its runs;
+``ArgusWatcher`` marks the compiled app) is left to that recorder, so no run is
+recorded twice. LangChain offers no way to unregister a hook, so
+``uninstall_auto_instrumentation`` switches the handler off instead.
 """
 
 from __future__ import annotations
 
-import functools
-import inspect
+import sys
 import threading
+from contextvars import ContextVar
+from types import FrameType
 from typing import Any
+from uuid import UUID
 
-from argus.watcher import _RUNTIME_METHODS
+try:
+    from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.tracers.context import register_configure_hook
 
-_tls = threading.local()
-_installed = False
-_originals: dict[str, Any] = {}
+    _HAS_LANGCHAIN = True
+except ImportError:  # pragma: no cover - langchain-core is a recorder dependency
+    BaseCallbackHandler = object  # type: ignore[assignment,misc]
+    _HAS_LANGCHAIN = False
+
+from argus.recorder import ATTACHED_MARK
+
+__all__ = ["install_auto_instrumentation", "uninstall_auto_instrumentation"]
+
+_handler: _AutoRecorder | None = None
 
 
 def install_auto_instrumentation() -> None:
-    """Patch LangGraph compile and runtime methods for pytest inspection."""
-    global _installed
-    if _installed:
+    """Record every LangGraph run from here on. Idempotent."""
+    global _handler
+    if not _HAS_LANGCHAIN:
         return
-    try:
-        from langgraph.graph.state import StateGraph
-    except ImportError:
-        return
-
-    _wrap_compile(StateGraph)
-    _wrap_pregel_runtime_methods()
-    _installed = True
+    if _handler is None:
+        _handler = _AutoRecorder()
+        # The default (not a value set in this context) makes the handler reach
+        # worker threads a test starts itself, which do not inherit contextvars.
+        register_configure_hook(ContextVar("argus_pytest", default=_handler), inheritable=True)
+    _handler.active = True
 
 
 def uninstall_auto_instrumentation() -> None:
-    """Restore LangGraph methods patched by ``install_auto_instrumentation``."""
-    global _installed
-    if not _installed:
-        return
-    try:
-        from langgraph.graph.state import StateGraph
+    """Stop recording. The hook stays registered but does nothing."""
+    if _handler is not None:
+        _handler.active = False
 
-        original = _originals.get("compile")
-        if original is not None:
-            StateGraph.compile = original  # type: ignore[method-assign]
-    except ImportError:
-        pass
+
+def _graph_on_stack() -> Any:
+    """The innermost compiled LangGraph whose ``stream`` / ``astream`` is running."""
     try:
         from langgraph.pregel import Pregel
-
-        for name in _RUNTIME_METHODS:
-            original = _originals.get(name)
-            if original is not None:
-                setattr(Pregel, name, original)
-    except ImportError:
-        pass
-    _originals.clear()
-    _installed = False
-
-
-def _recover_original(key: str, wrapper: Any) -> None:
-    """Remember the pre-patch callable hiding under an existing wrapper.
-
-    ``install`` is idempotent per method, but ``uninstall`` clears ``_originals``.
-    An install → uninstall → install sequence therefore used to leave the class
-    patched with nothing left to restore it from. Every wrapper here is built
-    with ``functools.wraps``, so the original is on ``__wrapped__``.
-    """
-    unwrapped = getattr(wrapper, "__wrapped__", None)
-    if unwrapped is not None:
-        _originals.setdefault(key, unwrapped)
+    except ImportError:  # pragma: no cover
+        return None
+    frame: FrameType | None = sys._getframe(2)
+    while frame is not None:
+        owner = frame.f_locals.get("self")
+        if isinstance(owner, Pregel) and frame.f_code.co_name in ("stream", "astream"):
+            return owner
+        frame = frame.f_back
+    return None
 
 
-def _in_attach() -> bool:
-    return bool(getattr(_tls, "in_attach", False))
+class _AutoRecorder(BaseCallbackHandler):
+    """Routes each graph run's callbacks to a recorder bound to that graph."""
 
+    run_inline = True  # the compiled graph is only on the stack if we run in its frame
+    raise_error = True  # a recorder bug should surface, as with an explicit attach
 
-def _attach(compiled: Any) -> Any:
-    from argus import ArgusWatcher
+    def __init__(self) -> None:
+        self.active = False
+        self._lock = threading.Lock()
+        self._route: dict[UUID, Any] = {}  # run id -> ArgusRecorder
+        self._root: dict[UUID, UUID] = {}  # run id -> graph run that owns it
+        self._recorders: dict[int, tuple[Any, Any]] = {}  # id(app) -> (app, recorder)
 
-    _tls.in_attach = True
-    try:
-        watcher = ArgusWatcher(
-            semantic_judge=False,
-            investigate=False,
-            record_http=False,
-        )
-        return watcher.attach(compiled)
-    finally:
-        _tls.in_attach = False
+    # ── routing ──────────────────────────────────────────────────────────────
 
+    def _recorder_for(self, app: Any) -> Any:
+        from argus.recorder import ArgusRecorder
 
-def _wrap_compile(state_graph_cls: Any) -> None:
-    original: Any = state_graph_cls.compile
-    if getattr(original, "_argus_pytest_wrapped", False):
-        _recover_original("compile", original)
-        return
-    _originals["compile"] = original
+        with self._lock:
+            hit = self._recorders.get(id(app))
+            if hit is not None and hit[0] is app:
+                return hit[1]
+        rec = ArgusRecorder(semantic_judge=False)
+        rec.bind(app)
+        with self._lock:
+            self._recorders[id(app)] = (app, rec)
+        return rec
 
-    @functools.wraps(original)
-    def compile(self: Any, *args: Any, **kwargs: Any) -> Any:
-        compiled = original(self, *args, **kwargs)
-        if _in_attach():
-            return compiled
-        # ArgusWatcher already owns this builder (instance compile wrapper).
-        if getattr(self, "_argus_compile_wrapped", False):
-            return compiled
-        if getattr(compiled, "_argus_auto_persist", False):
-            return compiled
-        return _attach(compiled)
+    def _start(self, run_id: UUID, parent_run_id: UUID | None, metadata: Any) -> Any:
+        """Who records this run, deciding on a graph's own start."""
+        with self._lock:
+            rec = self._route.get(parent_run_id) if parent_run_id is not None else None
+            if rec is not None:
+                self._route[run_id] = rec
+                self._root[run_id] = self._root[parent_run_id]  # type: ignore[index]
+                return rec
+        if (metadata or {}).get(ATTACHED_MARK) or (metadata or {}).get("langgraph_node"):
+            return None  # an explicit attach records it; or a node of an unrecorded graph
+        app = _graph_on_stack()
+        if app is None or getattr(app, "_argus_auto_persist", False):
+            return None  # not a graph, or ArgusWatcher owns it
+        rec = self._recorder_for(app)
+        with self._lock:
+            self._route[run_id] = rec
+            self._root[run_id] = run_id
+        return rec
 
-    compile._argus_pytest_wrapped = True  # type: ignore[attr-defined]
-    state_graph_cls.compile = compile
+    def _of(self, run_id: UUID, parent_run_id: UUID | None) -> Any:
+        with self._lock:
+            return self._route.get(run_id) or (
+                self._route.get(parent_run_id) if parent_run_id is not None else None
+            )
 
+    def _forget(self, run_id: UUID) -> None:
+        with self._lock:
+            if self._root.get(run_id) != run_id:
+                return
+            for rid in [r for r, root in self._root.items() if root == run_id]:
+                self._route.pop(rid, None)
+                self._root.pop(rid, None)
 
-def _should_skip_attach(self: Any) -> bool:
-    return _in_attach() or getattr(self, "_argus_auto_persist", False)
+    # ── callbacks ────────────────────────────────────────────────────────────
 
-
-def _wrap_pregel_runtime_methods() -> None:
-    """Patch Pregel runtime entry points to match ``ArgusWatcher._RUNTIME_METHODS``."""
-    try:
-        from langgraph.pregel import Pregel
-    except ImportError:
-        return
-
-    for name in _RUNTIME_METHODS:
-        _wrap_pregel_method(Pregel, name)
-
-
-def _wrap_pregel_method(pregel_cls: Any, name: str) -> None:
-    original = getattr(pregel_cls, name, None)
-    if not callable(original):
-        return
-    if getattr(original, "_argus_pytest_wrapped", False):
-        # Already patched from an earlier install whose originals were cleared by
-        # uninstall. Recover the pre-patch method from the wrapper so the next
-        # uninstall can restore it — otherwise the class stays patched forever.
-        _recover_original(name, original)
-        return
-    _originals[name] = original
-
-    if name in ("ainvoke", "abatch"):
-        wrapper = _make_async_call_wrapper(original, name)
-    elif name == "astream":
-        wrapper = _make_async_gen_wrapper(original, name)
-    else:
-        # invoke, stream, batch — sync call or sync iterator return
-        wrapper = _make_sync_call_wrapper(original, name)
-
-    wrapper._argus_pytest_wrapped = True  # type: ignore[attr-defined]
-    setattr(pregel_cls, name, wrapper)
-
-
-def _make_sync_call_wrapper(original: Any, name: str) -> Any:
-    @functools.wraps(original)
-    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        if _should_skip_attach(self):
-            return original(self, *args, **kwargs)
-        app = _attach(self)
-        return getattr(app, name)(*args, **kwargs)
-
-    return wrapper
-
-
-def _make_async_call_wrapper(original: Any, name: str) -> Any:
-    @functools.wraps(original)
-    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        if _should_skip_attach(self):
-            return await original(self, *args, **kwargs)
-        app = _attach(self)
-        return await getattr(app, name)(*args, **kwargs)
-
-    return wrapper
-
-
-def _make_async_gen_wrapper(original: Any, name: str) -> Any:
-    @functools.wraps(original)
-    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        if _should_skip_attach(self):
-            agen = original(self, *args, **kwargs)
-            if inspect.isawaitable(agen):
-                agen = await agen
-            async for item in agen:
-                yield item
+    def on_chain_start(
+        self,
+        serialized: Any,
+        inputs: Any,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        metadata: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        if not self.active:
             return
-        app = _attach(self)
-        agen = getattr(app, name)(*args, **kwargs)
-        if inspect.isawaitable(agen):
-            agen = await agen
-        async for item in agen:
-            yield item
+        rec = self._start(run_id, parent_run_id, metadata)
+        if rec is not None:
+            rec.on_chain_start(
+                serialized,
+                inputs,
+                run_id=run_id,
+                parent_run_id=parent_run_id,
+                metadata=metadata,
+                **kwargs,
+            )
 
-    return wrapper
+    def on_chain_end(self, outputs: Any, *, run_id: UUID, **kwargs: Any) -> None:
+        rec = self._of(run_id, kwargs.get("parent_run_id"))
+        if rec is not None:
+            rec.on_chain_end(outputs, run_id=run_id, **kwargs)
+            self._forget(run_id)
+
+    def on_chain_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
+        rec = self._of(run_id, kwargs.get("parent_run_id"))
+        if rec is not None:
+            rec.on_chain_error(error, run_id=run_id, **kwargs)
+            self._forget(run_id)
+
+    def on_tool_start(
+        self,
+        serialized: Any,
+        input_str: str,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        rec = self._of(run_id, parent_run_id)
+        if rec is not None:
+            with self._lock:
+                self._route[run_id] = rec
+                self._root[run_id] = self._root.get(parent_run_id, run_id)  # type: ignore[arg-type]
+            rec.on_tool_start(
+                serialized, input_str, run_id=run_id, parent_run_id=parent_run_id, **kwargs
+            )
+
+    def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
+        rec = self._of(run_id, kwargs.get("parent_run_id"))
+        if rec is not None:
+            rec.on_tool_end(output, run_id=run_id, **kwargs)
+
+    def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
+        rec = self._of(run_id, kwargs.get("parent_run_id"))
+        if rec is not None:
+            rec.on_tool_error(error, run_id=run_id, **kwargs)
+
+    def on_llm_end(self, response: Any, *, run_id: UUID, **kwargs: Any) -> None:
+        rec = self._of(run_id, kwargs.get("parent_run_id"))
+        if rec is not None:
+            rec.on_llm_end(response, run_id=run_id, **kwargs)

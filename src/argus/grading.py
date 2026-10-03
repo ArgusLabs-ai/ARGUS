@@ -12,11 +12,20 @@ without a live app can use it. It imports nothing from ``langgraph`` or
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from functools import partial
 from typing import Any
 
-from argus.contextual import ConsumerMap, contextual_findings
+from argus.contextual import GUESS_CONFIDENCE, ConsumerMap, contextual_findings, readers_of
 from argus.ledger import build_ledger
 from argus.models import Finding, InspectionResult, LLMInvestigationConfig, ToolFailure
+from argus.review import (
+    Review,
+    Reviewer,
+    confirm_warnings,
+    hit_stands,
+    settle_step_signals,
+    split_hits,
+)
 from argus.session import ArgusSession
 from argus.trace_rules import PRODUCED_NOTHING, Hit, run_rules
 
@@ -70,6 +79,7 @@ def new_session(
     consumers: ConsumerMap | None = None,
     node_state_keys: dict[str, list[str]] | None = None,
     baseline: dict[str, Any] | None = None,
+    reviewer: Reviewer | None = None,
 ) -> ArgusSession:
     """A session for one graph run, ready for ``on_node_start`` / ``on_node_end``.
 
@@ -85,6 +95,8 @@ def new_session(
     ``node_state_keys`` are a subgraph node's own schema keys (it writes those,
     not the parent's). ``baseline`` is a healthy-run shape from ``argus
     baseline``; without one the baseline rules in :mod:`argus.trace_rules` are off.
+    ``reviewer`` settles the rules' heuristic calls (:mod:`argus.review`); without
+    one the rules alone decide.
     """
     session = ArgusSession(
         max_field_size=max_field_size,
@@ -107,6 +119,7 @@ def new_session(
     session.consumers = dict(consumers or {})
     session.node_state_keys = dict(node_state_keys or {})
     session.baseline = baseline
+    session.reviewer = reviewer
     # The caller owns finalize: the ledger and contextual layers run over the
     # complete trace, before the run is graded and saved.
     session._defer_auto_finalize = True
@@ -118,7 +131,7 @@ def finish(
     consumers: ConsumerMap | None,
     unfinished: Iterable[str] = (),
 ) -> None:
-    """Ledger → contextual → structure/tools + semantic → judge → verdict.
+    """Ledger → reviewer → rules → contextual → reviewer verdicts → verdict.
 
     ``unfinished`` names steps that started but never reported an update; any
     at all refuses the run.
@@ -144,15 +157,24 @@ def finish(
     ledger = build_ledger(
         session._events, session._initial_state, session.reducer_kinds, session.state_keys
     )
-    # Whole-trace rules first, so the contextual layer below can defer to them.
+    # The reviewer reads only the ledger, so it runs first; everything after it
+    # is deterministic given what it verified. No reviewer → rules alone decide.
+    review = session.reviewer(ledger, session._events) if session.reviewer is not None else None
+    if review is not None:
+        settle_step_signals(session._events, review)
+    keep = partial(hit_stands, review) if review is not None and review.ok else None
+    # Whole-trace rules next, so the contextual layer below can defer to them.
     hits = run_rules(
         session._events,
         state_keys=session.state_keys,
         node_state_keys=session.node_state_keys,
         consumers=consumers,
         baseline=session.baseline,
+        keep=keep,
     )
-    _apply_hits(hits)
+    stand, demoted = split_hits(hits, review)
+    _apply_hits(stand)
+    _note_unconfirmed(demoted)
     # A barren subgraph (S5), or a node that wrote its field under the wrong
     # name or not at all, is already failed; "never written" should not also
     # blame whichever step ran first.
@@ -165,9 +187,15 @@ def finish(
             for t in e.inspection.tool_failures
         )
     )
-    _blame_origins(
-        session, contextual_findings(ledger, consumers, blamed_elsewhere=produced_nothing)
+    found = contextual_findings(
+        ledger,
+        consumers,
+        blamed_elsewhere=produced_nothing,
+        failed=frozenset(e.node_name for e in session._events if e.status in ("fail", "crashed")),
     )
+    _blame_origins(session, _confirmed_findings(session, found, review, consumers))
+    if review is not None:
+        confirm_warnings(session._events, review)
 
     # The per-step judge already fired (its futures don't re-check this
     # flag); disabling it here only stops finalize from also running the
@@ -231,6 +259,68 @@ def _blame_origins(session: ArgusSession, findings: list[Finding]) -> None:
             insp.message = f"{insp.message}; {finding.reason}"
         if not (created and event.status == "crashed"):
             event.status = "fail"
+
+
+def _confirmed_findings(
+    session: ArgusSession,
+    found: list[Finding],
+    review: Review | None,
+    consumers: ConsumerMap | None,
+) -> list[Finding]:
+    """Drop a "never written" guess the reviewer did not confirm; note it instead.
+
+    The guess names two steps: the origin it picked and the reader that went
+    without. The reviewer verifying either one corroborates it — a starved reader
+    that wrote a wrong answer ("Total charged: $0.00" with no payment step) is the
+    evidence, even when the reviewer did not also point at the origin.
+    """
+    if review is None or not review.ok:
+        return found
+    by_node = {event.node_name: event for event in session._events}
+    keep: list[Finding] = []
+    for f in found:
+        if f.confidence != GUESS_CONFIDENCE or any(
+            review.confirms(n) for n in {f.node} | readers_of(consumers, f.field_path)
+        ):
+            keep.append(f)
+            continue
+        event = by_node.get(f.node)
+        if event is not None and event.inspection is not None:
+            event.inspection.tool_failures.append(
+                ToolFailure(
+                    failure_type="missing_field_guess",
+                    field_name=f.field_path or "",
+                    severity="warning",
+                    evidence=(
+                        f"{f.reason} (a guess at the origin; the run reviewer did not confirm it)"
+                    ),
+                )
+            )
+    return keep
+
+
+def _note_unconfirmed(hits: list[Hit]) -> None:
+    """File a heuristic hit the reviewer did not confirm as a warning on its step."""
+    for hit in hits:
+        insp = hit.event.inspection
+        if insp is None:
+            insp = InspectionResult(
+                is_silent_failure=False,
+                missing_fields=[],
+                empty_fields=[],
+                type_mismatches=[],
+                severity="warning",
+                message="All checks passed",
+            )
+            hit.event.inspection = insp
+        insp.tool_failures.append(
+            ToolFailure(
+                failure_type=hit.failure_type,
+                field_name=hit.field_name,
+                severity="warning",
+                evidence=hit.evidence,
+            )
+        )
 
 
 def _apply_hits(hits: list[Hit]) -> None:

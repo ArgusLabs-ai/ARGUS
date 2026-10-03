@@ -14,6 +14,8 @@ runs, 54 of them real model prose.
     D2  error_response          vendor error body the inspector's vocabulary missed
     D3  empty_result            an empty lookup, whatever its keys are called
     D4  unfollowed_pagination   a first page carried forward as the whole result
+        incomplete_result       the same, when the tool said the result itself is incomplete
+                                (BigQuery ``jobComplete: false``, GitHub ``incomplete_results``)
     D5  type_drift              output type differs from the healthy baseline
     D6  sentinel_value          N/A / unknown / -1 where the healthy baseline has data
     D8  unrendered_template     {{var}}, lorem ipsum, "Dear [Name]" written by a model node
@@ -25,6 +27,7 @@ runs, 54 of them real model prose.
     D14 unperformed_action      "I've refunded …" with no such tool call anywhere in the run
     D15 stuck_loop              the same tool call, same arguments, three times
     D16 missing_output_key      a key the healthy baseline says this node always writes
+    D17 status_overstated       a tool said ``requires_approval``; the node recorded ``scheduled``
 
 D5 / D6 / D16 need a baseline (``argus baseline``); without one they are off.
 Text rules (D8–D14) only read nodes the trace shows making a model call.
@@ -41,7 +44,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -183,6 +186,9 @@ def _is_error_payload(o: Any, depth: int = 0) -> bool:
         return True
     if str(low.get("__type", "")).endswith("Exception"):
         return True
+    rejected, accepted = low.get("rejected"), low.get("accepted")
+    if isinstance(rejected, list) and rejected and isinstance(accepted, list) and not accepted:
+        return True  # a mail relay that refused every recipient (nodemailer / SES shape)
     if low.get("object") == "error" or low.get("ok") is False or low.get("success") is False:
         return True
     if str(low.get("status", "")).lower() in {"error", "fail", "failed", "failure"}:
@@ -196,6 +202,27 @@ def _is_error_payload(o: Any, depth: int = 0) -> bool:
     ):
         return True
     return "message" in low and "documentation_url" in low
+
+
+def _overstated(out: dict[str, Any], update: dict[str, Any]) -> str | None:
+    """The update path that calls done what the tool said is still pending (D17)."""
+    status = str({str(k).lower(): v for k, v in out.items()}.get("status", "")).lower()
+    if status not in _PENDING:
+        return None
+    return next(
+        (path for path, v in _leaves(update) if isinstance(v, str) and v.lower() in _DONE), None
+    )
+
+
+def _http_code(o: Any) -> int | None:
+    """The HTTP status an error body states, if it states one."""
+    if not isinstance(o, dict):
+        return None
+    low = {str(k).lower(): v for k, v in o.items()}
+    code = low.get("status") if _is_num(low.get("status")) else low.get("code")
+    if isinstance(code, (int, float)) and not isinstance(code, bool):
+        return int(code)
+    return None
 
 
 _COUNT_KEYS = {"total", "totalsize", "count", "total_count", "totalrows", "numrows", "resultcount"}
@@ -260,7 +287,36 @@ def _is_empty_lookup(o: Any) -> bool:
     return bool(lists) and all(len(x) == 0 for x in lists) and not has_data
 
 
-_MORE = {"has_more": True, "hasmore": True, "done": False, "incomplete_results": True}
+_MORE = {"has_more": True, "hasmore": True, "done": False}
+# Not "there is another page" but "this answer is unfinished": strict, unlike _MORE.
+_INCOMPLETE = {"jobcomplete": False, "incomplete_results": True}
+# A tool's own "not done yet" status, and the success words a node then records.
+_PENDING = frozenset(
+    {
+        "requires_approval",
+        "pending_approval",
+        "awaiting_approval",
+        "requires_action",
+        "requires_confirmation",
+        "pending_review",
+    }
+)
+_DONE = frozenset(
+    {
+        "scheduled",
+        "succeeded",
+        "success",
+        "completed",
+        "complete",
+        "paid",
+        "sent",
+        "approved",
+        "done",
+        "processed",
+        "confirmed",
+        "applied",
+    }
+)
 _NEXT = {
     "next_page_token",
     "nextpagetoken",
@@ -268,6 +324,7 @@ _NEXT = {
     "nextlink",
     "@odata.nextlink",
     "next_cursor",
+    "pagetoken",
 }
 
 
@@ -291,29 +348,48 @@ def _tools(e: Any, allow_empty_fields: frozenset[str], **_: Any) -> Iterator[tup
         if t.get("error") or _already_graded(e, name):
             continue
         if _is_error_payload(out):
+            code = _http_code(out)
             yield (
                 "error_response",
                 name,
-                f"{name} returned an error payload the node stored as data",
+                f"{name} returned an error payload{f' (HTTP {code})' if code else ''} "
+                "the node stored as data",
             )
         elif not softened and _is_empty_lookup(out):
             yield "empty_result", name, f"{name} came back empty and the node carried on"
+        elif isinstance(out, dict) and (done := _overstated(out, _update(e))):
+            yield (
+                "status_overstated",
+                name,
+                f"{name} answered status `{out.get('status')}`; "
+                f"the node recorded `{done}` as done",
+            )
         elif isinstance(out, dict):
             flat = {k.lower(): v for k, v in _flat(out)}
-            more = any(flat.get(k) == v for k, v in _MORE.items()) or any(
-                flat.get(k) for k in _NEXT
+            incomplete = any(flat.get(k) == v for k, v in _INCOMPLETE.items())
+            more = (
+                incomplete
+                or any(flat.get(k) == v for k, v in _MORE.items())
+                or any(flat.get(k) for k in _NEXT)
             )
             followed = any(c.get("name") == t.get("name") for c in calls[i + 1 :])
             page = next((len(x) for x in _lists(out) if x), 0)
             carried = any(isinstance(v, list) and len(v) == page for v in _update(e).values())
             if more and page and carried and not followed:
                 yield (
-                    "unfollowed_pagination",
-                    name,
                     (
-                        f"{name} said more pages exist; the node passed on page one "
-                        "as the whole result"
-                    ),
+                        "incomplete_result",
+                        name,
+                        f"{name} said its result is incomplete; "
+                        "the node passed it on as the whole result",
+                    )
+                    if incomplete
+                    else (
+                        "unfollowed_pagination",
+                        name,
+                        f"{name} said more pages exist; "
+                        "the node passed on page one as the whole result",
+                    )
                 )
 
 
@@ -637,12 +713,34 @@ def _d13(e: Any, **_: Any) -> Iterator[tuple[str, str, str]]:
 
 _CLAIM = re.compile(
     r"\b(?:I(?:'ve| have)?|we(?:'ve| have)?|has been|have been|was|were|successfully)\s+"
+    r"(?:(?:already|now|just)\s+)?"
     r"(refund(?:ed)?|cancel(?:l?ed)?|reset|delet(?:ed)?|sent|book(?:ed)?|charg(?:ed)?|"
-    r"issu(?:ed)?|approv(?:ed)?|unlock(?:ed)?|schedul(?:ed)?|transferr?(?:ed)?|paid)\b",
+    r"issu(?:ed)?|approv(?:ed)?|unlock(?:ed)?|schedul(?:ed)?|transferr?(?:ed)?|paid|"
+    r"process(?:ed)?|initiat(?:ed)?|submitt?(?:ed)?|complet(?:ed)?|creat(?:ed)?|"
+    r"post(?:ed)?|plac(?:ed)?|fil(?:ed)?|credit(?:ed)?|void(?:ed)?)\b",
     re.I,
 )
 _NEG = re.compile(r"\b(no|not|never|cannot|couldn't|could not|unable|nothing|none)\b|n't\b", re.I)
-_STEM = {"sent": "send", "paid": "pay", "issu": "refund"}
+_STEM = {"sent": "send", "paid": "pay"}
+# Verbs that say nothing about *what* was done ("I've processed …"): the claim is
+# only checkable through its object, so with no object in sight it is skipped.
+_GENERIC = frozenset({"proce", "initi", "submi", "compl", "creat", "post", "plac", "fil", "issu"})
+# What was done. Matched against tool names as well as the verb, so "I've
+# approved a refund" is satisfied by `create_refund` and "I've processed your
+# refund" with no refund call anywhere is not.
+_OBJECT = re.compile(
+    r"\b(refund|cancellation|booking|reservation|payment|charge|transfer|ticket|email|"
+    r"message|invoice|password|account|appointment|subscription|claim|return|credit)s?\b",
+    re.I,
+)
+_OBJECT_STEM = {
+    "cancellation": "cancel",
+    "booking": "book",
+    "reservation": "reserv",
+    "payment": "pay",
+    "subscription": "subscri",
+    "appointment": "appoint",
+}
 
 
 def _performed(events: list[Any]) -> set[str]:
@@ -666,7 +764,14 @@ def _d14(e: Any, performed: set[str], **_: Any) -> Iterator[tuple[str, str, str]
                 (s for k, s in _STEM.items() if verb.startswith(k)),
                 re.sub(r"(ed|d)$", "", verb)[:5],
             )
-            if not any(stem in name for name in performed):
+            obj = _OBJECT.search(v[m.end() : m.end() + 50])
+            stems = set() if stem in _GENERIC else {stem}
+            if obj:
+                noun = obj.group(1).lower()
+                stems.add(_OBJECT_STEM.get(noun, noun))
+            if not stems:
+                continue  # "I've processed it": nothing to check against a tool name
+            if not any(s in name for s in stems for name in performed):
                 yield (
                     "unperformed_action",
                     path,
@@ -716,8 +821,15 @@ def run_rules(
     node_state_keys: Mapping[str, Iterable[str]] | None = None,
     consumers: dict[str, Any] | None = None,
     baseline: dict[str, Any] | None = None,
+    keep: Callable[[Hit], bool] | None = None,
 ) -> list[Hit]:
-    """Every rule over one finished run. Steps after an earlier origin are skipped."""
+    """Every rule over one finished run. Steps after an earlier origin are skipped.
+
+    ``keep`` is the run reviewer's verdict on a hit (:mod:`argus.review`). A hit
+    it rejects is still returned — the caller files it as a warning — but it is
+    not an origin, so the next rule on that step and every later step still run.
+    Without ``keep`` the first hit on a step is the origin, as before.
+    """
     ran = [e for e in events if getattr(e, "status", "pass") != "skipped"]
     allow_empty = frozenset(
         k
@@ -738,15 +850,19 @@ def run_rules(
     for e in ran:
         if failed - {e.node_name}:
             break  # everything from here on is downstream of an origin
+        kept = False
         for rule in _STEP_RULES:
             found = next(iter(rule(e, **ctx)), None)
             if found:
-                found_by.append((rule, Hit(e, *found)))
-                break
-        if _is_origin(e) or (found_by and found_by[-1][1].event is e):
+                hit = Hit(e, *found)
+                found_by.append((rule, hit))
+                if keep is None or keep(hit):
+                    kept = True
+                    break
+        if _is_origin(e) or kept:
             failed.add(e.node_name)
     hits = [_last_visit(rule, hit, ran, ctx) for rule, hit in found_by]
-    if not hits and not any(_is_origin(e) for e in ran):
+    if not any(keep is None or keep(h) for h in hits) and not any(_is_origin(e) for e in ran):
         hits += _d15(ran)
     return hits
 

@@ -35,7 +35,12 @@ history backward:
   origin is that writer (``retrieve`` returning ``{"sources": []}``).
 * **never written** — the key appears in no update before the reader → origin
   is the first row, since nothing in a trace says who was supposed to produce
-  it. A producer map would; we do not have one and do not guess.
+  it. That origin is a guess, so the finding carries ``confidence=0.5``
+  (:data:`GUESS_CONFIDENCE`) and the run reviewer must confirm it
+  (:mod:`argus.review`). It is not a failure at all when the field is declared
+  ``required: False`` (read only on some paths). When a node before the reader already
+  failed, the guess lands on that node instead of the first row: the field is
+  most likely a casualty of that failure, and the first row is a bystander.
 
 A node that returned a literal ``{}`` is not this layer's business —
 ``inspector.empty_output`` already blames it. When such a row sits between the
@@ -75,16 +80,23 @@ from argus.inspector import _is_empty
 from argus.models import Finding
 
 __all__ = [
+    "GUESS_CONFIDENCE",
     "allow_empty_fields",
     "contextual_findings",
     "node_writes_allow_empty",
+    "readers_of",
     "propose_consumers",
 ]
 
 # ``{"field": ["reader", ...]}`` or
-# ``{"field": {"readers": ["reader", ...], "allow_empty": True}}``
-# ``field`` may be a dotted path (``email.body``).
+# ``{"field": {"readers": ["reader", ...], "allow_empty": True, "required": False}}``
+# ``field`` may be a dotted path (``email.body``). ``required: False`` — the
+# reader only needs it on some paths: never written is fine, dropped or
+# written empty still fails.
 ConsumerMap = dict[str, Any]
+
+# The confidence a "never written → first row" finding carries: the origin is a guess.
+GUESS_CONFIDENCE = 0.5
 
 # Sentinel for a dotted path that does not resolve — distinct from a present
 # ``None``, which ``allow_empty`` still treats as absence.
@@ -96,6 +108,13 @@ def allow_empty_fields(consumers: ConsumerMap | None) -> frozenset[str]:
     if not consumers:
         return frozenset()
     return frozenset(field for field, spec in consumers.items() if _normalise(spec)[1])
+
+
+def readers_of(consumers: ConsumerMap | None, field: str | None) -> frozenset[str]:
+    """The nodes declared to read ``field``."""
+    if not consumers or field is None or field not in consumers:
+        return frozenset()
+    return frozenset(_normalise(consumers[field])[0])
 
 
 def node_writes_allow_empty(consumers: ConsumerMap | None, update: dict[str, Any] | None) -> bool:
@@ -171,6 +190,7 @@ def contextual_findings(
     consumers: ConsumerMap | None,
     *,
     blamed_elsewhere: frozenset[str] = frozenset(),
+    failed: frozenset[str] = frozenset(),
 ) -> list[Finding]:
     """Fields a declared reader needs that were never written, or were dropped.
 
@@ -182,6 +202,9 @@ def contextual_findings(
     ``blamed_elsewhere``: nodes another layer already failed for producing
     nothing (a barren subgraph, S5). Like a ``{}`` row, one of them upstream of
     the reader means "never written" defers instead of guessing the first row.
+
+    ``failed``: nodes that failed for any other reason. "Never written" blames
+    the first of them before the reader instead of the first row.
     """
     if not consumers or not ledger:
         return []
@@ -191,6 +214,7 @@ def contextual_findings(
     deferred_victims: set[str] = set()  # starved, but blame belongs to another layer
     for field, spec in consumers.items():
         readers, allow_empty = _normalise(spec)
+        required = not isinstance(spec, dict) or spec.get("required", True) is not False
         for reader_at in _reader_indices(ledger, readers):
             result = _blame(
                 ledger,
@@ -198,6 +222,8 @@ def contextual_findings(
                 reader_at,
                 allow_empty=allow_empty,
                 blamed_elsewhere=blamed_elsewhere,
+                required=required,
+                failed=failed,
             )
             if result is None:
                 continue
@@ -231,6 +257,8 @@ def _blame(
     *,
     allow_empty: bool = False,
     blamed_elsewhere: frozenset[str] = frozenset(),
+    required: bool = True,
+    failed: frozenset[str] = frozenset(),
 ) -> tuple[Finding | None, str] | None:
     """Who is answerable for `field` being missing when its reader ran.
 
@@ -261,6 +289,7 @@ def _blame(
     held = [i for i, row in enumerate(before) if not lacks(row.state_after, field)]
     wrote = [i for i, row in enumerate(before) if _wrote(row, field)]
 
+    confidence: float | None = None
     if held:
         # Present, then lost: blame the row that lost it.
         origin_at = next(
@@ -281,6 +310,8 @@ def _blame(
         # Never written by anyone. A node that returned `{}` is already blamed
         # by inspector.empty_output — defer to it instead of adding a second
         # finding aimed at whoever happened to run first.
+        if not required:
+            return None  # declared as read on some paths only
         if any(row.update == {} for row in before):
             return None
         if any(row.node in blamed_elsewhere for row in before):
@@ -292,8 +323,11 @@ def _blame(
             for row in ledger[reader_at + 1 :]
         ):
             return None
-        origin_at = 0
+        origin_at = next((i for i, row in enumerate(before) if row.node in failed), 0)
         why = "no step wrote it"
+        if before[origin_at].node in failed:
+            why += f", and `{before[origin_at].node}` had already failed"
+        confidence = GUESS_CONFIDENCE
 
     origin = before[origin_at]
     finding = _mk(
@@ -304,6 +338,7 @@ def _blame(
         source="heuristic",
         field_path=field,
         origin_node=origin.node,
+        confidence=confidence,
     )
     return finding, reader.node
 

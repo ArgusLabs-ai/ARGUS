@@ -106,3 +106,6 @@ agent_ship_suite/
 
 # Enterprise ship-readiness suite: prior-auth, SRE, recruiting, travel, CLM, async close (pivot architecture, local only)
 ship_eval/
+
+# Blind probe of the fat-trace architecture (local only)
+blind_eval/

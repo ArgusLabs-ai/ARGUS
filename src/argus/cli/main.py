@@ -90,12 +90,20 @@ def cmd_baseline(
     write: Optional[Path] = typer.Option(
         None, "--write", help="Write the baseline to this JSON file."
     ),
+    purposes: bool = typer.Option(
+        False,
+        "--purposes",
+        help="Also draft a one-line purpose per node with your LLM key (for the run reviewer).",
+    ),
 ) -> None:
     """Record what healthy runs write, per node, for the baseline rules.
 
     Pass the file as ArgusRecorder(baseline=...). A node that later drops a key
     it always writes, changes a field's type, or writes N/A / -1 where healthy
     runs held data then fails CI. Holds kinds, never values.
+
+    With --purposes the file also gets a draft sentence per node. Edit them:
+    they are what the run reviewer reads to tell design from defect.
     """
     from argus.storage import last_run_id
 
@@ -103,7 +111,7 @@ def cmd_baseline(
     if not all(ids):
         _console.print("[red]Error:[/red] No runs found in .argus/runs/.")
         raise typer.Exit(1)
-    baseline_for_runs(ids, write)
+    baseline_for_runs(ids, write, purposes=purposes)
 
 
 @app.command("consumers")

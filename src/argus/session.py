@@ -403,6 +403,8 @@ class ArgusSession:
         # `argus baseline`. Read by argus.trace_rules at the end of the run.
         self.node_state_keys: dict[str, list[str]] = {}
         self.baseline: dict[str, Any] | None = None
+        # argus.review.Reviewer, set by grading.new_session; None = rules alone decide.
+        self.reviewer: Any = None
 
         self._strict = strict
         self._redact_keys: frozenset[str] = frozenset(redact_keys or ())

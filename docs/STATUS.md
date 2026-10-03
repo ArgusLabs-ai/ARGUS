@@ -32,7 +32,14 @@ Rules that follow from the table:
   shapes under `own_output=True` — status words / `errors: [...]` lists) are recorded on the event
   but leave it `pass`. Any warning-level entry in `inspection.semantic_signals` is a soft flag the
   LLM judge may review — and drop, if it is a false positive (shape warnings included; F-21).
-  A strictness knob to escalate them is planned (see `visual/PRD.md` US-1.4).
+  **Exception — the run reviewer** (`argus.review`, on when node purposes are given): a warning
+  on a step the reviewer independently verified becomes a critical `review_confirmed` tool
+  failure, and the step `fail`. A step with no rule signal at all fails (`review_verified`)
+  only when two different models verified the same item.
+- **Heuristic criticals need the run reviewer when it runs.** D4 / D6 / D12–D15, an HTTP 404
+  body and the contextual "never written" guess leave the step `pass` (kept as warnings) unless
+  the reviewer verified that step. Strict criticals are unaffected; with no reviewer, nothing
+  here changes.
 - **Critical anomaly signals do.** A critical signal on a `pass` step makes it `semantic_fail`,
   judge or no judge. `unreadable_update` is deliberately one of these: "I could not read this
   node's update" and "this node ran fine" must not be the same verdict, or a silent no-op ships

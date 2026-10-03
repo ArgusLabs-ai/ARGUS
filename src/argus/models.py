@@ -250,6 +250,9 @@ class NodeEvent:
     # Parallel `Send` workers share it; loop iterations do not. None when the
     # trace carries no step metadata (trace-file ingest, the wrap path).
     superstep: str | None = None
+    # What the run reviewer verified on this step (argus.review): dicts with
+    # kind / claim / why / correction / role ("confirms" | "promoted" | "advisory").
+    review: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ── Replay comparison dataclasses ─────────────────────────────────────────────
