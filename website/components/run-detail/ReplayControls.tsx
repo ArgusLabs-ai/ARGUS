@@ -85,14 +85,9 @@ export default function ReplayControls({
     }
 
     if (resp.status === 422) {
-      const body = await resp.json().catch(() => ({})) as { error?: string }
-      if (body.error === 'no_node_ref') {
-        setReplayState({ phase: 'error', message: `No stored function ref for '${nodeName}'. Re-record with latest argus.` })
-        setReplayingNode(null)
-        return
-      }
+      // A trace holds state, not code: the rerun needs the app factory (#79).
       setPendingNode(nodeName)
-      setReplayState({ phase: 'no_factory' })
+      setReplayState({ phase: 'no_factory', mode, nodeName })
       setReplayingNode(null)
       setTimeout(() => factoryInputRef.current?.focus(), 50)
       return
@@ -147,7 +142,7 @@ export default function ReplayControls({
           setReplayingNode(null)
           if (pdata.error_code === 'bad_factory') {
             setPendingNode(nodeName ?? null)
-            setReplayState({ phase: 'no_factory' })
+            setReplayState({ phase: 'no_factory', mode, nodeName, message: pdata.message })
             setTimeout(() => factoryInputRef.current?.focus(), 50)
           } else {
             setReplayState({ phase: 'error', message: pdata.message ?? 'Rerun failed' })
@@ -187,7 +182,7 @@ export default function ReplayControls({
     if (!appFactory.trim()) return
     await saveFactory(appFactory)
     if (pendingNode) {
-      submitReplay(pendingNode)
+      submitReplay(pendingNode, replayState.mode ?? 'full')
     }
   }
 
@@ -199,7 +194,10 @@ export default function ReplayControls({
           className="note-line"
           onSubmit={(e) => { e.preventDefault(); handleFactorySubmit() }}
         >
-          <span>Rerun needs the function that builds your graph:</span>
+          <span>
+            {replayState.message ? `That factory did not work: ${replayState.message}. ` : ''}
+            Rerun needs the function that builds your graph:
+          </span>
           <input
             ref={factoryInputRef}
             type="text"

@@ -9,7 +9,7 @@ import { Fragment, useMemo, useState, type ReactNode } from 'react'
 import type { NodeEvent, RunRecord } from '@/lib/types'
 import { formatDuration } from '@/lib/workspace'
 import { stepFlag, stepNote, stepTone, stepWord } from '@/lib/run-detail'
-import { SENTINEL_NODES, displayTopology } from '@/lib/run-utils'
+import { SENTINEL_NODES, displayTopology, nodeStep } from '@/lib/run-utils'
 import { segmentEvents } from '@/lib/topology'
 import ReplayControls, { type NodeDiffData } from './ReplayControls'
 import JsonGutter from './JsonGutter'
@@ -19,7 +19,7 @@ import FixPromptButton from './FixPrompt'
 /* ── execution tree ─────────────────────────────────────────────── */
 
 function statusColor(run: RunRecord, node: string): string | undefined {
-  const st = (run.steps ?? []).find((s) => s.node_name === node)?.status
+  const st = nodeStep(run.steps, node)?.status
   switch (st) {
     case 'crashed': case 'fail': return 'var(--tool)'
     case 'semantic_fail': return 'var(--semantic)'

@@ -13,6 +13,43 @@ interface Release {
 
 const RELEASES: Release[] = [
   {
+    version: '0.12.0-dev',
+    title: 'Fat traces: ArgusRecorder replaces the wrap path',
+    date: '2026-09-24',
+    tag: 'beta',
+    highlights: [
+      'On the pivot/fat-traces branch — not on PyPI yet. pip install argus-agents still gets 0.11.0',
+      'ArgusRecorder: capture via LangChain callbacks, nothing patched. Keeps the dict each node returned — its update, not the merged state',
+      'consumers={"field": ["reader"]}: declare who reads what, so a field never written / written empty / dropped in between is blamed on the node responsible',
+      'argus ingest langsmith: grade a LangSmith export with no app and no graph. Skinny traces are refused, not graded green',
+      'report_tool_call(): file a tool the callback path cannot see, so a 404 body or a raised tool is not silently absent from the step',
+      'Parallel Send workers are siblings, not retries — a swallowed error in the first of five workers no longer hides behind the last one passing',
+      "A node's own verdict (status: denied, a linter's errors list) is a warning, not a CI fail. The same shape from a tool response stays critical",
+      'The judge reviews soft flags only: it cannot originate a fail, clear a hard fail, or move blame off an origin',
+      'Barren subgraphs: every inner node wrote something, all of it to inner-only keys, parent state unchanged (subgraph_no_contribution)',
+      'httpx traffic recorded via httpcore; a capture session that records nothing warns instead of writing an empty cassette',
+      "A ReAct agent's blank final reply (empty content, no tool calls) fails the gate; intermediate tool-calling turns stay exempt",
+      'A KeyError from a node\'s own conditional edge is blamed on that node, not on the upstream bystander that last touched the state',
+      'Consumer keys accept dotted paths (email.body) so a blanked nested leaf is caught; a top-level declaration still means the whole value',
+      'allow_empty reaches the writer\'s tool responses, so a clean sanctions screen returning hits: [] no longer fails CI. Undeclared empty retrieval stays critical',
+    ],
+  },
+  {
+    version: '0.11.0',
+    title: 'Findings, check JSON, replay patches',
+    date: '2026-09-07',
+    tag: 'minor',
+    highlights: [
+      'RunRecord.findings: one normalized failure list per run (older records back-filled on load)',
+      'argus check --format json and --fail-on; check grades the requested run',
+      'argus replay --set / --delete / --patch / --dry-run',
+      'pytest --argus watches ainvoke / stream / astream',
+      'chat_response and code_generation behavior profiles',
+      'Truncation, stale-context, and trailing etc. signatures; warning-severity matches no longer fail a node on their own',
+      'Dashboard /runs/<id> deep links',
+    ],
+  },
+  {
     version: '0.10.5',
     title: 'Double-encoded JSON detection',
     date: '2026-08-25',

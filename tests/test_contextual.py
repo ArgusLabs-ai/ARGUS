@@ -1,0 +1,585 @@
+"""Spike 3: a field D needs is blamed on A, not on C standing next to D.
+
+A → B → C → D. D reads `b`. B and C never had a duty to produce it.
+"""
+
+from __future__ import annotations
+
+from typing import TypedDict
+
+import pytest
+
+from argus.check import evaluate_run
+from argus.contextual import contextual_findings
+from argus.ledger import build_ledger
+from argus.recorder import ArgusRecorder
+from argus.storage import load_run
+
+pytest.importorskip("langchain_core")
+pytest.importorskip("langgraph")
+
+from langgraph.graph import END, START, StateGraph  # noqa: E402
+
+CONSUMERS = {"b": ["D"]}
+
+
+class _S(TypedDict, total=False):
+    seed: str
+    b: str
+    noise_b: str
+    noise_c: str
+    answer: str
+
+
+def _no_patching(monkeypatch):
+    def _boom(*a, **k):
+        raise AssertionError("patch_graph was called — the recorder must not wrap the engine")
+
+    monkeypatch.setattr("argus.patcher.patch_graph", _boom)
+
+
+def _run(a_writes_b: bool, drop_at_c: bool = False):
+    def a(state: _S) -> dict:
+        return {"b": "ok"} if a_writes_b else {"noise_a": "unrelated"}
+
+    def b(state: _S) -> dict:
+        return {"noise_b": "unrelated"}
+
+    def c(state: _S) -> dict:
+        return {"b": None} if drop_at_c else {"noise_c": "unrelated"}
+
+    def d(state: _S) -> dict:
+        return {"answer": f"used {state.get('b')}"}
+
+    g = StateGraph(_S)
+    for name, fn in (("A", a), ("B", b), ("C", c), ("D", d)):
+        g.add_node(name, fn)
+    g.add_edge(START, "A")
+    g.add_edge("A", "B")
+    g.add_edge("B", "C")
+    g.add_edge("C", "D")
+    g.add_edge("D", END)
+
+    recorder = ArgusRecorder(consumers=CONSUMERS)
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+    # Everything asserted below comes off the file. No second invoke.
+    return load_run(recorder.session.run_id)
+
+
+@pytest.mark.integration
+def test_field_written_by_a_and_read_by_d_is_clean(monkeypatch):
+    _no_patching(monkeypatch)
+
+    record = _run(a_writes_b=True)
+    verdict = evaluate_run(record)
+
+    assert verdict.passed is True
+    assert verdict.failing_nodes == ()
+    assert record.overall_status == "clean"
+
+
+@pytest.mark.integration
+def test_field_never_written_blames_a_not_c_or_d(monkeypatch):
+    _no_patching(monkeypatch)
+
+    record = _run(a_writes_b=False)
+    verdict = evaluate_run(record)
+
+    assert verdict.passed is False
+    assert "A" in verdict.failing_nodes
+    assert "C" not in verdict.failing_nodes, "C had no duty to produce b"
+    assert "D" not in verdict.failing_nodes, "D is the victim, not the origin"
+
+    miss = [f for f in record.findings if f.type == "missing_field" and f.field_path == "b"]
+    assert [f.node for f in miss] == ["A"]
+    assert miss[0].severity == "critical"
+
+    # the reader that made `b` required is named on the step itself
+    origin_step = next(s for s in record.steps if s.node_name == "A")
+    assert "`D`" in origin_step.inspection.message
+
+
+@pytest.mark.integration
+def test_a_field_dropped_midway_blames_the_dropper(monkeypatch):
+    """A wrote it, C threw it away — same rule, different origin."""
+    _no_patching(monkeypatch)
+
+    record = _run(a_writes_b=True, drop_at_c=True)
+    verdict = evaluate_run(record)
+
+    assert verdict.passed is False
+    assert "C" in verdict.failing_nodes
+    assert "A" not in verdict.failing_nodes
+
+
+@pytest.mark.unit
+def test_no_consumers_declared_means_no_contextual_findings(monkeypatch):
+    """Without a declared reader the layer stays silent — it never guesses."""
+    _no_patching(monkeypatch)
+
+    def a(state: _S) -> dict:
+        return {"noise_a": "unrelated"}
+
+    def d(state: _S) -> dict:
+        return {"answer": "fine"}
+
+    g = StateGraph(_S)
+    g.add_node("A", a)
+    g.add_node("D", d)
+    g.add_edge(START, "A")
+    g.add_edge("A", "D")
+    g.add_edge("D", END)
+
+    recorder = ArgusRecorder()  # no consumers
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    assert evaluate_run(load_run(recorder.session.run_id)).passed is True
+
+
+@pytest.mark.integration
+def test_a_field_emptied_not_nulled_is_still_a_drop(monkeypatch):
+    """`{"docs": []}` is the commonest real drop: a filter that removed everything.
+
+    The old wrap path caught this via the successor's type hints. A trace has no
+    type hints, so the declared consumer map has to carry it — and `_lacks` has
+    to agree with the inspector on what "empty" means.
+    """
+    _no_patching(monkeypatch)
+
+    def search(state: _S) -> dict:
+        return {"b": "found something"}
+
+    def clean(state: _S) -> dict:
+        return {"b": ""}  # filtered it all away
+
+    def use(state: _S) -> dict:
+        return {"answer": f"used {state.get('b')!r}"}
+
+    g = StateGraph(_S)
+    for name, fn in (("search", search), ("clean", clean), ("use", use)):
+        g.add_node(name, fn)
+    g.add_edge(START, "search")
+    g.add_edge("search", "clean")
+    g.add_edge("clean", "use")
+    g.add_edge("use", END)
+
+    recorder = ArgusRecorder(consumers={"b": ["use"]})
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    verdict = evaluate_run(load_run(recorder.session.run_id))
+    assert verdict.passed is False
+    assert "clean" in verdict.failing_nodes, "the node that emptied it is the origin"
+    assert "search" not in verdict.failing_nodes, "search did its job"
+
+
+@pytest.mark.integration
+def test_a_field_filled_in_the_middle_is_clean(monkeypatch):
+    """Progressive fill: A has no `b` yet, B writes it, D reads it.
+
+    Walking forward from step 0 and stopping at the first row that lacks `b`
+    blames A for not having done B's job. Blame is anchored at the reader.
+    """
+    _no_patching(monkeypatch)
+
+    g = StateGraph(_S)
+    g.add_node("A", lambda s: {"seed": "ready"})  # no `b` yet — normal
+    g.add_node("B", lambda s: {"b": "written here"})
+    g.add_node("C", lambda s: {"noise_c": "unrelated"})
+    g.add_node("D", lambda s: {"answer": f"used {s.get('b')}"})
+    g.add_edge(START, "A")
+    g.add_edge("A", "B")
+    g.add_edge("B", "C")
+    g.add_edge("C", "D")
+    g.add_edge("D", END)
+
+    recorder = ArgusRecorder(consumers={"b": ["D"]})
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    record = load_run(recorder.session.run_id)
+    assert evaluate_run(record).passed is True
+    assert record.overall_status == "clean"
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_a_reader_that_writes_the_field_itself_is_clean(monkeypatch):
+    """An accumulator reads and produces the same field. Nothing is missing."""
+    _no_patching(monkeypatch)
+
+    g = StateGraph(_S)
+    g.add_node("A", lambda s: {"noise_a": "setup"})
+    g.add_node("D", lambda s: {"b": "created by the reader itself"})
+    g.add_edge(START, "A")
+    g.add_edge("A", "D")
+    g.add_edge("D", END)
+
+    recorder = ArgusRecorder(consumers={"b": ["D"]})
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    record = load_run(recorder.session.run_id)
+    assert evaluate_run(record).passed is True
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_parallel_branch_writes_the_field_before_the_join_reads_it(monkeypatch):
+    """Only one branch produces `b`; the join consumes it. Siblings are not at fault."""
+    _no_patching(monkeypatch)
+
+    g = StateGraph(_S)
+    g.add_node("start", lambda s: {"noise_a": "go"})
+    g.add_node("left", lambda s: {"b": "from left"})
+    g.add_node("right", lambda s: {"noise_c": "unrelated"})
+    g.add_node("join", lambda s: {"answer": f"read {s.get('b')}"})
+    g.add_edge(START, "start")
+    g.add_edge("start", "left")
+    g.add_edge("start", "right")
+    g.add_edge("left", "join")
+    g.add_edge("right", "join")
+    g.add_edge("join", END)
+
+    recorder = ArgusRecorder(consumers={"b": ["join"]})
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    record = load_run(recorder.session.run_id)
+    assert evaluate_run(record).passed is True
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_a_field_supplied_by_the_caller_is_not_missing(monkeypatch):
+    """`seed` comes in with invoke() and no node writes it. That is not a drop."""
+    _no_patching(monkeypatch)
+
+    g = StateGraph(_S)
+    g.add_node("A", lambda s: {"noise_a": "untouched"})
+    g.add_node("D", lambda s: {"answer": f"read {s.get('seed')}"})
+    g.add_edge(START, "A")
+    g.add_edge("A", "D")
+    g.add_edge("D", END)
+
+    recorder = ArgusRecorder(consumers={"seed": ["D"]})
+    recorder.attach(g.compile()).invoke({"seed": "from the caller"})
+
+    record = load_run(recorder.session.run_id)
+    assert evaluate_run(record).passed is True
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_a_reader_on_an_untaken_branch_never_read_anything(monkeypatch):
+    """`right` is declared a reader but its branch never ran — nobody read `b`.
+
+    The live ledger was always quiet here; the reloaded one was not. Skipped
+    steps are synthesized at finalize, so only the re-score path saw a node that
+    never executed sitting in the notebook looking like a reader.
+    """
+    _no_patching(monkeypatch)
+
+    class _R(TypedDict, total=False):
+        seed: str
+        route: str
+        b: str
+        out: str
+
+    g = StateGraph(_R)
+    g.add_node("A", lambda s: {"b": "ok", "route": "left"})
+    g.add_node("drop", lambda s: {"b": ""})
+    g.add_node("left", lambda s: {"out": "L"})
+    g.add_node("right", lambda s: {"out": str(s["b"])})
+    g.add_edge(START, "A")
+    g.add_edge("A", "drop")
+    g.add_conditional_edges("drop", lambda s: s["route"], {"left": "left", "right": "right"})
+    g.add_edge("left", END)
+    g.add_edge("right", END)
+
+    recorder = ArgusRecorder(consumers={"b": ["right"]})
+    recorder.attach(g.compile()).invoke({"seed": "s"})
+
+    record = load_run(recorder.session.run_id)
+    rows = build_ledger(record.steps, record.initial_state)
+
+    assert "right" not in [r.node for r in rows], "a node that never ran is not a step"
+    assert contextual_findings(rows, {"b": ["right"]}) == []
+    assert [f.node for f in record.findings if f.type == "missing_field"] == []
+
+
+# ── E6 / #133: dotted paths into nested state ────────────────────────────────
+
+
+class _EmailState(TypedDict, total=False):
+    seed: str
+    email: dict
+    compliance: dict
+    sent: bool
+
+
+def _email_app(compliance):
+    def draft(state: _EmailState) -> dict:
+        return {
+            "email": {
+                "subject": "Globex x RouteCo",
+                "body": "Hi Dana, saw Globex is scaling...",
+            }
+        }
+
+    def send_email(state: _EmailState) -> dict:
+        return {"sent": bool(state["email"].get("body"))}
+
+    g = StateGraph(_EmailState)
+    nodes = (
+        ("draft", draft),
+        ("compliance_check", compliance),
+        ("send_email", send_email),
+    )
+    for name, fn in nodes:
+        g.add_node(name, fn)
+    g.add_edge(START, "draft")
+    g.add_edge("draft", "compliance_check")
+    g.add_edge("compliance_check", "send_email")
+    g.add_edge("send_email", END)
+    return g.compile()
+
+
+@pytest.mark.integration
+def test_nested_field_emptied_blames_the_writer(monkeypatch):
+    """E6: `email.body` blanked inside a still-non-empty `email` dict.
+
+    Top-level `consumers={"email": [...]}` stays quiet — the dict is present.
+    Declaring the leaf path blames the node that wiped it.
+    """
+    _no_patching(monkeypatch)
+
+    def compliance_check(state: _EmailState) -> dict:
+        return {
+            "compliance": {"ok": True},
+            "email": {"subject": state["email"]["subject"], "body": ""},
+        }
+
+    recorder = ArgusRecorder(consumers={"email.body": ["send_email"]})
+    recorder.attach(_email_app(compliance_check)).invoke({"seed": "s"})
+    record = load_run(recorder.session.run_id)
+    verdict = evaluate_run(record)
+
+    assert verdict.passed is False
+    assert "compliance_check" in verdict.failing_nodes
+    assert "send_email" not in verdict.failing_nodes
+    assert "draft" not in verdict.failing_nodes
+    miss = [
+        f
+        for f in record.findings
+        if f.type == "missing_field" and f.field_path == "email.body"
+    ]
+    assert [f.node for f in miss] == ["compliance_check"]
+    assert miss[0].severity == "critical"
+
+
+@pytest.mark.integration
+def test_nested_field_present_is_clean(monkeypatch):
+    _no_patching(monkeypatch)
+
+    def compliance_check(state: _EmailState) -> dict:
+        return {"compliance": {"ok": True}}
+
+    recorder = ArgusRecorder(consumers={"email.body": ["send_email"]})
+    recorder.attach(_email_app(compliance_check)).invoke({"seed": "s"})
+    record = load_run(recorder.session.run_id)
+
+    assert evaluate_run(record).passed is True
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_nested_sibling_change_keeps_body_clean(monkeypatch):
+    """A node that only rewrites `email.subject` must not trip `email.body`."""
+    _no_patching(monkeypatch)
+
+    def compliance_check(state: _EmailState) -> dict:
+        return {
+            "compliance": {"ok": True},
+            "email": {
+                "subject": state["email"]["subject"] + " [reviewed]",
+                "body": state["email"]["body"],
+            },
+        }
+
+    recorder = ArgusRecorder(consumers={"email.body": ["send_email"]})
+    recorder.attach(_email_app(compliance_check)).invoke({"seed": "s"})
+    record = load_run(recorder.session.run_id)
+
+    assert evaluate_run(record).passed is True
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+@pytest.mark.integration
+def test_top_level_declaration_still_ignores_blanked_nested_leaf(monkeypatch):
+    """Top-level `email` stays exactly as today: a non-empty dict is not empty."""
+    _no_patching(monkeypatch)
+
+    def compliance_check(state: _EmailState) -> dict:
+        return {
+            "compliance": {"ok": True},
+            "email": {"subject": state["email"]["subject"], "body": ""},
+        }
+
+    recorder = ArgusRecorder(consumers={"email": ["send_email"]})
+    recorder.attach(_email_app(compliance_check)).invoke({"seed": "s"})
+    record = load_run(recorder.session.run_id)
+
+    assert [f for f in record.findings if f.type == "missing_field"] == []
+
+
+class _Trip(TypedDict, total=False):
+    request: str
+    flight: str
+    payment: str
+    itinerary: str
+
+
+def _supervisor_app(skip_payment: bool):
+    from typing import Literal
+
+    from langgraph.types import Command
+
+    def supervisor(s) -> Command[Literal["book", "pay", "summarise"]]:
+        if "flight" not in s:
+            return Command(goto="book")
+        if "payment" not in s and not skip_payment:
+            return Command(goto="pay")
+        return Command(goto="summarise")
+
+    def book(s) -> Command[Literal["supervisor"]]:
+        return Command(goto="supervisor", update={"flight": "LH455"})
+
+    def pay(s) -> Command[Literal["supervisor"]]:
+        return Command(goto="supervisor", update={"payment": "pi_3P"})
+
+    def summarise(s):
+        return {"itinerary": f"{s['flight']} paid with {s.get('payment', '?')}"}
+
+    g = StateGraph(_Trip)
+    nodes = [("supervisor", supervisor), ("book", book), ("pay", pay), ("summarise", summarise)]
+    for name, fn in nodes:
+        g.add_node(name, fn)
+    g.add_edge(START, "supervisor")
+    g.add_edge("summarise", END)
+    return g.compile()
+
+
+@pytest.mark.parametrize("skip_payment", [False, True])
+def test_contextual_blame_on_a_router_only_node_is_kept(monkeypatch, skip_payment):
+    """A `Command(goto=...)` supervisor returns no update, so its step has no
+    inspection. Blame landing there used to be dropped and the run graded clean."""
+    _no_patching(monkeypatch)
+    rec = ArgusRecorder(consumers={"payment": ["summarise"]}, semantic_judge=False)
+    rec.attach(_supervisor_app(skip_payment)).invoke({"request": "SFO-BER"})
+    verdict = evaluate_run(load_run(rec.session.run_id))
+    if skip_payment:
+        assert not verdict.passed
+        assert set(verdict.failing_nodes) == {"supervisor"}
+    else:
+        assert verdict.passed, verdict.failing_nodes
+
+
+class _Outer(TypedDict, total=False):
+    doc_id: str
+    text: str
+    clauses: list
+    review: str
+
+
+class _Inner(TypedDict, total=False):
+    text: str
+    sections: list
+    clauses: list
+
+
+def test_a_barren_subgraph_is_not_also_pinned_on_the_first_step(monkeypatch):
+    """S5: the subgraph wrote only its scratch key. `subgraph_no_contribution`
+    already names it; "no step wrote `clauses`" must not also blame `ingest`."""
+    _no_patching(monkeypatch)
+    inner = StateGraph(_Inner)
+    inner.add_node("split", lambda s: {"sections": s["text"].split(".")})
+    inner.add_node("classify", lambda s: {"sections": [x.upper() for x in s["sections"]]})
+    inner.add_edge(START, "split")
+    inner.add_edge("split", "classify")
+    inner.add_edge("classify", END)
+
+    g = StateGraph(_Outer)
+    g.add_node("ingest", lambda s: {"text": "Services. Liability."})
+    g.add_node("extract", inner.compile())
+    g.add_node("review", lambda s: {"review": f"{len(s.get('clauses') or [])} clauses"})
+    g.add_edge(START, "ingest")
+    g.add_edge("ingest", "extract")
+    g.add_edge("extract", "review")
+    g.add_edge("review", END)
+
+    rec = ArgusRecorder(consumers={"clauses": ["review"]}, semantic_judge=False)
+    rec.attach(g.compile()).invoke({"doc_id": "d1"})
+    verdict = evaluate_run(load_run(rec.session.run_id))
+    assert not verdict.passed
+    assert "ingest" not in verdict.failing_nodes, verdict.failing_nodes
+
+
+# ── "never written": optional reads, guesses, upstream failures ─────────────
+
+
+def _rows(*steps):
+    """(node, update) pairs → ledger rows with a running state."""
+    from argus.ledger import LedgerRow
+
+    state: dict = {}
+    rows = []
+    for i, (node, update) in enumerate(steps):
+        before = dict(state)
+        state.update(update or {})
+        rows.append(LedgerRow(i, node, before, update, dict(state)))
+    return rows
+
+
+FAQ_PATH = _rows(("classify", {"intent": "faq"}), ("draft_reply", {"reply": "3-5 days"}))
+
+
+@pytest.mark.unit
+def test_never_written_on_a_branch_is_fine_when_declared_optional():
+    required = contextual_findings(FAQ_PATH, {"order": ["draft_reply"]})
+    optional = contextual_findings(
+        FAQ_PATH, {"order": {"readers": ["draft_reply"], "required": False}}
+    )
+    assert [f.node for f in required] == ["classify"]
+    assert optional == []
+
+
+@pytest.mark.unit
+def test_optional_still_fails_a_drop():
+    rows = _rows(
+        ("lookup", {"order": {"id": 1}}),
+        ("clean", {"order": None}),
+        ("draft_reply", {"reply": "x"}),
+    )
+    found = contextual_findings(rows, {"order": {"readers": ["draft_reply"], "required": False}})
+    assert [f.node for f in found] == ["clean"]
+
+
+@pytest.mark.unit
+def test_never_written_is_a_guess_and_says_so():
+    (finding,) = contextual_findings(FAQ_PATH, {"order": ["draft_reply"]})
+    from argus.contextual import GUESS_CONFIDENCE
+
+    assert finding.confidence == GUESS_CONFIDENCE
+
+
+@pytest.mark.unit
+def test_never_written_lands_on_the_node_that_already_failed_not_a_bystander():
+    """GraphQL `errors` on `list_accounts` → nothing to fan out → `scored` never
+    written. The first row (`check_existing`) did nothing wrong."""
+    rows = _rows(
+        ("check_existing", {"sent": False}),
+        ("list_accounts", {"accounts": []}),
+        ("aggregate", {"summary": {}}),
+    )
+    (finding,) = contextual_findings(
+        rows, {"scored": ["aggregate"]}, failed=frozenset({"list_accounts"})
+    )
+    assert finding.node == "list_accounts"
+    assert "had already failed" in finding.reason

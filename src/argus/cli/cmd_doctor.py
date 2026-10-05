@@ -174,6 +174,17 @@ def _check_optional_deps() -> tuple[bool, str]:
     return True, "no extra packages required (LLM: argus key set)"
 
 
+def _check_suppressions() -> tuple[bool, str]:
+    from argus.suppressions import config_path, load_suppressions  # noqa: PLC0415
+
+    items = load_suppressions()
+    if not items:
+        return True, "none  [dim](argus ignore <SIG-ID> to silence a noisy signature)[/dim]"
+    shown = ", ".join(s.label for s in items[:4])
+    more = f" +{len(items) - 4} more" if len(items) > 4 else ""
+    return True, f"{len(items)} active: {shown}{more}  [dim]{config_path()}[/dim]"
+
+
 def _check_llm_mode() -> tuple[bool, str]:
     """Report which LLM path is active: BYOK / hosted / heuristic-only."""
     import os
@@ -217,6 +228,7 @@ def doctor() -> None:
         ("langgraph", _check_langgraph),
         ("storage", _check_storage),
         ("llm", _check_llm_mode),
+        ("suppressions", _check_suppressions),
         ("replay", _check_replay_readiness),
     ]
 

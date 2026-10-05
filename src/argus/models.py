@@ -75,6 +75,20 @@ class SemanticCheckResult:
     # backward-compat verdict behavior, but callers that need to know
     # whether a real judgment happened must check this instead.
     evaluated: bool = True
+    # Why the judge failed the node, in its own words, from a fixed vocabulary:
+    # "unrelated"        — the output is about something other than the input
+    # "contradiction"    — the output contradicts the input or itself
+    # "empty_or_missing" — a field is blank, null or absent
+    # "other"            — anything else, and the default for an older record
+    #
+    # Audit only. None of these kinds fail `argus check` on their own —
+    # the judge reviews soft flags and cannot originate a fail.
+    failure_kind: str = "other"
+
+
+# Kept so older records and tests can name the kinds. None of them gate CI.
+JUDGE_STANDALONE_FAILURE_KINDS = frozenset({"unrelated", "contradiction"})
+JUDGE_STANDALONE_MIN_CONFIDENCE = 0.9
 
 
 @dataclass
@@ -158,6 +172,7 @@ class InspectionResult:
     suspicious_empty_keys: list[str] = field(default_factory=list)
     tool_failures: list[ToolFailure] = field(default_factory=list)
     has_tool_failure: bool = False  # True if any tool_failures with severity="critical"
+    has_tool_warnings: bool = False  # True if any tool_failures with severity="warning"
     semantic_signals: list[SemanticSignal] = field(default_factory=list)
     # Upstream propagation: fields missing from input because an upstream node failed
     degraded_fields: list[str] = field(default_factory=list)
@@ -171,6 +186,11 @@ class LLMCallInfo:
     completion_tokens: int
     total_tokens: int
     cost_usd: float | None = None
+    # Why the model stopped: "stop", "length" (OpenAI), "max_tokens" (Anthropic)...
+    finish_reason: str | None = None
+    # What the model returned, clipped. A node that falls back to a default after
+    # the model's JSON failed to parse leaves no other trace (trace_rules D11).
+    output_text: str | None = None
 
 
 @dataclass
@@ -219,6 +239,25 @@ class NodeEvent:
     semantic_check: SemanticCheckResult | None = None
     disambiguation_results: list[DisambiguationResult] = field(default_factory=list)
     total_iterations: int | None = None  # set on finalize for looped nodes
+    # Tool I/O recorded for this step: {name, input, output, error}. Set by
+    # ArgusRecorder from LangGraph's tool callbacks; the ledger's tool column.
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Where the node routed itself, when it handed off with a `Command` (#110).
+    # The route actually taken, not the branches it could have taken — a
+    # dynamic `goto` is invisible to `get_graph`, so this is the only record
+    # of why the next node ran. Empty for a node that returned a plain update.
+    goto: list[str] = field(default_factory=list)
+    # The Pregel superstep this step ran in, as "<parent checkpoint ns>#<step>".
+    # Parallel `Send` workers share it; loop iterations do not. None when the
+    # trace carries no step metadata (trace-file ingest, the wrap path).
+    superstep: str | None = None
+    # What the run reviewer verified on this step (argus.review): dicts with
+    # kind / claim / why / correction / role ("confirms" | "promoted" | "advisory").
+    review: list[dict[str, Any]] = field(default_factory=list)
+    # Hits silenced by `argus ignore` (project .argus/config.json). Kept for stats
+    # and findings; they do not affect status. See suppressions.py.
+    suppressed_signals: list[SemanticSignal] = field(default_factory=list)
+    suppressed_anomalies: list[AnomalySignal] = field(default_factory=list)
 
 
 # ── Replay comparison dataclasses ─────────────────────────────────────────────
@@ -295,6 +334,15 @@ class RunRecord:
     graph_node_names: list[str]
     graph_edge_map: dict[str, list[str]]
     initial_state: dict[str, Any]
+    # {field: "add"|"overwrite"} — how the state schema combines a field, as a
+    # string, so the ledger folds a reloaded run the same way it folds a live
+    # one. Reducer callables cannot be persisted. See ledger.reducer_kinds.
+    reducer_kinds: dict[str, str] = field(default_factory=dict)
+    # The keys this graph's state actually has. A subgraph node writes into its
+    # own schema, and a key that lives only there never reaches the parent state
+    # — so the ledger must not carry it forward as though a later node could
+    # read it. Empty means unknown, and the ledger folds everything as before.
+    state_keys: list[str] = field(default_factory=list)
     steps: list[NodeEvent] = field(default_factory=list)
     schema_version: str = "0"  # ponytail: "0"=pre-VAR-71, "1"=current; migrate on load
     parent_run_id: str | None = None

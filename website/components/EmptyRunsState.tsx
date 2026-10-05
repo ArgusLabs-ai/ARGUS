@@ -1,8 +1,8 @@
 'use client'
 
 /* Empty state — spec `.empty`: dashed frame, a glyph, one sentence, one
-   primary action. The demo command is the primary action; attaching to a
-   real graph is the secondary. */
+   primary action. Copying the recorder snippet is the primary action; the
+   guide is the secondary. */
 
 import { useState } from 'react'
 import Link from 'next/link'
@@ -14,7 +14,8 @@ function pathsDiffer(a?: string, b?: string): boolean {
   return norm(a) !== norm(b)
 }
 
-const DEMO_CMD = 'argus demo --open'
+// ponytail: no `argus demo` command exists yet; point at it once it ships.
+const SNIPPET = 'from argus import ArgusRecorder\napp = ArgusRecorder().attach(graph)'
 
 export default function EmptyRunsState({ serving }: { serving: ServingInfo | null }) {
   const wrongDir = pathsDiffer(serving?.cwd, serving?.project_root)
@@ -22,7 +23,7 @@ export default function EmptyRunsState({ serving }: { serving: ServingInfo | nul
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(DEMO_CMD)
+      await navigator.clipboard.writeText(SNIPPET)
       setCopied(true)
       setTimeout(() => setCopied(false), 1200)
     } catch {
@@ -39,15 +40,15 @@ export default function EmptyRunsState({ serving }: { serving: ServingInfo | nul
       </svg>
       <h4>{wrongDir ? 'No runs in the directory this UI is serving' : 'No runs recorded yet'}</h4>
       <p>
-        Wrap your graph with <code>ArgusWatcher(graph)</code> and run it once. Findings appear here within a
+        Attach the recorder to your compiled graph and run it once. Findings appear here within a
         second of the run finishing.
       </p>
       <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
         <button type="button" className="btn btn-primary" onClick={copy} title="Copy to clipboard">
-          <code style={{ background: 'transparent', color: 'inherit', padding: 0, fontSize: 12.5 }}>{DEMO_CMD}</code>
+          <code style={{ background: 'transparent', color: 'inherit', padding: 0, fontSize: 12.5 }}>ArgusRecorder().attach(graph)</code>
           <span style={{ opacity: 0.8, fontWeight: 500 }}>{copied ? '· copied' : '· copy'}</span>
         </button>
-        <Link href="/guide" className="btn">Attach to my graph</Link>
+        <Link href="/guide" className="btn">Setup guide</Link>
       </div>
       {serving?.runs_dir && (
         <p style={{ marginTop: 22, marginBottom: 0, fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--ink-4)', wordBreak: 'break-all' }}>

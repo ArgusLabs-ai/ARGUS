@@ -12,6 +12,7 @@ import { formatDuration } from '@/lib/workspace'
 import { fmtCost, fmtTokens } from '@/lib/run-detail'
 import { getFailureMeta, CATEGORY_CHIP } from '@/lib/failure-labels'
 import { STATUS_META, mapStatus } from '@/lib/graph-model'
+import { nodeStep } from '@/lib/run-utils'
 import JsonGutter from './JsonGutter'
 import Prose from './Prose'
 import { FixPromptBody, useFixPrompt } from './FixPrompt'
@@ -60,21 +61,38 @@ function Cat({ family, label }: { family: keyof typeof CATEGORY_CHIP; label: str
   return <span className={`chip ${CATEGORY_CHIP[family]} irow-chip`}>{family} · {label}</span>
 }
 
-function Json({ title, value }: { title: string; value: Record<string, unknown> | null }) {
+/** One line of a value that is not a keyed object: a tool's string or list result. */
+function preview(value: unknown): string {
+  if (value == null) return '—'
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? '' : 's'}`
+  const s = typeof value === 'string' ? value : JSON.stringify(value)
+  return s.length > 80 ? `${s.slice(0, 80)} …` : s
+}
+
+function Json({ title, value, hint }: { title: string; value: unknown; hint?: string }) {
   const [open, setOpen] = useState(false)
-  if (!value || !Object.keys(value).length) return null
-  const keys = Object.keys(value)
+  if (value == null || value === '') return null
+  const keys = typeof value === 'object' && !Array.isArray(value) ? Object.keys(value as object) : null
+  if (keys && !keys.length) return null
   return (
     <div className="disc-wrap">
       <button type="button" className={`disc${open ? ' open' : ''}`} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <ChevronRight className="disc-tri" />
         <span className="disc-t">{title}</span>
-        <span className="sh-n">{keys.length}</span>
-        <span className="disc-keys">{keys.slice(0, 6).join(' · ')}{keys.length > 6 ? ' …' : ''}</span>
+        {keys && <span className="sh-n">{keys.length}</span>}
+        <span className="disc-keys">{hint ?? (keys ? `${keys.slice(0, 6).join(' · ')}${keys.length > 6 ? ' …' : ''}` : preview(value))}</span>
       </button>
       {open && <div className="disc-body"><JsonGutter value={value} maxLines={120} /></div>}
     </div>
   )
+}
+
+/* Run reviewer roles (argus.review): every role but `advisory` means the step fails. */
+const REVIEW_ROLE: Record<string, { label: string; gating: boolean }> = {
+  confirms: { label: 'Confirms a rule', gating: true },
+  promoted: { label: 'Warning promoted', gating: true },
+  two_models: { label: 'Two models agree', gating: true },
+  advisory: { label: 'Advisory', gating: false },
 }
 
 function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord; onDismiss?: () => void }) {
@@ -90,6 +108,8 @@ function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord;
   const validators = step.validator_results ?? []
   const failedValidators = validators.filter((v) => !v.is_valid)
   const sc = step.semantic_check
+  const calls = step.tool_calls ?? []
+  const review = step.review ?? []
   const signalCount = toolFailures.length + semanticSignals.length + (missing.length ? 1 : 0) + mismatches.length + failedValidators.length + anomalies.length
   const sentence = lead(step)
   const src = run.node_fn_paths?.[step.node_name]
@@ -221,6 +241,35 @@ function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord;
         </Section>
       )}
 
+      {review.length > 0 && (
+        <Section title="Run reviewer" count={review.length}>
+          {review.map((r, i) => {
+            const role = REVIEW_ROLE[r.role ?? 'advisory'] ?? REVIEW_ROLE.advisory
+            return (
+              <Row key={`r${i}`} rule={role.gating ? 'var(--tool)' : 'var(--semantic)'}>
+                <span className={`chip ${role.gating ? 'chip-tool' : 'chip-semantic'} irow-chip`}>{role.label}</span>
+                {r.claim ?? r.why}
+                {r.claim && r.why && <div className="d">{r.why}</div>}
+                {r.correction && <div className="d">Should be <code>{r.correction}</code></div>}
+              </Row>
+            )
+          })}
+        </Section>
+      )}
+
+      {calls.length > 0 && (
+        <Section title="Tool calls" count={calls.length}>
+          {calls.map((c, i) => (
+            <Json
+              key={`c${i}`}
+              title={c.name ?? 'tool'}
+              value={{ input: c.input, output: c.output, ...(c.error ? { error: c.error } : {}) }}
+              hint={c.error ? `raised ${c.error}` : preview(c.output)}
+            />
+          ))}
+        </Section>
+      )}
+
       {validators.length > failedValidators.length && (
         <p className="ndet-meta">
           Passed validators: <b>{validators.filter((v) => v.is_valid).map((v) => v.validator_name).join(', ')}</b>
@@ -259,11 +308,11 @@ export default function StepInspector({
   }, [selectedNodeName])
 
   if (selectedNodeName) {
-    const step = steps.find((s) => s.node_name === selectedNodeName)
+    const step = nodeStep(steps, selectedNodeName)
     if (step) return <NodeDetail key={step.node_name} step={step} run={run} onDismiss={onDismiss} />
   }
 
-  const failed = steps.find((s) => s.status !== 'pass' && s.status !== 'skipped')
+  const failed = steps.find((s) => s.status !== 'pass' && s.status !== 'skipped' && s.status !== 'retried')
   if (!failed) return null
-  return <NodeDetail key={failed.node_name} step={failed} run={run} />
+  return <NodeDetail key={failed.node_name} step={nodeStep(steps, failed.node_name) ?? failed} run={run} />
 }

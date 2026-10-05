@@ -7,9 +7,59 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
+from argus.ledger import LedgerRow, build_ledger
 from argus.models import RunRecord
 from argus.storage import load_run
 from argus.utils.serializer import safe_deserialize
+
+
+def _rows(record: RunRecord) -> list[LedgerRow]:
+    """The run's notebook. Every replay path re-feeds a row from here.
+
+    Not ``record.steps`` directly: the ledger is the graded view of the run, so
+    it already drops the branch that never ran and folds reduced fields the way
+    the graph really merged them. Replaying off the raw steps meant replay and
+    `argus check` could disagree about what a node was handed.
+    """
+    return build_ledger(
+        record.steps, record.initial_state, record.reducer_kinds, record.state_keys
+    )
+
+
+def _row(record: RunRecord, node_name: str) -> LedgerRow:
+    rows = _rows(record)
+    row = next((r for r in rows if r.node == node_name), None)
+    if row is None:
+        raise ValueError(
+            f"Node '{node_name}' not found in run '{record.run_id}'. "
+            f"Available nodes: {[r.node for r in rows]}"
+        )
+    return row
+
+
+def _node_from_app(app: Any, node_name: str) -> Callable[[Any], Any]:
+    """The user's real node function, taken off their compiled graph.
+
+    Read, not wrapped: `attach`/`compile` are left alone and nothing is patched.
+    ponytail: `.bound` is LangGraph's own runnable for the node — swap this for
+    a public accessor if one ever lands.
+    """
+    if not hasattr(app, "invoke") and hasattr(app, "compile"):
+        # A factory that returns the builder, as the --app docs once said to.
+        app = app.compile()
+    node = (getattr(app, "nodes", None) or {}).get(node_name)
+    bound = getattr(node, "bound", None)
+    if bound is None or not hasattr(bound, "invoke"):
+        available = [n for n in (getattr(app, "nodes", None) or {}) if not n.startswith("__")]
+        raise ValueError(
+            f"The app given has no runnable node '{node_name}'. Its nodes are: {available}"
+        )
+    # The row is a dict; a dataclass / pydantic state node expects its schema
+    # object. LangGraph coerces with the node's own mapper (None for TypedDict).
+    mapper = getattr(node, "mapper", None)
+    if mapper is None:
+        return bound.invoke
+    return lambda state: bound.invoke(mapper(state))
 
 
 def _smart_merge(state: dict, partial: dict) -> dict:
@@ -50,12 +100,26 @@ def _make_llm_inv_config():
 class ReplayEngine:
     """Loads a saved run's state at a specific node and re-runs the pipeline from there.
 
-    Supports two modes:
-      1. Factory-free (preferred): uses stored node_fn_refs to import each node
-         function directly and replays via ArgusSession — no factory needed.
-      2. Factory mode (fallback): uses an app_factory callable to rebuild the
-         full LangGraph graph. Required only when node_fn_refs are missing
-         (e.g., old runs recorded before auto-capture was added).
+    **Where the code comes from is decided, not guessed (#79).** A rerun needs
+    two halves: the state, which the run file always has, and the functions,
+    which it may not. The state half is the ledger row in every mode. For the
+    code half there are exactly two sources:
+
+      1. **The caller's graph** — ``replay_live(..., app=...)`` reads the node
+         off a compiled graph the caller passes, and ``app_factory`` rebuilds
+         one. This is the path for trace runs (:class:`argus.recorder.ArgusRecorder`)
+         and the only one the pivot endorses: a fix in the user's code is what
+         gets exercised, and nothing is imported behind their back.
+      2. **References the run recorded about itself** — ``node_fn_refs``, captured
+         at record time by :class:`argus.watcher.ArgusWatcher`. Legacy wrap-path
+         runs keep working from these.
+
+    What is deliberately gone is a third: replay used to *manufacture* the
+    references it lacked, scanning the project (with an LLM) to guess where each
+    node's function lived, then importing it. That is "re-import live functions
+    as the default", which the pivot brief §5 rules out — and it failed opaquely,
+    since a wrong guess re-runs the wrong function and reports it as your node.
+    A trace with no ``--app`` is now an error pointing at ``argus check``.
     """
 
     def __init__(self, max_field_size: int = 50_000) -> None:
@@ -81,9 +145,7 @@ class ReplayEngine:
         try:
             return apply_patch(input_state, patch, create_missing=create_missing)
         except PatchError as exc:
-            raise PatchError(
-                f"cannot patch input state for node '{node_name}': {exc}"
-            ) from exc
+            raise PatchError(f"cannot patch input state for node '{node_name}': {exc}") from exc
 
     def replay_node(
         self,
@@ -112,24 +174,17 @@ class ReplayEngine:
         from argus.session import ArgusSession
 
         record = load_run(run_id)
-
-        step = next((e for e in record.steps if e.node_name == node_name), None)
-        if step is None:
-            available = [e.node_name for e in record.steps]
-            raise ValueError(
-                f"Node '{node_name}' not found in run '{run_id}'. Available nodes: {available}"
-            )
+        row = _row(record, node_name)
 
         if not record.node_fn_refs or node_name not in record.node_fn_refs:
-            # Auto-locate source files before giving up
-            record = self._auto_locate(record)
-            if not record.node_fn_refs or node_name not in record.node_fn_refs:
-                raise ValueError(
-                    f"No stored function reference for node '{node_name}'. "
-                    "Re-record the run with the latest argus to enable single-node replay."
-                )
+            raise ValueError(
+                f"No stored function reference for node '{node_name}'. This run was "
+                f"recorded as a trace, which holds state and not code — pass the graph "
+                f"it came from (`--app module:factory`) to re-run the node, or grade "
+                f"the saved run with: argus check {run_id}"
+            )
 
-        raw_state = self._patch_input(step.input_state, patch, create_missing, node_name)
+        raw_state = self._patch_input(row.input_state, patch, create_missing, node_name)
         state = safe_deserialize(raw_state, state_type)
         fp = (record.node_fn_paths or {}).get(node_name)
         fn = _import_fn(record.node_fn_refs[node_name], file_path=fp)
@@ -148,6 +203,60 @@ class ReplayEngine:
         wrapped = session.wrap(node_name, fn)
         wrapped(state)
 
+        session.finalize()
+        return session.run_id
+
+    def replay_live(
+        self,
+        run_id: str,
+        node_name: str,
+        app: Any = None,
+        state_type: type | None = None,
+        patch: dict[str, Any] | None = None,
+        create_missing: bool = False,
+    ) -> str:
+        """Re-run one node: its input from the notebook, its code from the user's app.
+
+        The two halves of a rerun come from different places on purpose. The
+        input is the ledger row — the state that node really saw, rebuilt from
+        the steps that passed, which are never re-executed. The function is
+        whatever the caller's live graph holds now, so a fix to the node is what
+        gets exercised. The row's old update stays in the old run as the
+        baseline: "last time this returned ``{}``".
+
+        A trace has no functions in it. Without an app there is nothing to run,
+        so this refuses rather than re-running a placeholder — grading a saved
+        run without a graph is ``argus check``.
+
+        Returns the new run-id. The replayed run is untouched.
+        """
+        from argus.session import ArgusSession
+
+        if app is None:
+            raise ValueError(
+                f"Replaying '{node_name}' needs the app it came from — a trace holds "
+                f"state, not code. Pass the compiled graph, or grade the saved run "
+                f"with: argus check {run_id}"
+            )
+
+        record = load_run(run_id)
+        row = _row(record, node_name)
+        fn = _node_from_app(app, node_name)
+
+        raw_state = self._patch_input(row.input_state, patch, create_missing, node_name)
+        state = safe_deserialize(raw_state, state_type)
+
+        session = ArgusSession(
+            max_field_size=self._max_field_size,
+            llm_investigation=_make_llm_inv_config(),
+        )
+        session.set_node_names([node_name])
+        session.set_edges({})
+        session.parent_run_id = record.run_id
+        session.replay_from_step = node_name
+        session.state_patch = patch or None
+
+        session.wrap(node_name, fn)(state)
         session.finalize()
         return session.run_id
 
@@ -176,33 +285,25 @@ class ReplayEngine:
             new run-id of the replay run
         """
         record = load_run(run_id)
+        rows = _rows(record)
+        row = _row(record, from_node)
 
-        # find the step for from_node
-        step = next((e for e in record.steps if e.node_name == from_node), None)
-        if step is None:
-            available = [e.node_name for e in record.steps]
-            raise ValueError(
-                f"Node '{from_node}' not found in run '{run_id}'. Available nodes: {available}"
-            )
-
-        # build frozen outputs ONLY for nodes before from_node
+        # Freeze what already passed: the rows before from_node keep the output
+        # they returned last time, so from_node is handed the state it really saw.
         frozen_map: dict[str, list[Any]] = defaultdict(list)
-        for s in record.steps:
-            if s.node_name == from_node:
+        for r in rows:
+            if r.node == from_node:
                 break
-            if s.output_dict is not None:
-                frozen_map[s.node_name].append(s.output_dict)
+            if r.update is not None:
+                frozen_map[r.node].append(r.update)
 
         # apply the optional patch to the raw recorded state, then deserialize
-        raw_state = self._patch_input(step.input_state, patch, create_missing, from_node)
+        raw_state = self._patch_input(row.input_state, patch, create_missing, from_node)
         state = safe_deserialize(raw_state, state_type)
 
-        # Try factory-free replay first, fall back to factory mode
-        if record.node_fn_refs:
-            return self._replay_direct(record, from_node, state, frozen_map, patch)
-
-        # Auto-locate source files before requiring a factory
-        record = self._auto_locate(record)
+        # A run that recorded its own function references (the watcher path)
+        # replays from them. A trace did not, and replay does not go looking:
+        # the code has to come from the caller (#79).
         if record.node_fn_refs:
             return self._replay_direct(record, from_node, state, frozen_map, patch)
 
@@ -217,30 +318,10 @@ class ReplayEngine:
             )
 
         raise ValueError(
-            "Cannot replay: this run has no stored node function references "
-            "and no app_factory was provided. Re-record the run with the "
-            "latest argus version to enable factory-free replay."
+            f"Cannot replay '{from_node}': this run was recorded as a trace, which "
+            f"holds state and not code. Pass the graph it came from "
+            f"(`--app module:factory`), or grade the saved run with: argus check {run_id}"
         )
-
-    @staticmethod
-    def _auto_locate(record: RunRecord) -> RunRecord:
-        """Attempt post-hoc source resolution and update the record."""
-        try:
-            from argus.source_locator import derive_node_fn_refs, locate_node_sources
-            from argus.storage import save_run
-        except ImportError:
-            return record
-
-        resolved = locate_node_sources(record, use_llm=True)
-        if not resolved:
-            return record
-
-        record.node_fn_paths = resolved
-        refs = derive_node_fn_refs(resolved)
-        if refs:
-            record.node_fn_refs = refs
-            save_run(record)
-        return record
 
     def _replay_direct(
         self,
@@ -381,9 +462,10 @@ class ReplayEngine:
                 "the dashboard settings."
             )
 
-        # Unwrap compiled graphs
-        if hasattr(graph, "invoke") and hasattr(graph, "graph"):
-            graph = graph.graph
+        # Unwrap compiled graphs: `.builder` on langgraph 0.2+, `.graph` on older releases
+        if hasattr(graph, "invoke"):
+            builder = getattr(graph, "builder", None)
+            graph = builder if builder is not None else getattr(graph, "graph", graph)
 
         if hasattr(graph, "nodes") and not hasattr(graph, "invoke"):
             watcher = ArgusWatcher(max_field_size=self._max_field_size, investigate=True)

@@ -12,6 +12,7 @@ import type { Finding, RunRecord } from '@/lib/types'
 import { trimReason } from '@/lib/run-detail'
 import { findingMeta } from '@/lib/failure-labels'
 import { STATUS_META, mapStatus } from '@/lib/graph-model'
+import { nodeStep } from '@/lib/run-utils'
 import Prose from './Prose'
 import FixPromptButton from './FixPrompt'
 
@@ -70,7 +71,7 @@ export default function FindingsPanel({
 
   const crit = active.filter((f) => f.severity === 'critical').length
   const warn = active.filter((f) => f.severity === 'warning').length
-  const stepOf = (n: string) => (run.steps ?? []).find((s) => s.node_name === n)
+  const stepOf = (n: string) => nodeStep(run.steps, n)
 
   /* Fold after FOLD_AT rows, keeping whole groups in their order. */
   const totalRows = groups.reduce((k, g) => k + g.rows.length, 0)

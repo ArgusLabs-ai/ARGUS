@@ -60,6 +60,25 @@ export interface ToolFailure {
     | 'timeout_adjacent'
     | 'suspiciously_fast'
     | 'latency_quality_mismatch'
+    | 'tool_error'
+    | 'incomplete_result'
+    | 'unfollowed_pagination'
+    | 'stuck_loop'
+    | 'type_drift'
+    | 'sentinel_value'
+    | 'unrendered_template'
+    | 'degenerate_repetition'
+    | 'unparseable_model_json'
+    | 'ungrounded_number'
+    | 'near_miss_identifier'
+    | 'unperformed_action'
+    | 'status_overstated'
+    | 'review_confirmed'
+    | 'review_verified'
+    | 'unknown_state_key'
+    | 'missing_output_key'
+    | 'missing_field_guess'
+    | 'subgraph_no_contribution'
   field_name: string
   severity: 'critical' | 'warning'
   evidence: string
@@ -141,6 +160,29 @@ export interface NodeEvent {
   behavior_type?: BehaviorType | null
   anomaly_signals?: AnomalySignal[]
   semantic_check?: SemanticCheckResult | null
+  /** Tool I/O recorded for this step: {name, input, output, error}. */
+  tool_calls?: ToolCall[]
+  /** Where the node routed itself with a `Command` handoff; empty otherwise. */
+  goto?: string[]
+  /** What the run reviewer (argus.review) verified on this step. */
+  review?: ReviewItem[]
+}
+
+/** One tool call the recorder kept for a step (the fat trace's tool column). */
+export interface ToolCall {
+  name?: string
+  input?: unknown
+  output?: unknown
+  error?: string | null
+}
+
+export interface ReviewItem {
+  kind?: string
+  claim?: string
+  why?: string
+  correction?: string | null
+  /** `advisory` never gates; the other three mean the step fails. */
+  role?: 'confirms' | 'promoted' | 'two_models' | 'advisory'
 }
 
 export interface PropagationLink {

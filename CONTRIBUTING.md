@@ -2,6 +2,17 @@
 
 Thanks for your interest in contributing. ARGUS is a production readiness platform for AI agent pipelines — there's a lot of surface area and we welcome help across the board.
 
+## How detection works (read this before touching the judge)
+
+Two roles. Do not mix them.
+
+1. **Rules (the cop)** — `inspector.py`, `contextual.py`, signatures, validators. These fail `argus check`. Empty `{}`, dropped fields, HTTP 4xx, a tool that raised. On a node's *own* update (`inspect_tool_outputs(..., own_output=True)`), a status word or a findings list (`errors: [...]`) is warning-only — a singular truthy `error` and tool payloads stay critical (`tests/test_own_verdict_vs_tool_response.py`).
+2. **LLM judge (the reviewer)** — `semantic_checker.py`, applied in `session.py`. Called **only** when the rules left a *soft* flag on that step — any warning-level `semantic_signals` entry, including shape warnings (`shallow_output`, `json_in_string`). If it says the flag is wrong, the flag is dropped. If it agrees, the cop's answer stands. The judge cannot originate a fail and cannot clear a hard fail.
+
+The judge does **not** walk a clean graph looking for hallucinations. That path failed healthy pipelines at random.
+
+Tests that pin this: `tests/test_judge_last.py`. Detection changes also need both matrices (`tests/test_silent_failure_matrix.py`, `tests/test_shipped_shapes_matrix.py`).
+
 ## Discord
 
 **Join the [ARGUS Discord](https://discord.gg/67XTFTDSgd) before opening a PR.**
@@ -80,7 +91,7 @@ The test suite is currently integration/smoke-style. Dedicated unit tests are ne
 Stress-testing with real-world pipeline patterns revealed areas where detection could be stronger. These are concrete improvements, not bugs — the current behavior is conservative by design, but better coverage would catch more issues in production:
 
 - **Terminal node degradation** — when the last node in a pipeline operates on degraded upstream data but produces syntactically valid output, ARGUS marks it `pass`. It correctly blames the upstream node, but the terminal node looks clean. A `degraded_input` status on terminal nodes (even without successor validation) would give clearer signal.
-- **`has_tool_failure` vs warning-severity failures** — rate limits (HTTP 429), partial batch failures, and nested errors are all detected in `tool_failures` but with `severity="warning"`. The boolean `has_tool_failure` only fires on `"critical"`. Consumers checking only the boolean miss these. Options: a separate `has_tool_warnings` flag, or promote rate limits to critical.
+- **`has_tool_failure` vs warning-severity failures** — rate limits (HTTP 429), partial batch failures, and nested errors are all detected in `tool_failures` but with `severity="warning"`. The boolean `has_tool_failure` only fires on `"critical"`; `has_tool_warnings` records the warning case. Default roll-up stays clean — use `argus check --strict warn_as_fail` in CI to escalate. (A watcher-level `ArgusConfig.strict` Literal that also flips recorded status is still planned — PRD US-1.4.)
 - **Domain-specific hedging detection** — the semantic registry catches "I apologize" and "As an AI" but misses domain hedging like "No documents available" or "Unable to retrieve data". More signatures in `data/signatures.json` for retrieval-failure and empty-result hedging would help.
 - **Subtle field drops in untyped pipelines** — if a node silently drops a field and no downstream node crashes or has type annotations, ARGUS stays quiet. This is correct (no consumer complained), but optional structural warnings for fields present in input but absent in output would catch data loss earlier.
 - **Confidence-mismatch escalation** — a node returning `confidence: 0.98` with `documents: []` gets flagged for the empty list but not for the contradiction. A cross-field coherence check (high confidence + empty/error data = suspicious) would catch nodes that lie about their certainty.
@@ -189,7 +200,8 @@ contributions**. PRs that modify them will be closed.
 ## Review & Merge Process
 
 - `master` is protected: **all changes land via pull request** — no direct pushes.
-- CI (ruff + pytest on Python 3.9/3.11/3.12) must pass.
+- CI (ruff + pytest on Python 3.9/3.11/3.12) must pass, including the
+  eat-own-cooking gate: `pytest tests/test_argus_ci_gate.py --argus`.
 - At least one **code owner** approval is required (see [CODEOWNERS](.github/CODEOWNERS)).
 - Only maintainers merge to `master`.
 

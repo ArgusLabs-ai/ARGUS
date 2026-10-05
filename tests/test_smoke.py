@@ -922,7 +922,9 @@ def test_warning_severity_signal_does_not_fail_node():
     def node(state):
         # PH-001 (placeholder_outputs, warning severity, exact_ci — fixed
         # 1.0 match confidence): literal TODO placeholder left in output.
-        return {"result": "TODO"}
+        # On a side field — `result` is a deliverable (_MAIN_LLM_OUTPUT_KEYS),
+        # where a whole-value placeholder is rightly promoted to critical.
+        return {"result": "The document covers Q3 revenue.", "notes": "TODO"}
 
     wrapped = session.wrap("summarize", node)
     wrapped({"input": "doc"})
@@ -1177,6 +1179,25 @@ def test_cmd_key_set_show_clear(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.unit
+def test_embeddings_are_off_unless_opted_in(monkeypatch):
+    """Grading must not POST node values to a third party by default."""
+    import argus.embedding_store as es
+
+    monkeypatch.delenv("ARGUS_EMBEDDINGS", raising=False)
+    assert es.embeddings_enabled() is False
+    with pytest.raises(RuntimeError, match="ARGUS_EMBEDDINGS"):
+        es._get_client()
+
+    # A signature registry that wants embeddings degrades instead of calling out.
+    import argus.registry as reg
+
+    monkeypatch.setattr(reg, "_PATTERN_EMBEDDINGS_READY", False)
+    sigs = [{"id": "X", "match_strategy": "semantic_similarity", "pattern": "p"}]
+    assert reg.semantic_similarity_active(sigs) is False
+    assert reg._match_semantic_similarity(sigs[0], "anything") == (False, 0.0)
+
+
+@pytest.mark.unit
 def test_embedding_client_uses_resolved_key(monkeypatch):
     import argus.embedding_store as es
 
@@ -1186,6 +1207,7 @@ def test_embedding_client_uses_resolved_key(monkeypatch):
         def __init__(self, api_key=None):
             captured["api_key"] = api_key
 
+    monkeypatch.setenv("ARGUS_EMBEDDINGS", "1")
     monkeypatch.setattr(es, "_client", None)
     monkeypatch.setattr("argus.user_config.resolve_openai_key", lambda: "sk-embed")
     import sys

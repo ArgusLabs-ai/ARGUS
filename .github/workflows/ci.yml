@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master, dev]
+    branches: [main, master, dev, "pivot/**"]
   pull_request:
-    branches: [main, master, dev]
+    branches: [main, master, dev, "pivot/**"]
 
 jobs:
   test:
@@ -12,6 +12,12 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.9", "3.11", "3.12"]
+        # The recorder needs langgraph 0.6+ (pyproject floor). Test the floor
+        # and the current major. 1.x requires Python 3.10+, so 3.9 gets 0.6 only.
+        langgraph: ["~=0.6.0", ">=1,<2"]
+        exclude:
+          - python-version: "3.9"
+            langgraph: ">=1,<2"
 
     steps:
       - uses: actions/checkout@v4
@@ -23,13 +29,19 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[dev]"
+          pip install -e ".[dev]" "langgraph${{ matrix.langgraph }}"
 
       - name: Lint
         run: ruff check .
 
       - name: Test
         run: pytest --tb=short
+
+      # Eat our own cooking (#56): if pytest --argus regresses, this job goes red.
+      # Narrow gate only — do not dump --argus on the full suite (intentional
+      # silent-failure tests would fail the outer gate until #54 hardens binding).
+      - name: Test pytest --argus gate
+        run: pytest tests/test_argus_ci_gate.py --argus --tb=short
 
   website:
     runs-on: ubuntu-latest

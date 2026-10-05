@@ -13,21 +13,39 @@ together.
 | `pass` | Node returned output and no layer flagged it. | default | no |
 | `fail` | A hard signal fired: a validator returned `False`, or the structural inspector found a critical problem (missing required field, `empty_output`, critical tool failure). | `session.py` node pipeline | **yes** — run becomes `silent_failure` |
 | `crashed` | Node raised an exception. | `session.py` exception path | **yes** — run becomes `crashed` |
-| `semantic_fail` | The LLM semantic judge returned `pass: false`. Only possible when `semantic_judge=True` and a provider key is configured. Validator failures and critical anomalies cannot be overridden by the judge, so a `fail` never downgrades to `semantic_fail`. | `session.py` `_apply_judge_verdict` | **yes** — run becomes `silent_failure` |
+| `semantic_fail` | A **critical anomaly** fired on a step that was otherwise `pass` — `unreadable_update` (#111) and the behavioural `BA-*` criticals. The LLM judge does **not** assign this on its own: it only reviews soft rule flags and cannot originate a fail. File grading (`argus ingest`) never calls the judge, so ingest still reaches `semantic_fail` via those critical anomalies. Validator failures and hard rule fails cannot be overridden, so a `fail` never downgrades to `semantic_fail`. | `session.py` `on_node_end` (anomalies) | **yes** — run becomes `silent_failure` |
 | `degraded_input` | Node produced syntactically valid output, but an upstream node it depends on dropped or degraded a field it consumed (`inspection.degraded_upstream_node`). The blame belongs upstream; this status marks the downstream victim. | `session.py` `_check_degraded_input` | **yes** — run becomes `silent_failure` |
 | `interrupted` | Execution was cut off before the node finished (e.g. `KeyboardInterrupt`, LangGraph interrupt). | `session.py` interrupt path | **yes** — run becomes `interrupted` |
-| `retried` | An earlier iteration of a node inside a loop, where the **final** iteration of that node passed. Not a failure: the pipeline self-corrected. | `session.py` `_mark_retried_iterations` at finalize | no — excluded from roll-up |
+| `retried` | An earlier iteration of a node inside a loop, where the **final** iteration of that node passed. Not a failure: the pipeline self-corrected. Parallel `Send` workers of one superstep are one iteration, not several. | `session.py` `_apply_loop_retries` at finalize | no — excluded from roll-up |
 | `skipped` | A node on a conditional branch that was not taken. | `session.py` `_record_skipped` | no — excluded from roll-up |
 
 Rules that follow from the table:
 
 - **`retried` only exists when the final iteration is `pass`.** If the last iteration of a
-  looped node fails, every iteration keeps its own status and each counts.
+  looped node fails, every iteration keeps its own status and each counts. The final
+  iteration is a whole superstep: if any `Send` sibling in it failed, nothing is relabelled,
+  and siblings never relabel each other.
 - **`degraded_input` never names the culprit.** Read `inspection.degraded_upstream_node` or
   `RunRecord.root_cause_chain[0]` for the origin.
-- **Warnings do not change status.** Warning-severity signals (`json_in_string`, `shallow_output`,
-  warning-level tool failures such as HTTP 429) are recorded on the event but leave it `pass`.
-  A strictness knob to escalate them is planned (see `visual/PRD.md` US-1.4).
+- **Warnings do not change status by default.** Warning-severity signals (`json_in_string`, `shallow_output`,
+  `truncated_llm_output`, warning-level tool failures such as HTTP 429, and a node's own verdict
+  shapes under `own_output=True` — status words / `errors: [...]` lists) are recorded on the event
+  but leave it `pass`. `inspection.has_tool_warnings` is `True` when any warning-severity tool
+  failure was recorded; escalate them at check time with `argus check --strict warn_as_fail`
+  (PRD US-1.4 / #73). Any warning-level entry in `inspection.semantic_signals` is a soft flag the
+  LLM judge may review — and drop, if it is a false positive (shape warnings included; F-21).
+  **Exception — the run reviewer** (`argus.review`, on when node purposes are given): a warning
+  on a step the reviewer independently verified becomes a critical `review_confirmed` tool
+  failure, and the step `fail`. A step with no rule signal at all fails (`review_verified`)
+  only when two different models verified the same item.
+- **Heuristic criticals need the run reviewer when it runs.** D4 / D6 / D12–D15, an HTTP 404
+  body and the contextual "never written" guess leave the step `pass` (kept as warnings) unless
+  the reviewer verified that step. Strict criticals are unaffected; with no reviewer, nothing
+  here changes.
+- **Critical anomaly signals do.** A critical signal on a `pass` step makes it `semantic_fail`,
+  judge or no judge. `unreadable_update` is deliberately one of these: "I could not read this
+  node's update" and "this node ran fine" must not be the same verdict, or a silent no-op ships
+  clean (#111).
 
 ## Run statuses — `RunRecord.overall_status`
 
@@ -60,8 +78,9 @@ Consequences worth knowing:
   `semantic_fail`. There is no run status named `semantic_fail`; the value is listed in
   `check.UNCLEAN_OVERALL_STATUSES` and `website/lib/types.ts` `RunStatus` for tolerance only and
   is never produced.
-- `has_tool_failure` is `True` only for **critical** tool failures. Warning-level ones do not
-  make the run `silent_failure`.
+- `has_tool_failure` is `True` only for **critical** tool failures. Warning-level ones set
+  `has_tool_warnings` instead and do not make the run `silent_failure` under the default
+  roll-up. Use `argus check --strict warn_as_fail` to fail CI on those warnings.
 - `first_failure_step` is the first node (in execution order, including retried/skipped events)
   whose status is in `{fail, crashed, semantic_fail, degraded_input}`.
 
@@ -72,6 +91,10 @@ Consequences worth knowing:
 1. `overall_status` is not `clean`, **or**
 2. any active node has status in `{fail, crashed, semantic_fail}`, or its inspection shows
    `is_silent_failure`, `has_tool_failure`, or non-empty `missing_fields`.
+
+With `strict="warn_as_fail"` (`argus check --strict warn_as_fail`), warning-severity tool
+failures (`has_tool_warnings` / rate limits, etc.) also fail the gate even when
+`overall_status` is still `clean`. Default is `critical_only`.
 
 Exit code is `1` on failure, `0` when clean.
 
@@ -91,7 +114,26 @@ walking `steps[].inspection / validator_results / anomaly_signals / semantic_che
 |---|---|---|
 | `Severity` | `critical` \| `warning` \| `info` \| `ok` | tool failures, anomaly signals, validator results |
 | `DegradationOrigin.event_type` | `node_ok` \| `degradation_onset` \| `propagation` \| `crash` | `correlator.py` — note `crash` here is an *event type*, not a status |
-| Failure types | `placeholder_detected`, `semantic_degradation`, `empty_output`, `json_in_string`, … | `inspector.py` / `registry.py` — the *reason* a status was assigned; listed in `CLAUDE.md` |
+| Failure types | `placeholder_detected`, `semantic_degradation`, `empty_output`, `unreadable_update`, `json_in_string`, … | `inspector.py` / `registry.py` — the *reason* a status was assigned; listed in `CLAUDE.md` |
+
+## What a replayed run is (#79)
+
+A rerun needs state and code. The state half is always the **ledger row** — the input
+that node really saw. The code half has exactly two legal sources, and replay never
+invents a third:
+
+| Run kind | `argus replay <id> <node>` | Where the code comes from |
+|---|---|---|
+| Trace (`ArgusRecorder`, the pivot path) | needs `--only --app module:factory` | the caller's compiled graph |
+| Trace, no `--app` given | **exit 1**, pointing at both routes | — nothing is imported |
+| Legacy wrap (`ArgusWatcher`) | works as before, header says `(legacy refs)` | `node_fn_refs` the run recorded about itself |
+
+A replayed run is a normal `RunRecord` with `parent_run_id` set, graded by the same
+pipeline as any other — replay is not a status and produces no status of its own.
+
+**Not a re-score.** Grading a saved run with no graph is `argus check <id>`, which
+rebuilds the ledger and re-runs every check. `replay` means *execute again*; if there is
+no code to execute, it says so instead of printing a verdict that looks like a rerun.
 
 ## Changing this vocabulary
 
