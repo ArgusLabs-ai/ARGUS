@@ -1,475 +1,449 @@
 'use client'
 
-import { useState } from 'react'
-import type { RunRecord, StepStatus } from '@/lib/types'
-import { formatDur } from '@/lib/run-utils'
+/* Execution graph — the Argus Instrument spec graph (05), driven by a real
+   run. Drag nodes, drag the canvas to pan, zoom at the pointer, click a node
+   or a satellite to inspect it; selecting dims everything off its path.
+   Model and layout live in lib/graph-model.ts; .g* rules in globals.css. */
+
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  Zap,
-  FileText,
-  Sparkles,
-  Database,
-  Wrench,
-  Search,
-  ShieldCheck,
-  Send,
-  Check,
-  X,
-  Minus,
-  AlertTriangle,
-  Maximize2,
-  type LucideIcon,
+  Zap, Shuffle, Database, Sparkles, Wrench, ShieldCheck, Send, Circle,
+  AlertTriangle, X as XIcon, Info, Clock, Plus, RotateCcw, type LucideIcon,
 } from 'lucide-react'
+import type { RunRecord } from '@/lib/types'
+import { displayTopology } from '@/lib/run-utils'
+import { failureChain } from '@/lib/run-detail'
+import {
+  W, NODE_H, TOOL_GAP_Y, BUS_Y, STATUS_META, EDGE_COLOR,
+  layoutGraph, edgeState, related, pathBetween, pillRowWidth,
+  type GNode, type GStatus, type NodeKind, type PillTone,
+} from '@/lib/graph-model'
+import GraphInspector from './GraphInspector'
 
-const SENTINEL = new Set(['__start__', '__end__', 'START', 'END'])
-
-const NODE_W = 168
-const NODE_H = 62
-const GAP_X = 56
-const GAP_Y = 26
-const PAD = 28
-
-type NodeKind = 'trigger' | 'transform' | 'retrieval' | 'llm' | 'tool' | 'guard' | 'output' | 'default'
-
-function inferKind(name: string): NodeKind {
-  const n = name.toLowerCase()
-  if (n.includes('ingest') || n.includes('event') || n.includes('trigger') || n.includes('webhook')) return 'trigger'
-  if (n.includes('parse') || n.includes('extract') || n.includes('transform') || n.includes('diff')) return 'transform'
-  if (n.includes('embed') || n.includes('retriev') || n.includes('vector') || n.includes('fetch')) return 'retrieval'
-  if (n.includes('llm') || n.includes('plan') || n.includes('synth') || n.includes('summar') || n.includes('review') || n.includes('analyz')) return 'llm'
-  if (n.includes('tool') || n.includes('code') || n.includes('exec') || n.includes('web') || n.includes('search')) return 'tool'
-  if (n.includes('guard') || n.includes('check') || n.includes('test') || n.includes('valid')) return 'guard'
-  if (n.includes('respond') || n.includes('output') || n.includes('send') || n.includes('publish')) return 'output'
-  return 'default'
+const KIND_ICON: Record<NodeKind, LucideIcon> = {
+  trigger: Zap, transform: Shuffle, retrieval: Database, llm: Sparkles,
+  tool: Wrench, guard: ShieldCheck, output: Send, default: Circle,
+}
+const BADGE: Partial<Record<GStatus, LucideIcon>> = {
+  fail: AlertTriangle, crashed: XIcon, semantic: AlertTriangle, degraded: Info,
+}
+const PILL_ICON: Record<PillTone, LucideIcon> = {
+  error: AlertTriangle, slow: Clock, sem: Sparkles, empty: Info, more: Plus,
 }
 
-const kindIcon: Record<NodeKind, LucideIcon> = {
-  trigger: Zap,
-  transform: FileText,
-  retrieval: Database,
-  llm: Sparkles,
-  tool: Wrench,
-  guard: ShieldCheck,
-  output: Send,
-  default: Search,
-}
+const MIN_Z = 0.3
+const MAX_Z = 2.2
+const FIT_PAD = 40
+const FULL_H = 470
+const EMBED_MAX_H = 560
 
-type MappedStatus = 'succeeded' | 'crashed' | 'failed' | 'semantic_fail' | 'degraded' | 'running' | 'skipped' | 'pending'
-
-function mapStatus(s: StepStatus | undefined): MappedStatus {
-  if (!s) return 'pending'
-  if (s === 'pass') return 'succeeded'
-  if (s === 'crashed') return 'crashed'
-  if (s === 'fail') return 'failed'
-  if (s === 'semantic_fail') return 'semantic_fail'
-  if (s === 'degraded_input') return 'degraded'
-  if (s === 'interrupted') return 'running'
-  if (s === 'skipped') return 'skipped'
-  if (s === 'retried') return 'skipped'
-  return 'succeeded'
-}
-
-interface LayoutNode {
-  id: string
-  label: string
-  kind: NodeKind
-  status: MappedStatus
-  col: number
-  row: number
-  durationMs: number | null
-}
-
-function dagLayers(names: string[], edgeMap: Record<string, string[]>) {
-  const nodeSet = new Set(names)
-  const indegree = new Map(names.map((n) => [n, 0]))
-  const outgoing = new Map<string, string[]>()
-  for (const n of names) outgoing.set(n, [])
-
-  for (const [src, tgts] of Object.entries(edgeMap ?? {})) {
-    if (!nodeSet.has(src)) continue
-    for (const tgt of tgts ?? []) {
-      if (!nodeSet.has(tgt)) continue
-      outgoing.get(src)?.push(tgt)
-      indegree.set(tgt, (indegree.get(tgt) ?? 0) + 1)
-    }
-  }
-
-  const layers: string[][] = []
-  let ready = names.filter((n) => (indegree.get(n) ?? 0) === 0)
-  const seen = new Set<string>()
-
-  while (ready.length > 0) {
-    const layer = ready.filter((n) => !seen.has(n))
-    if (layer.length === 0) break
-    layers.push(layer)
-    for (const n of layer) seen.add(n)
-    const next: string[] = []
-    for (const n of layer) {
-      for (const t of outgoing.get(n) ?? []) {
-        indegree.set(t, (indegree.get(t) ?? 0) - 1)
-        if ((indegree.get(t) ?? 0) === 0) next.push(t)
-      }
-    }
-    ready = names.filter((n) => next.includes(n))
-  }
-
-  const leftovers = names.filter((n) => !seen.has(n))
-  if (leftovers.length) layers.push(...leftovers.map((n) => [n]))
-  return layers.length ? layers : names.map((n) => [n])
-}
-
-function nodePos(col: number, row: number) {
-  return {
-    x: PAD + col * (NODE_W + GAP_X),
-    y: PAD + row * (NODE_H + GAP_Y),
-  }
-}
-
-const FAILURE_STATUSES = new Set<MappedStatus>(['crashed', 'failed', 'semantic_fail', 'degraded'])
-
-function edgeKind(from: LayoutNode, to: LayoutNode): 'failed' | 'running' | 'active' | 'idle' {
-  if (FAILURE_STATUSES.has(from.status) || FAILURE_STATUSES.has(to.status)) return 'failed'
-  if (from.status === 'running' || to.status === 'running') return 'running'
-  if (from.status === 'succeeded' && to.status === 'succeeded') return 'active'
-  return 'idle'
-}
-
-const edgeStroke: Record<string, string> = {
-  failed: '#ef4444',
-  running: '#6366f1',
-  active: 'rgba(99,102,241,0.45)',
-  idle: 'rgba(255,255,255,0.08)',
-}
-
-const statusStyles: Record<MappedStatus, string> = {
-  succeeded:     'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.15)]',
-  crashed:       'border-[rgba(239,68,68,0.6)] bg-[rgba(239,68,68,0.07)]',
-  failed:        'border-[rgba(234,179,8,0.6)] bg-[rgba(234,179,8,0.07)]',
-  semantic_fail: 'border-[rgba(168,85,247,0.6)] bg-[rgba(168,85,247,0.07)]',
-  degraded:      'border-[rgba(249,115,22,0.6)] bg-[rgba(249,115,22,0.07)]',
-  running:       'border-[rgba(99,102,241,0.6)] bg-[rgba(99,102,241,0.06)]',
-  skipped:       'border-[rgba(255,255,255,0.06)] border-dashed bg-[rgba(255,255,255,0.02)] opacity-55',
-  pending:       'border-[rgba(255,255,255,0.05)] border-dashed bg-[rgba(255,255,255,0.015)] opacity-55',
-}
-
-// Color constants per status — reused by glyph, icon bg, and glow
-const STATUS_COLOR: Record<MappedStatus, string> = {
-  succeeded:     '#22c55e',
-  crashed:       '#ef4444',
-  failed:        '#eab308',
-  semantic_fail: '#a855f7',
-  degraded:      '#f97316',
-  running:       '#6366f1',
-  skipped:       '#6b7280',
-  pending:       '#6b7280',
-}
-
-function StatusGlyph({ status }: { status: MappedStatus }) {
-  if (status === 'succeeded')
-    return <Check className="h-3 w-3" style={{ color: STATUS_COLOR.succeeded }} strokeWidth={2.5} />
-  if (status === 'crashed')
-    return <X className="h-3 w-3" style={{ color: STATUS_COLOR.crashed }} strokeWidth={2.5} />
-  if (status === 'failed')
-    return <AlertTriangle className="h-3 w-3" style={{ color: STATUS_COLOR.failed }} strokeWidth={2.5} />
-  if (status === 'semantic_fail')
-    return <AlertTriangle className="h-3 w-3" style={{ color: STATUS_COLOR.semantic_fail }} strokeWidth={2.5} />
-  if (status === 'degraded')
-    return <AlertTriangle className="h-3 w-3" style={{ color: STATUS_COLOR.degraded }} strokeWidth={2.5} />
-  if (status === 'running')
-    return <AlertTriangle className="h-3 w-3 animate-pulse" style={{ color: STATUS_COLOR.running }} strokeWidth={2.5} />
-  return <Minus className="h-3 w-3 text-[#6b7280]" strokeWidth={2.5} />
-}
-
-function NodeCard({
-  node,
-  selected,
-  onSelect,
-}: {
-  node: LayoutNode
-  selected: boolean
-  onSelect: (id: string) => void
-}) {
-  const Icon = kindIcon[node.kind]
-  const { x, y } = nodePos(node.col, node.row)
-
-  const c = STATUS_COLOR[node.status]
-  const isError = FAILURE_STATUSES.has(node.status)
-  const glowStyle = isError
-    ? { boxShadow: `0 0 0 1px ${c}, 0 0 22px -4px ${c}88` }
-    : node.status === 'running'
-      ? { boxShadow: '0 0 18px -4px rgba(99,102,241,0.6)' }
-      : undefined
-
-  return (
-    <button
-      onClick={() => onSelect(node.id)}
-      style={{ left: x, top: y, width: NODE_W, height: NODE_H, ...glowStyle }}
-      className={[
-        'absolute flex items-center gap-2.5 rounded-lg border px-3 text-left transition-all',
-        statusStyles[node.status],
-        selected ? 'ring-2 ring-[#6366f1] ring-offset-2 ring-offset-[#0d0e12]' : '',
-      ].join(' ')}
-    >
-      <span
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
-        style={{
-          background: isError
-            ? `${c}26`
-            : node.status === 'running'
-              ? 'rgba(99,102,241,0.15)'
-              : 'rgba(255,255,255,0.06)',
-          color: isError
-            ? c
-            : node.status === 'running'
-              ? '#6366f1'
-              : '#e5e7eb',
-        }}
-      >
-        <Icon className="h-4 w-4" />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium text-[#e5e7eb]">
-          {node.label}
-        </span>
-        <span className="mt-0.5 flex items-center gap-1 font-mono text-[11px] tabular-nums text-[#6b7280]">
-          <StatusGlyph status={node.status} />
-          {node.durationMs != null ? formatDur(node.durationMs) : node.status === 'pending' ? 'queued' : '—'}
-        </span>
-      </span>
-    </button>
-  )
-}
-
-function Legend() {
-  const items = [
-    { label: 'Succeeded', color: STATUS_COLOR.succeeded },
-    { label: 'Crashed', color: STATUS_COLOR.crashed },
-    { label: 'Silent Fail', color: STATUS_COLOR.failed },
-    { label: 'Semantic', color: STATUS_COLOR.semantic_fail },
-    { label: 'Degraded', color: STATUS_COLOR.degraded },
-    { label: 'Skipped', color: STATUS_COLOR.skipped },
-  ]
-  return (
-    <div className="hidden items-center gap-3 md:flex">
-      {items.map((i) => (
-        <span key={i.label} className="flex items-center gap-1.5 text-[11px] text-[#6b7280]">
-          <span className="h-2 w-2 rounded-full" style={{ background: i.color }} />
-          {i.label}
-        </span>
-      ))}
-    </div>
-  )
-}
+type Sel = { node: string; pill: number | null } | null
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export default function ExecutionGraph({
-  run,
-  onViewFull,
-  onSelectNode,
+  run, onViewFull, onSelectNode, flush = false, selectedNode = null,
 }: {
   run: RunRecord
   onViewFull?: () => void
-  onSelectNode?: (nodeName: string | null) => void
+  /** Open the full step detail for a node (the inspector's "Step details"). */
+  onSelectNode?: (n: string) => void
+  /** Embedded in a scrolling page: wheel-zoom needs ⌘/ctrl, height fits content. */
+  flush?: boolean
+  selectedNode?: string | null
 }) {
-  const [selectedNode, setSelectedNode] = useState<string | null>(null)
+  const topo = useMemo(() => displayTopology(run.graph_node_names, run.graph_edge_map), [run])
+  const edgeMap = topo.edges
+  const initial = useMemo(() => layoutGraph(run, topo.nodes, edgeMap), [run, topo, edgeMap])
 
-  const names = (run.graph_node_names ?? []).filter((n) => !n.startsWith('__') && !SENTINEL.has(n))
-  const stepMap = new Map((run.steps ?? []).map((s) => [s.node_name, s]))
-  const layers = dagLayers(names, run.graph_edge_map ?? {})
+  /* The blame path, origin → where it surfaced, through every hop between. */
+  const prop = useMemo(() => {
+    const chain = failureChain(run)
+    if (chain.length < 2) return chain
+    const out: string[] = [chain[0]]
+    for (let i = 1; i < chain.length; i++) out.push(...pathBetween(edgeMap, chain[i - 1], chain[i]).slice(1))
+    return out
+  }, [run, edgeMap])
 
-  const firstFailureIdx = run.first_failure_step
-    ? (run.steps ?? []).findIndex((s) => s.node_name === run.first_failure_step)
-    : -1
+  const [nodes, setNodes] = useState<GNode[]>(initial)
+  useEffect(() => setNodes(initial), [initial])
+  const byId = useMemo(() => Object.fromEntries(nodes.map((n) => [n.id, n])), [nodes])
 
-  const layoutNodes: LayoutNode[] = []
-  const byId = new Map<string, LayoutNode>()
+  const [showTools, setShowTools] = useState(true)
+  const [view, setView] = useState({ s: 1, x: 0, y: 0 })
+  const scale = view.s
+  const [height, setHeight] = useState(flush ? 300 : FULL_H)
+  const [panning, setPanning] = useState(false)
+  const [sel, setSel] = useState<Sel>(null)
+  const touched = useRef(false)
 
-  for (let col = 0; col < layers.length; col++) {
-    const layer = layers[col]
-    for (let row = 0; row < layer.length; row++) {
-      const name = layer[row]
-      const step = stepMap.get(name)
-      let status = mapStatus(step?.status)
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const nodeEls = useRef(new Map<string, HTMLDivElement>())
+  const rowEls = useRef(new Map<string, HTMLDivElement>())
 
-      if (step && step.status === 'pass' && firstFailureIdx >= 0 && step.step_index > firstFailureIdx && run.overall_status !== 'clean') {
-        status = 'succeeded'
-      }
-      if (!step && firstFailureIdx >= 0) {
-        status = 'skipped'
-      }
+  /* Measured geometry: node heights, satellite centres and row widths,
+     relative to the node — positions change on drag, these do not. */
+  const [geo, setGeo] = useState<{ h: Record<string, number>; centers: Record<string, number[]>; rowW: Record<string, number> }>(
+    { h: {}, centers: {}, rowW: {} },
+  )
+  useLayoutEffect(() => {
+    const h: Record<string, number> = {}
+    const centers: Record<string, number[]> = {}
+    const rowW: Record<string, number> = {}
+    nodeEls.current.forEach((el, id) => { h[id] = el.offsetHeight })
+    rowEls.current.forEach((el, id) => {
+      rowW[id] = el.offsetWidth
+      centers[id] = Array.from(el.children).map((c) => (c as HTMLElement).offsetLeft + (c as HTMLElement).offsetWidth / 2)
+    })
+    setGeo({ h, centers, rowW })
+  }, [initial, showTools])
+  const hOf = useCallback((id: string) => geo.h[id] || NODE_H, [geo])
 
-      const node: LayoutNode = {
-        id: name,
-        label: name.length > 18 ? name.slice(0, 17) + '…' : name,
-        kind: inferKind(name),
-        status,
-        col,
-        row,
-        durationMs: step?.duration_ms ?? null,
-      }
-      layoutNodes.push(node)
-      byId.set(name, node)
+  /* ── framing ── */
+  const frame = useCallback(() => {
+    const el = canvasRef.current
+    if (!el || !nodes.length) return
+    const cw = el.clientWidth
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const n of nodes) {
+      const tools = showTools && n.pills.length
+      const w = Math.max(W, tools ? (geo.rowW[n.id] ?? pillRowWidth(n.pills)) : 0)
+      minX = Math.min(minX, n.x)
+      minY = Math.min(minY, n.y - (n.isRoot ? 22 : 0))
+      maxX = Math.max(maxX, n.x + w)
+      maxY = Math.max(maxY, n.y + hOf(n.id) + (tools ? TOOL_GAP_Y + 25 : 0))
     }
+    const bw = maxX - minX
+    const bh = maxY - minY
+    const sx = (cw - FIT_PAD * 2) / bw
+    const ch = flush ? Math.round(clamp(Math.min(1, sx) * bh + FIT_PAD * 2, 240, EMBED_MAX_H)) : el.clientHeight
+    const s = clamp(Math.min(1, sx, (ch - FIT_PAD * 2) / bh), MIN_Z, 1)
+    setHeight(ch)
+    setView({ s, x: (cw - bw * s) / 2 - minX * s, y: (ch - bh * s) / 2 - minY * s })
+  }, [nodes, showTools, geo, hOf, flush])
+
+  /* Re-frame on content or width change until the user takes the wheel. */
+  useEffect(() => { touched.current = false }, [initial])
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el) return
+    if (!touched.current) frame()
+    const ro = new ResizeObserver(() => { if (!touched.current) frame() })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [frame])
+
+  /* Zoom about a canvas point; `next` maps the current scale to the new one. */
+  const zoomAt = useCallback((px: number, py: number, next: (s: number) => number) => {
+    touched.current = true
+    setView((v) => {
+      const z = clamp(next(v.s), MIN_Z, MAX_Z)
+      return { s: z, x: px - (px - v.x) * (z / v.s), y: py - (py - v.y) * (z / v.s) }
+    })
+  }, [])
+
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      /* Embedded, the page owns scroll; zoom needs a modifier (trackpad
+         pinch arrives as ctrl+wheel). */
+      if (flush && !(e.ctrlKey || e.metaKey)) return
+      e.preventDefault()
+      const r = el.getBoundingClientRect()
+      zoomAt(e.clientX - r.left, e.clientY - r.top, (s) => s * (e.deltaY > 0 ? 0.9 : 1.1))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [flush, zoomAt])
+
+  /* ── selection ── */
+  useEffect(() => { if (selectedNode && byId[selectedNode]) setSel({ node: selectedNode, pill: null }) }, [selectedNode]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!sel) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSel(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [sel])
+  const keep = useMemo(() => (sel ? related(sel.node, edgeMap) : null), [sel, edgeMap])
+  const selNode = sel ? byId[sel.node] ?? null : null
+  const selPill = selNode && sel?.pill != null ? selNode.pills[sel.pill] ?? null : null
+
+  /* ── pointer: pan + drag, both with capture so a release outside the
+        canvas still ends the gesture ── */
+  const onCanvasDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('.gnode, .gtool, .ginsp')) return
+    const sx = e.clientX, sy = e.clientY, ox = view.x, oy = view.y
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+    setPanning(true)
+    const move = (ev: PointerEvent) => { touched.current = true; setView((v) => ({ ...v, x: ox + ev.clientX - sx, y: oy + ev.clientY - sy })) }
+    const up = (ev: PointerEvent) => {
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerup', up)
+      el.removeEventListener('pointercancel', up)
+      setPanning(false)
+      if (Math.abs(ev.clientX - sx) < 3 && Math.abs(ev.clientY - sy) < 3) setSel(null)
+    }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('pointercancel', up)
   }
 
-  const edges: { from: string; to: string }[] = []
-  for (const [src, tgts] of Object.entries(run.graph_edge_map ?? {})) {
-    if (!byId.has(src)) continue
-    for (const tgt of tgts ?? []) {
-      if (!byId.has(tgt)) continue
-      edges.push({ from: src, to: tgt })
+  const onNodeDown = (e: React.PointerEvent<HTMLDivElement>, id: string) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    const n = byId[id]
+    if (!n) return
+    const el = e.currentTarget
+    const sx = e.clientX, sy = e.clientY, ox = n.x, oy = n.y
+    let moved = false
+    el.setPointerCapture(e.pointerId)
+    el.classList.add('dragging')
+    const move = (ev: PointerEvent) => {
+      const dx = (ev.clientX - sx) / scale
+      const dy = (ev.clientY - sy) / scale
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true
+      if (!moved) return
+      touched.current = true
+      setNodes((prev) => prev.map((p) => (p.id === id ? { ...p, x: Math.round(ox + dx), y: Math.round(oy + dy) } : p)))
     }
+    const up = () => {
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerup', up)
+      el.removeEventListener('pointercancel', up)
+      el.classList.remove('dragging')
+      if (!moved) setSel({ node: id, pill: null })
+    }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('pointercancel', up)
   }
 
-  const maxCol = Math.max(0, ...layoutNodes.map((n) => n.col))
-  const maxRow = Math.max(0, ...layoutNodes.map((n) => n.row))
-  const canvasW = PAD * 2 + (maxCol + 1) * NODE_W + maxCol * GAP_X
-  const canvasH = PAD * 2 + (maxRow + 1) * NODE_H + maxRow * GAP_Y
+  const onNodeKey = (e: React.KeyboardEvent, id: string) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSel({ node: id, pill: null }); return }
+    const d = e.shiftKey ? 24 : 8
+    const mv: Record<string, [number, number]> = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] }
+    const m = mv[e.key]
+    if (!m) return
+    e.preventDefault()
+    touched.current = true
+    setNodes((prev) => prev.map((p) => (p.id === id ? { ...p, x: p.x + m[0], y: p.y + m[1] } : p)))
+  }
+
+  /* ── edges + buses ── */
+  const svg = useMemo(() => {
+    const edges: { d: string; head: string; color: string; width: number; cls: string }[] = []
+    for (const [from, tos] of Object.entries(edgeMap)) {
+      for (const to of tos) {
+        const a = byId[from]
+        const b = byId[to]
+        if (!a || !b) continue
+        const st = edgeState(a.status, b.status)
+        const ai = prop.indexOf(a.id)
+        const isProp = ai > -1 && prop[ai + 1] === b.id
+        const sx = a.x + W
+        const sy = a.y + hOf(a.id) / 2
+        const ex = b.x
+        const ey = b.y + hOf(b.id) / 2
+        /* A loop back to an earlier column swings under both nodes. */
+        const back = ex <= sx
+        const dx = back ? 90 : Math.max(36, Math.abs(ex - sx) * 0.5)
+        const dy = back ? Math.max(hOf(a.id), hOf(b.id)) + 50 : 0
+        edges.push({
+          d: `M${sx},${sy} C${sx + dx},${sy + dy} ${ex - dx},${ey + dy} ${ex},${ey}`,
+          head: `M${ex - 6},${ey - 3.6} L${ex},${ey} L${ex - 6},${ey + 3.6} Z`,
+          color: isProp && st === 'pass' ? 'var(--tool)' : EDGE_COLOR[st],
+          width: st === 'pass' && !isProp ? 1.2 : st === 'skipped' ? 1.2 : 1.9,
+          cls: st === 'running' ? 'e-live' : isProp ? 'e-prop' : '',
+        })
+      }
+    }
+
+    const buses: { d: string; color: string; width: number; dash?: string }[] = []
+    if (showTools) {
+      for (const n of nodes) {
+        const centers = geo.centers[n.id]
+        if (!n.pills.length || !centers?.length) continue
+        const top = n.y + hOf(n.id)
+        const busY = top + BUS_Y
+        const rowY = top + TOOL_GAP_Y
+        const err = n.pills.some((p) => p.tone === 'error')
+        const color = err ? 'var(--tool)' : 'var(--edge-pass)'
+        const dash = err ? undefined : '3 3'
+        const width = err ? 1.5 : 1
+        const mid = n.x + W / 2
+        const xs = centers.map((c) => n.x + c)
+        buses.push({ d: `M${mid},${top} L${mid},${busY}`, color, width, dash })
+        buses.push({ d: `M${Math.min(mid, ...xs)},${busY} L${Math.max(mid, ...xs)},${busY}`, color, width, dash })
+        xs.forEach((x, i) => {
+          const pe = n.pills[i]?.tone === 'error'
+          buses.push({ d: `M${x},${busY} L${x},${rowY}`, color: pe ? 'var(--tool)' : color, width, dash: pe ? undefined : dash })
+        })
+      }
+    }
+    return { edges, buses }
+  }, [edgeMap, byId, nodes, prop, hOf, geo, showTools])
+
+  const extent = useMemo(() => ({
+    w: Math.max(0, ...nodes.map((n) => n.x + Math.max(W, geo.rowW[n.id] ?? 0) + 120)),
+    h: Math.max(0, ...nodes.map((n) => n.y + hOf(n.id) + TOOL_GAP_Y + 160)),
+  }), [nodes, geo, hOf])
+
+  const present = useMemo(() => {
+    const s = new Set<GStatus>(['pass'])
+    nodes.forEach((n) => s.add(n.status))
+    return (['pass', 'crashed', 'fail', 'semantic', 'degraded', 'running', 'skipped'] as GStatus[]).filter((x) => s.has(x))
+  }, [nodes])
+  const tones = useMemo(() => new Set(nodes.flatMap((n) => n.pills.map((p) => p.tone))), [nodes])
+  const signalCount = nodes.reduce((k, n) => k + n.pills.filter((p) => p.tone !== 'more').length, 0)
 
   return (
-    <div
-      className="overflow-hidden rounded-xl"
-      style={{ background: 'rgba(13,14,18,0.6)', border: '1px solid rgba(255,255,255,0.06)' }}
-    >
-      {/* Header */}
-      <div
-        className="flex items-center justify-between px-4 py-2.5"
-        style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
-      >
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-[#e5e7eb]">Execution Graph</h2>
-          <span
-            className="rounded-full px-2 py-0.5 font-mono text-[11px] text-[#6b7280]"
-            style={{ background: 'rgba(255,255,255,0.05)' }}
-          >
-            {layoutNodes.length} nodes
-          </span>
-        </div>
-        <div className="flex items-center gap-3">
-          <Legend />
-          {onViewFull && (
-            <button
-              onClick={onViewFull}
-              className="rounded-md p-1.5 text-[#6b7280] transition-colors hover:text-[#e5e7eb]"
-              style={{ background: 'transparent' }}
-            >
-              <Maximize2 className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Graph area */}
-      <div className="overflow-x-auto" style={{ background: 'rgba(0,0,0,0.2)' }}>
-        <div style={{ padding: 16 }}>
-          <div
-            className="relative mx-auto"
-            style={{ width: canvasW, height: Math.max(canvasH, 280), minWidth: '100%' }}
-          >
-            {/* Dotted grid background */}
-            <div
-              className="pointer-events-none absolute inset-0"
-              style={{
-                opacity: 0.4,
-                backgroundImage: 'radial-gradient(circle at center, rgba(255,255,255,0.12) 1px, transparent 1px)',
-                backgroundSize: '22px 22px',
-              }}
+    <div className="gwrap">
+      <div className="gbar">
+        <span className="gbar-title">Execution graph</span>
+        <span className="chip chip-idle gbar-count">{nodes.length} nodes</span>
+        <span className="gbar-sp" />
+        {signalCount > 0 && (
+          <label className="gbar-tgl">
+            <span
+              className={`switch${showTools ? ' on' : ''}`}
+              role="switch"
+              aria-checked={showTools}
+              tabIndex={0}
+              onClick={() => setShowTools((v) => !v)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setShowTools((v) => !v) } }}
             />
-
-            {/* Edges — SVG bezier curves */}
-            <svg className="pointer-events-none absolute inset-0" width={canvasW} height={canvasH}>
-              <defs>
-                {(['active', 'failed', 'running', 'idle'] as const).map((kind) => (
-                  <marker
-                    key={kind}
-                    id={`arrow-${kind}`}
-                    markerWidth="6"
-                    markerHeight="6"
-                    refX="5"
-                    refY="3"
-                    orient="auto"
-                  >
-                    <path d="M0,0 L6,3 L0,6 Z" fill={edgeStroke[kind]} />
-                  </marker>
-                ))}
-              </defs>
-              {edges.map((e) => {
-                const from = byId.get(e.from)
-                const to = byId.get(e.to)
-                if (!from || !to) return null
-                const fp = nodePos(from.col, from.row)
-                const tp = nodePos(to.col, to.row)
-                const sx = fp.x + NODE_W
-                const sy = fp.y + NODE_H / 2
-                const tx = tp.x
-                const ty = tp.y + NODE_H / 2
-                const colGap = to.col - from.col
-                let d: string
-                if (colGap > 1) {
-                  // ponytail: check if any node sits in intermediate columns near the curve path
-                  // and deflect control points to route around them
-                  const midY = (sy + ty) / 2
-                  let hasObstacle = false
-                  for (const n of layoutNodes) {
-                    if (n.col > from.col && n.col < to.col) {
-                      const np = nodePos(n.col, n.row)
-                      const nCenterY = np.y + NODE_H / 2
-                      if (Math.abs(nCenterY - midY) < NODE_H) {
-                        hasObstacle = true
-                        break
-                      }
-                    }
-                  }
-                  if (hasObstacle) {
-                    // Route below all nodes to avoid overlap
-                    const detourY = canvasH - PAD / 2
-                    d = `M ${sx},${sy} C ${sx + 40},${detourY} ${tx - 40},${detourY} ${tx},${ty}`
-                  } else {
-                    const dx = Math.max(28, (tx - sx) / 2)
-                    d = `M ${sx},${sy} C ${sx + dx},${sy} ${tx - dx},${ty} ${tx},${ty}`
-                  }
-                } else {
-                  const dx = Math.max(28, (tx - sx) / 2)
-                  d = `M ${sx},${sy} C ${sx + dx},${sy} ${tx - dx},${ty} ${tx},${ty}`
-                }
-                const kind = edgeKind(from, to)
-                return (
-                  <path
-                    key={`${e.from}-${e.to}`}
-                    d={d}
-                    fill="none"
-                    stroke={edgeStroke[kind]}
-                    strokeWidth={kind === 'idle' ? 1 : 1.75}
-                    strokeDasharray={kind === 'running' ? '5 4' : kind === 'idle' ? '3 4' : undefined}
-                    markerEnd={`url(#arrow-${kind})`}
-                    className={kind === 'running' ? 'animate-[dash_1s_linear_infinite]' : undefined}
-                  />
-                )
-              })}
-            </svg>
-
-            {/* Nodes — absolutely positioned */}
-            {layoutNodes.map((n) => (
-              <NodeCard
-                key={n.id}
-                node={n}
-                selected={selectedNode === n.id}
-                onSelect={(id) => {
-                  setSelectedNode((p) => {
-                    const next = p === id ? null : id
-                    onSelectNode?.(next)
-                    return next
-                  })
-                }}
-              />
-            ))}
-          </div>
+            Signals
+          </label>
+        )}
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => { touched.current = false; setNodes(initial); setSel(null) }}
+        >
+          <RotateCcw />Re-layout
+        </button>
+        <div className="gzoom">
+          <button type="button" aria-label="Zoom out" onClick={() => { const el = canvasRef.current; if (el) zoomAt(el.clientWidth / 2, el.clientHeight / 2, (s) => s / 1.18) }}>−</button>
+          <span className="gzoom-val">{Math.round(scale * 100)}%</span>
+          <button type="button" aria-label="Zoom in" onClick={() => { const el = canvasRef.current; if (el) zoomAt(el.clientWidth / 2, el.clientHeight / 2, (s) => s * 1.18) }}>+</button>
+          <button type="button" aria-label="Fit to view" className="gzoom-fit" onClick={() => { touched.current = false; frame() }}>FIT</button>
         </div>
+        {onViewFull && <button type="button" className="btn btn-sm btn-ghost" onClick={onViewFull}>Full view</button>}
       </div>
 
-      {/* Scrollbar track */}
       <div
-        className="h-2"
-        style={{ background: 'rgba(255,255,255,0.02)', borderTop: '1px solid rgba(255,255,255,0.04)' }}
-      />
+        ref={canvasRef}
+        className={`gcanvas${panning ? ' panning' : ''}`}
+        /* The inspector needs room; a short embedded canvas grows while it is open. */
+        style={{ height: selNode ? Math.max(height, 420) : height }}
+        onPointerDown={onCanvasDown}
+      >
+        <span className="gtick tl" /><span className="gtick tr" /><span className="gtick bl" /><span className="gtick br" />
+
+        <div className="gworld" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${scale})` }}>
+          <svg width={extent.w} height={extent.h} className="gedges">
+            {svg.edges.map((p, i) => (
+              <g key={i}>
+                <path d={p.d} fill="none" stroke={p.color} strokeWidth={p.width} className={p.cls} />
+                <path d={p.head} fill={p.color} />
+              </g>
+            ))}
+            {svg.buses.map((b, i) => (
+              <path key={`b${i}`} d={b.d} fill="none" stroke={b.color} strokeWidth={b.width} strokeDasharray={b.dash} />
+            ))}
+          </svg>
+
+          {nodes.map((n) => {
+            const m = STATUS_META[n.status]
+            const Icon = KIND_ICON[n.kind]
+            const Badge = BADGE[n.status]
+            const dim = keep ? !keep.has(n.id) : false
+            return (
+              <div key={n.id}>
+                <div
+                  ref={(el) => { if (el) nodeEls.current.set(n.id, el); else nodeEls.current.delete(n.id) }}
+                  className={`gnode ${m.cls}${n.isRoot ? ' rootcause' : ''}${sel?.node === n.id ? ' selected' : ''}${dim ? ' dimmed' : ''}`}
+                  style={{ transform: `translate3d(${n.x}px, ${n.y}px, 0)` }}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${n.id}, ${m.label}${n.ms != null ? `, ${n.ms} milliseconds` : ''}${n.isRoot ? ', root cause' : ''}`}
+                  onPointerDown={(e) => onNodeDown(e, n.id)}
+                  onKeyDown={(e) => onNodeKey(e, n.id)}
+                >
+                  {n.isRoot && <span className="gnode-tab">ROOT CAUSE</span>}
+                  <div className="gnode-top">
+                    <span className="gnode-ico"><Icon /></span>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="gnode-name">{n.id}</div>
+                      <div className="gnode-sub">
+                        <span style={{ color: m.color }}>●</span>
+                        {n.status === 'skipped' ? 'not reached'
+                          : n.status === 'crashed' ? 'raised'
+                          : n.status === 'running' ? 'paused'
+                          : `${(n.ms ?? 0).toLocaleString()} ms`}
+                        {n.pills.length > 0 && <span className="gnode-sig">· {n.pills.reduce((k, p) => k + p.signals.length, 0)} sig</span>}
+                      </div>
+                    </div>
+                  </div>
+                  {Badge && <span className="gnode-badge" style={{ background: m.color }}><Badge /></span>}
+                </div>
+
+                {showTools && n.pills.length > 0 && (
+                  <div
+                    ref={(el) => { if (el) rowEls.current.set(n.id, el); else rowEls.current.delete(n.id) }}
+                    className={`gtools${dim ? ' dimmed' : ''}`}
+                    style={{ transform: `translate3d(${n.x}px, ${n.y + hOf(n.id) + TOOL_GAP_Y}px, 0)` }}
+                  >
+                    {n.pills.map((p, i) => {
+                      const PIcon = PILL_ICON[p.tone]
+                      return (
+                        <span
+                          key={i}
+                          className={`gtool t-${p.tone}${sel?.node === n.id && sel.pill === i ? ' selected' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          title={p.field || undefined}
+                          aria-label={`${p.field || p.id}, ${p.tag}`}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); setSel({ node: n.id, pill: i }) }}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSel({ node: n.id, pill: i }) } }}
+                        >
+                          <PIcon className="gtool-ico" />
+                          {p.id}
+                          {p.tone !== 'more' && <span className="gtool-kind">·{p.tag}</span>}
+                        </span>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {selNode && (
+          <GraphInspector
+            run={run}
+            node={selNode}
+            pill={selPill}
+            prop={prop}
+            onClose={() => setSel(null)}
+            onOpenDetails={onSelectNode ? () => onSelectNode(selNode.id) : undefined}
+          />
+        )}
+      </div>
+
+      <div className="glegend">
+        {present.map((s) => (
+          <span key={s} className="glegend-i"><span className={`lg-key lg-${s}`} />{STATUS_META[s].label}</span>
+        ))}
+        {tones.has('error') && <span className="glegend-i"><span className="lg-pill lg-t-error" />signal · critical</span>}
+        {tones.has('sem') && <span className="glegend-i"><span className="lg-pill lg-t-sem" />signal · semantic</span>}
+        {tones.has('slow') && <span className="glegend-i"><span className="lg-pill lg-t-slow" />signal · warning</span>}
+        {tones.has('empty') && <span className="glegend-i"><span className="lg-pill lg-t-empty" />signal · coherence</span>}
+        <span className="glegend-hint" title={`Drag nodes · drag canvas to pan · ${flush ? '⌘ + scroll' : 'scroll'} to zoom`}>{flush ? '⌘ + scroll to zoom' : 'Scroll to zoom'}</span>
+      </div>
     </div>
   )
 }

@@ -189,15 +189,27 @@ def _event_findings(event: NodeEvent) -> list[Finding]:
     if insp is not None:
         for f in insp.missing_fields:
             who = f"`{origin}`" if origin else f"`{name}`"
+            # The contextual layer and the crash walk both write a fuller
+            # sentence onto the inspection — it names the *reader* that needed
+            # the field, which is the half of the story this generic line
+            # cannot reconstruct. Prefer it when it is about this field.
+            authored = (insp.message or "").strip()
+            reason = (
+                authored
+                if authored.startswith(f"Field `{f}`")
+                else f"Field `{f}` required downstream was not set by {who}."
+            )
             out.append(
                 _mk(
                     node=name,
                     type_="missing_field",
                     severity="critical",
-                    reason=f"Field `{f}` required downstream was not set by {who}.",
+                    reason=reason,
                     source="heuristic",
                     field_path=f,
-                    origin_node=origin,
+                    # The finding is filed *on* the origin, so when no separate
+                    # upstream node is implicated this node is the origin.
+                    origin_node=origin or name,
                 )
             )
         for m in insp.type_mismatches:
@@ -281,14 +293,40 @@ def _event_findings(event: NodeEvent) -> list[Finding]:
 
     sc = event.semantic_check
     if sc is not None and sc.evaluated and not sc.passed:
+        # The judge's opinion is critical only when it moved the status.
+        # It no longer originates a fail, so this is almost always a warning
+        # kept so `argus show` can display the review.
+        stands = event.status == "semantic_fail"
         out.append(
             _mk(
                 node=name,
                 type_="semantic_fail",
-                severity="critical",
-                reason=f"LLM judge failed `{name}`: {sc.reason}",
+                severity="critical" if stands else "warning",
+                reason=(
+                    f"LLM judge failed `{name}`: {sc.reason}"
+                    if stands
+                    else f"LLM judge doubted `{name}` (no rule agreed; not gating): {sc.reason}"
+                ),
                 source="llm",
                 confidence=sc.confidence,
+            )
+        )
+
+    for item in event.review:
+        role = item.get("role", "advisory")
+        lead = {
+            "promoted": "a rule warned and the run reviewer verified it",
+            "confirms": "the run reviewer verified it too",
+            "two_models": "two models verified it independently; no rule flagged this step",
+        }.get(role, "advisory, not gating; no rule flagged this step")
+        fix = f" Should be: {item['correction']}." if item.get("correction") else ""
+        out.append(
+            _mk(
+                node=name,
+                type_=f"review_{item.get('kind') or 'finding'}",
+                severity="critical" if role in ("promoted", "two_models") else "warning",
+                reason=f"Node `{name}` ({lead}): {item.get('why') or item.get('claim')}{fix}",
+                source="llm",
             )
         )
     return out

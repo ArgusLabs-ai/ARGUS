@@ -204,7 +204,7 @@ def _llm_generalize(
     try:
         from dotenv import load_dotenv  # noqa: PLC0415
 
-        load_dotenv(override=True)
+        load_dotenv()
     except ImportError:
         pass
 

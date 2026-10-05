@@ -39,11 +39,15 @@ from typing import Any, Callable
 
 from argus import __version__
 from argus.anomaly_detector import detect_anomalies
+from argus.contextual import node_writes_allow_empty
 from argus.inspector import (
     build_root_cause_chain,
+    crash_origins,
+    inspect_tool_calls,
     inspect_transition,
-    is_legitimate_field_handoff,
 )
+from argus.ledger import build_ledger
+from argus.ledger import reducer_kinds as _reducer_kinds
 from argus.llm_tracker import create_tracker, extract_usage, install_handler, remove_handler
 from argus.models import (
     AnomalySignal,
@@ -93,6 +97,12 @@ except ImportError:
 # Sentinel for _pop_frozen_output — distinct from any real output value
 _MISSING = object()
 
+# An earlier step in one of these states means the run already has an origin,
+# so a judge-only verdict on a later step is a consequence (see
+# `ArgusSession._judge_may_fail_this_step`). `interrupted` is absent: a
+# human-in-the-loop pause blames nobody.
+_JUDGE_BLOCKING_STATUSES = frozenset({"fail", "crashed", "semantic_fail", "degraded_input"})
+
 _REDACTED = "__REDACTED__"
 
 # Built-in patterns that match common secret shapes (compiled once at import)
@@ -108,6 +118,59 @@ _SECRET_PATTERNS: list[_re.Pattern[str]] = [
     _re.compile(r"^Bearer\s+[A-Za-z0-9\-._~+/]+=*$"),  # Bearer tokens
     _re.compile(r"^[A-Za-z0-9+/]{40,}={0,2}$"),  # long base64 blobs (>=40 chars)
 ]
+
+
+# Finish reasons meaning the model hit its token limit mid-answer.
+_TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def _unreadable_update_signal(why: str) -> AnomalySignal:
+    """Critical: the capture did not preserve what this node wrote (#111).
+
+    Critical, not a warning, because "I could not read this node's update" and
+    "this node ran fine" must not be the same verdict — that equivalence is how
+    a silent no-op ships clean. ARGUS declines to grade the step rather than
+    passing it, the same line :func:`argus.ingest.langsmith._refuse_skinny`
+    takes for a whole trace: an incomplete recording is not a pass.
+    """
+    return AnomalySignal(
+        anomaly_id="unreadable_update",
+        severity="critical",
+        suspicion_score=1.0,
+        reason=why,
+        expected_behavior="a recorded update this node returned",
+        observed_behavior="the capture kept no readable update for this step",
+        field_path="",
+    )
+
+
+def _truncation_signals(llm_usage: LLMUsage | None) -> list[AnomalySignal]:
+    """A ``truncated_llm_output`` warning when any call stopped at its token limit.
+
+    Warning, never critical: a cut-off answer can still be usable, and nothing
+    in the trace says whether this one was.
+    """
+    cut = [
+        call
+        for call in (llm_usage.calls if llm_usage else [])
+        if call.finish_reason in _TRUNCATED_FINISH_REASONS
+    ]
+    if not cut:
+        return []
+    return [
+        AnomalySignal(
+            anomaly_id="truncated_llm_output",
+            severity="warning",
+            suspicion_score=1.0,
+            reason=(
+                f"`{cut[0].model_name}` stopped at its token limit "
+                f"(finish_reason={cut[0].finish_reason}), so its output is cut off"
+            ),
+            expected_behavior="an LLM call that finishes its answer",
+            observed_behavior=", ".join(f"finish_reason={c.finish_reason}" for c in cut),
+            field_path="",
+        )
+    ]
 
 
 def _looks_like_secret(value: Any) -> bool:
@@ -172,6 +235,42 @@ def _measure_output_depth(obj: Any, current: int = 0) -> int:
             return current + 1
         return max(_measure_output_depth(item, current + 1) for item in obj)
     return current
+
+
+def _output_makes_a_claim(obj: Any) -> bool:
+    """Does this update contain any text at all?
+
+    The judge may fail a step on its own only for ``unrelated`` /
+    ``contradiction`` — verdicts about what the output *says*. An update of
+    booleans and numbers says nothing: ``{"sent": True}`` cannot contradict
+    ``{"count": 0}``, and a dispatcher that forwards a hallucinated answer is
+    not the node that hallucinated it. Measured, not theorised: with the judge
+    on, ``{"sent": True}`` was failed as a *contradiction* (confidence 0.9) in
+    a healthy run, and blamed beside the real origin in a bad one. Text of any
+    length counts — ``{"answer": "60"}`` is a claim about the answer.
+    """
+    if isinstance(obj, str):
+        return bool(obj.strip())
+    if isinstance(obj, dict):
+        return any(_output_makes_a_claim(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_output_makes_a_claim(v) for v in obj)
+    return False
+
+
+def _has_soft_rule_flags(inspection: InspectionResult | None) -> bool:
+    """Did the rules leave a *reviewable* flag on this step?
+
+    Soft = any warning-level semantic signal, shape warnings INCLUDED:
+    ``shallow_output`` (inspector.py) and ``json_in_string`` are assigned
+    ``severity="warning"``, so they DO gate the judge — an earlier version
+    of this docstring claimed shape warnings were excluded; the code has
+    always counted them (F-21). Hard fails never reach here — the caller
+    requires ``status == "pass"``.
+    """
+    if inspection is None:
+        return False
+    return any(s.severity == "warning" for s in inspection.semantic_signals)
 
 
 def _merge_candidate(
@@ -293,8 +392,19 @@ class ArgusSession:
         self._persist_failures = config.persist_failures if config else True
         self._dry_run = config.dry_run if config else False
         self.graph_node_names: list[str] = []
+        # Keys the graph's state has; see RunRecord.state_keys.
+        self.state_keys: list[str] = []
         self.graph_edge_map: dict[str, list[str]] = {}
         self.node_fn_registry: dict[str, Any] = {}
+        # Declared consumer map (argus.contextual). Read by the judge to scope
+        # the run history it is shown to the fields a node actually reads (#85).
+        self.consumers: dict[str, Any] = {}
+        # A subgraph node's own schema keys, and the healthy-run shape from
+        # `argus baseline`. Read by argus.trace_rules at the end of the run.
+        self.node_state_keys: dict[str, list[str]] = {}
+        self.baseline: dict[str, Any] | None = None
+        # argus.review.Reviewer, set by grading.new_session; None = rules alone decide.
+        self.reviewer: Any = None
 
         self._strict = strict
         # Project-level `argus ignore` list, read once per session.
@@ -322,7 +432,7 @@ class ArgusSession:
             try:
                 from dotenv import load_dotenv
 
-                load_dotenv(override=True)
+                load_dotenv()
             except ImportError:
                 pass
             from argus.llm_proxy import is_available as _llm_available
@@ -665,6 +775,15 @@ class ArgusSession:
             snap, self._redact_keys, self._redact_functions or None, self._redact_patterns
         )
 
+    @property
+    def reducer_kinds(self) -> dict[str, str]:
+        """The declared reducers as strings the run file can hold.
+
+        The ledger folds by these, live and reloaded alike, so both notebooks
+        agree on the running state of a fan-in field.
+        """
+        return _reducer_kinds(self.reducer_fields)
+
     def capture_state(self, state: Any) -> dict[str, Any]:
         snap = safe_serialize(state, self.max_field_size)
         if not self._initial_state and snap:
@@ -704,8 +823,13 @@ class ArgusSession:
                     ),
                 )
             )
-        # 3. Fast + already-failed = cached failure
-        fast_threshold = self._min_expected_ms or 500.0
+        # 3. Fast + already-failed = cached failure. Needs a declared expected
+        # minimum: without one, "fast" meant <500ms, which is every in-process
+        # node, so each real defect shipped a second "Completed in 0ms with
+        # quality issues" finding that said nothing.
+        if not self._min_expected_ms:
+            return
+        fast_threshold = self._min_expected_ms
         has_existing_failure = (
             inspection.is_silent_failure
             or inspection.has_tool_failure
@@ -738,6 +862,10 @@ class ArgusSession:
         exc: Exception | None,
         is_interrupt: bool = False,
         llm_usage: LLMUsage | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+        goto: list[str] | None = None,
+        unreadable_update: str | None = None,
+        superstep: str | None = None,
     ) -> None:
         with self._lock:
             step_idx = self._step_index
@@ -779,6 +907,9 @@ class ArgusSession:
             if status == "pass" and output_snap is not None:
                 successor_fns = self._get_successor_fns(node_name)
                 current_fn = self.node_fn_registry.get(node_name)
+                # #129: presence-only consumer fields soften empty retrieval
+                # lists in this node's update and its tool responses.
+                allow_empty = node_writes_allow_empty(self.consumers, output_snap)
                 inspection = inspect_transition(
                     current_node=node_name,
                     output_dict=output_snap,
@@ -788,7 +919,23 @@ class ArgusSession:
                     input_state=input_snap,
                     current_node_fn=current_fn,
                     reducer_fields=self.reducer_fields or None,
+                    # Router nodes get no successor_fns (see
+                    # _get_successor_fns) but things still run after them, and
+                    # the empty_output rule only needs that much.
+                    has_successors=bool(self.graph_edge_map.get(node_name)),
+                    allow_empty=allow_empty,
                 )
+                # The tools this step actually called (fat trace). Must land
+                # before the status roll-up below, or a swallowed tool error is
+                # recorded and then graded clean (#86).
+                tool_call_failures = inspect_tool_calls(
+                    tool_calls, strict=self._strict, allow_empty=allow_empty
+                )
+                if tool_call_failures:
+                    inspection.tool_failures.extend(tool_call_failures)
+                    if any(tf.severity == "critical" for tf in tool_call_failures):
+                        inspection.has_tool_failure = True
+                        inspection.severity = "critical"
                 # Latency-correlated degradation checks
                 self._check_latency_signals(duration_ms, inspection)
                 # `argus ignore`: move suppressed hits off the inspection so they
@@ -826,9 +973,7 @@ class ArgusSession:
                 # is recorded on the event for visibility but must not alone
                 # fail the node. Mirrors how ToolFailure already gates on
                 # severity == "critical" for has_tool_failure above.
-                _has_signals = any(
-                    s.severity == "critical" for s in inspection.semantic_signals
-                )
+                _has_signals = any(s.severity == "critical" for s in inspection.semantic_signals)
 
                 if _has_failure or _has_signals:
                     # Before blaming this node, check if it's operating on
@@ -886,6 +1031,11 @@ class ArgusSession:
                     )
                 if any(a.severity == "critical" for a in anomaly_signals) and status == "pass":
                     status = "semantic_fail"
+            anomaly_signals.extend(_truncation_signals(llm_usage))
+            if unreadable_update:
+                anomaly_signals.append(_unreadable_update_signal(unreadable_update))
+                if status == "pass":
+                    status = "semantic_fail"
 
             # Per-node LLM judge: fire in background thread, apply in _finalize.
             # Deterministic status is recorded now; LLM can refine it later.
@@ -897,10 +1047,26 @@ class ArgusSession:
                 and self._llm_investigation_config
                 and self._llm_investigation_config.enabled
                 and self._llm_investigation_config.semantic_check
-                and status not in ("crashed", "interrupted")
+                # Only a *passing* step with a warning-level signature.
+                # Clean → no call. Hard fail (`{}`, 404, contextual miss)
+                # → the cop already decided; not up for debate.
+                and status == "pass"
+                and _has_soft_rule_flags(inspection)
             )
             _deferred_judge = False
+            prior_rows: list[Any] = []
             if _should_run_judge:
+                # The run so far, as the ledger sees it (#85). Built here, under
+                # the lock and before this step's event is appended, so the sync
+                # and background paths judge against the same history.
+                # ponytail: rebuilt per judged step — O(n²) over a run, and a run
+                # is tens of steps. Cache the fold on the session if that bites.
+                prior_rows = build_ledger(
+                    list(self._events),
+                    self._initial_state,
+                    self.reducer_kinds,
+                    list(self.state_keys),
+                )
                 ambiguous_signals: list[SemanticSignal] = []
                 if (
                     inspection is not None
@@ -926,6 +1092,7 @@ class ArgusSession:
                         anomaly_signals,
                         inspection,
                         ambiguous_signals,
+                        prior_rows,
                     )
                     status = self._apply_judge_verdict(
                         status,
@@ -938,6 +1105,7 @@ class ArgusSession:
                         behavior_type_val,
                         output_snap,
                         input_snap=input_snap,
+                        step_index=step_idx,
                     )
                 else:
                     # Async path: fire LLM in background, don't block
@@ -962,6 +1130,9 @@ class ArgusSession:
                 suppressed_anomalies=suppressed_anomalies,
                 semantic_check=semantic_check_result,
                 disambiguation_results=disambiguation_results,
+                tool_calls=list(tool_calls or []),
+                goto=list(goto or []),
+                superstep=superstep,
             )
 
             self._events.append(event)
@@ -981,6 +1152,7 @@ class ArgusSession:
                     anomaly_signals,
                     inspection,
                     ambiguous_signals,
+                    prior_rows,
                 )
                 with self._pending_judges_lock:
                     self._pending_judges.append(
@@ -1051,6 +1223,7 @@ class ArgusSession:
         anomaly_signals: list[AnomalySignal],
         inspection: InspectionResult | None,
         ambiguous_signals: list[SemanticSignal],
+        prior_rows: list[Any] | None = None,
     ) -> tuple[SemanticCheckResult | None, list[DisambiguationResult]]:
         """Run the LLM semantic judge synchronously (with retries)."""
         _judge_exc: Exception | None = None
@@ -1071,6 +1244,8 @@ class ArgusSession:
                     anomaly_signals=anomaly_signals,
                     inspection=inspection,
                     ambiguous_signals=ambiguous_signals or None,
+                    prior_rows=prior_rows or None,
+                    consumers=self.consumers or None,
                 )
                 return result, dis_results
             except Exception as _e:
@@ -1091,6 +1266,33 @@ class ArgusSession:
                 )
         return None, []
 
+    @staticmethod
+    def _corroborating_signal(
+        inspection: InspectionResult | None,
+        validator_results: list[ValidatorResult],
+        anomaly_signals: list[AnomalySignal],
+    ) -> bool:
+        """Unused. The originate-fail path that called this is closed.
+
+        Kept so a revert has the old corroboration test in one place. A judge
+        verdict no longer moves status; only the rules fail a build.
+        """
+        if inspection is not None and (
+            any(t.severity == "critical" for t in inspection.tool_failures)
+            or any(s.severity == "critical" for s in inspection.semantic_signals)
+            or inspection.missing_fields
+            or inspection.empty_fields
+            or inspection.type_mismatches
+        ):
+            return True
+        if any(not v.is_valid for v in validator_results):
+            return True
+        # Behavioural anomalies only corroborate at critical. The warning-level
+        # ones describe shape, not content: `BA-005 structural malformation`
+        # fires on any flat dict, which is what a normal LangGraph node returns,
+        # so counting it would let the judge fail almost anything it disliked.
+        return any(a.severity == "critical" for a in anomaly_signals)
+
     def _apply_judge_verdict(
         self,
         status: StepStatus,
@@ -1103,6 +1305,7 @@ class ArgusSession:
         behavior_type_val: str | None,
         output_snap: dict | None,
         input_snap: dict | None = None,
+        step_index: int | None = None,
     ) -> StepStatus:
         """Apply LLM disambiguation + coherence verdict to status. Returns new status."""
         if disambiguation_results and inspection is not None:
@@ -1133,9 +1336,7 @@ class ArgusSession:
                 # Same severity gate as the initial status determination —
                 # a leftover warning-severity signal shouldn't re-fail a
                 # node the disambiguation pass otherwise cleared.
-                _has_signals = any(
-                    s.severity == "critical" for s in inspection.semantic_signals
-                )
+                _has_signals = any(s.severity == "critical" for s in inspection.semantic_signals)
                 if not _has_failure and not _has_signals:
                     status = "pass"
                 elif _has_failure:
@@ -1154,7 +1355,7 @@ class ArgusSession:
                     inspection.is_silent_failure or inspection.has_tool_failure
                 )
                 _has_placeholder = inspection and any(
-                    tf.failure_type == "placeholder_detected"
+                    tf.failure_type == "placeholder_detected" and tf.severity == "critical"
                     for tf in (inspection.tool_failures or [])
                 )
                 _has_validator_failures = any(r.is_blocking for r in validator_results)
@@ -1165,49 +1366,133 @@ class ArgusSession:
                     and not _has_validator_failures
                     and not _has_critical_anomalies
                 )
-                if _can_override and status != "pass":
-                    status = "pass"
-                    try:
-                        from argus.feedback_store import record_override  # noqa: PLC0415
-
-                        record_override(
-                            run_id=self.run_id,
-                            node_name=node_name,
-                            override_type="llm_full_override",
-                            anomaly_ids=[
-                                a.anomaly_id for a in anomaly_signals if a.severity == "critical"
-                            ],
-                            anomaly_reasons=[
-                                a.reason for a in anomaly_signals if a.severity == "critical"
-                            ],
-                            llm_reason=semantic_check_result.reason,
-                            llm_confidence=semantic_check_result.confidence,
-                            behavior_type=behavior_type_val or "unknown",
-                            output_shape={
-                                "key_count": len(output_snap) if output_snap else 0,
-                                "depth": _measure_output_depth(output_snap),
-                                "total_chars": len(json.dumps(output_snap, default=str))
-                                if output_snap
-                                else 0,
-                            },
-                            auto_approve_threshold=(
-                                self._llm_investigation_config.false_positive_auto_approve_threshold
-                                if self._llm_investigation_config
-                                else 0.0
-                            ),
+                if _can_override and inspection is not None:
+                    # The judge was asked because of these warnings and said
+                    # they are wrong. Drop them so `argus show` does not keep
+                    # a flag the reviewer dismissed.
+                    dismissed_ids = {
+                        s.sig_id for s in inspection.semantic_signals if s.severity == "warning"
+                    }
+                    if dismissed_ids:
+                        inspection.semantic_signals = [
+                            s for s in inspection.semantic_signals if s.sig_id not in dismissed_ids
+                        ]
+                        inspection.tool_failures = [
+                            tf
+                            for tf in inspection.tool_failures
+                            if not any(d_id in (tf.evidence or "") for d_id in dismissed_ids)
+                        ]
+                        inspection.has_tool_failure = any(
+                            tf.severity == "critical" for tf in inspection.tool_failures
                         )
-                    except Exception:
-                        pass
-            elif not sc_passed and sc_confident:
-                if status == "pass" and not is_legitimate_field_handoff(input_snap, output_snap):
-                    status = "semantic_fail"
+                        inspection.is_silent_failure = bool(
+                            inspection.missing_fields or inspection.has_tool_failure
+                        )
+                    if status != "pass":
+                        status = "pass"
+                        try:
+                            from argus.feedback_store import record_override  # noqa: PLC0415
+
+                            record_override(
+                                run_id=self.run_id,
+                                node_name=node_name,
+                                override_type="llm_full_override",
+                                anomaly_ids=[
+                                    a.anomaly_id
+                                    for a in anomaly_signals
+                                    if a.severity == "critical"
+                                ],
+                                anomaly_reasons=[
+                                    a.reason for a in anomaly_signals if a.severity == "critical"
+                                ],
+                                llm_reason=semantic_check_result.reason,
+                                llm_confidence=semantic_check_result.confidence,
+                                behavior_type=behavior_type_val or "unknown",
+                                output_shape={
+                                    "key_count": len(output_snap) if output_snap else 0,
+                                    "depth": _measure_output_depth(output_snap),
+                                    "total_chars": len(json.dumps(output_snap, default=str))
+                                    if output_snap
+                                    else 0,
+                                },
+                                auto_approve_threshold=(
+                                    self._llm_investigation_config.false_positive_auto_approve_threshold
+                                    if self._llm_investigation_config
+                                    else 0.0
+                                ),
+                            )
+                        except Exception:
+                            pass
+            # A fail with no soft-flag review is ignored. The judge does not
+            # originate blame: that is how a healthy node went red on one run
+            # in a hundred. Soft flags it agrees with stay as the rules wrote
+            # them (usually a warning, which does not move the gate).
 
         return status
+
+    def _judge_may_fail_this_step(
+        self,
+        _sc: SemanticCheckResult,
+        inspection: InspectionResult | None,
+        validator_results: list[ValidatorResult],
+        anomaly_signals: list[AnomalySignal],
+        output_snap: dict | None,
+        step_index: int | None,
+    ) -> bool:
+        """Unused. The originate-fail path that called this is closed.
+
+        The judge reviews soft flags on a passing step; it does not move
+        status. Blame still cannot land downstream of an existing origin —
+        that is enforced at finalize by ``_demote_consequential_judge_fails``.
+        """
+        if not _output_makes_a_claim(output_snap):
+            return False
+
+        if step_index is not None and any(
+            e.step_index < step_index and e.status in _JUDGE_BLOCKING_STATUSES
+            for e in self._events
+        ):
+            return False
+
+        return self._corroborating_signal(inspection, validator_results, anomaly_signals)
+
+    @staticmethod
+    def _demote_consequential_judge_fails(events: list[NodeEvent]) -> None:
+        """A judge verdict downstream of an existing origin is a consequence.
+
+        The same rule as :meth:`_judge_may_fail_this_step`, enforced where it
+        can actually be enforced. That check runs when the verdict arrives, and
+        a synchronous judge arrives *before* the contextual layer has blamed
+        anyone: `rerank` empties the context, `generate` says "I could not find
+        anything", the judge calls that a contradiction of the documents still
+        sitting in state — and it is right, in isolation. But `rerank` is not
+        marked `fail` until `grading.finish` builds the ledger, by which time
+        the flip has happened. Both nodes then arrive in the report, and the one
+        to fix is no longer the only one named.
+
+        So the rule is applied once more here, at finalize, when every layer
+        has spoken. Only judge-authored statuses are demoted; a step the rules
+        failed keeps its status. The verdict itself is kept on the event, and
+        `findings.collect_findings` records it as a warning.
+        """
+        failed = [e.step_index for e in events if e.status in _JUDGE_BLOCKING_STATUSES]
+        if not failed:
+            return
+        earliest = min(failed)
+        for event in events:
+            # `> earliest` leaves the origin alone even when the origin is
+            # itself a judge verdict: the first incoherence is the one to fix,
+            # the rest of the run is downstream of it.
+            if event.status == "semantic_fail" and event.step_index > earliest:
+                event.status = "pass"
 
     def _apply_deferred_judges(self) -> None:
         """Collect all background LLM judge results and apply to events."""
         with self._pending_judges_lock:
-            pending = list(self._pending_judges)
+            # Step order, not completion order: `_judge_may_fail_this_step`
+            # asks whether anything *earlier* already failed, so a verdict must
+            # not be able to jump ahead of the origin it is downstream of.
+            pending = sorted(self._pending_judges, key=lambda p: p.event.step_index)
             self._pending_judges.clear()
 
         for pj in pending:
@@ -1228,8 +1513,18 @@ class ArgusSession:
                 pj.event.behavior_type,
                 pj.output_snap,
                 input_snap=pj.input_snap,
+                step_index=pj.event.step_index,
             )
-            pj.event.status = new_status
+            # Only if nothing else claimed this step in the meantime. The judge
+            # was queued with `deterministic_status` while the node ran; the
+            # contextual layer blames origins later, in `grading.finish`, so
+            # writing the verdict's status unconditionally *erased* that blame.
+            # The measured effect was the worst of both: `rerank` emptied the
+            # context and came back `pass`, while `generate` — which merely
+            # said so — was flagged. Rules already outrank the judge; this
+            # makes that true regardless of which finished first.
+            if pj.event.status == pj.deterministic_status:
+                pj.event.status = new_status
             pj.event.semantic_check = semantic_check_result
             pj.event.disambiguation_results = disambiguation_results
 
@@ -1272,6 +1567,56 @@ class ArgusSession:
                 return propagated, event.node_name
         return [], None
 
+    def _blame_crash_origins(self, events: list[Any]) -> None:
+        """Fail the node that omitted the field a later node crashed on.
+
+        Without this the only node named is the crash site — the exact
+        "blame whoever fell over" ARGUS exists to replace. The chain already
+        knew the origin (``inspector.crash_origins``); nothing acted on it, so
+        ``evaluate_run`` never saw a failing upstream node.
+
+        Marks the origin the same way a contextual miss is marked, so the
+        existing roll-up and ``findings.collect_findings`` turn it into a
+        ``missing_field`` finding with no new plumbing.
+
+        When the origin *is* the crash site (own-router KeyError, #135), the
+        step already carries ``crashed`` and usually has no inspection — build
+        one so the omit is named, but leave status alone.
+        """
+        for origin, key, crashed in crash_origins(events, self.graph_edge_map, self.state_keys):
+            self_blame = origin is crashed or (
+                origin.node_name == crashed.node_name and origin.step_index == crashed.step_index
+            )
+            insp = origin.inspection
+            if insp is None:
+                if not self_blame:
+                    continue
+                insp = InspectionResult(
+                    is_silent_failure=True,
+                    missing_fields=[],
+                    empty_fields=[],
+                    type_mismatches=[],
+                    severity="critical",
+                    message="",
+                )
+                origin.inspection = insp
+            if key in insp.missing_fields:
+                continue
+            insp.missing_fields.append(key)
+            insp.is_silent_failure = True
+            insp.severity = "critical"
+            if self_blame:
+                insp.message = (
+                    f"Field `{key}` was read by `{crashed.node_name}`'s own router, "
+                    f"but `{origin.node_name}` never wrote it."
+                )
+            else:
+                insp.message = (
+                    f"Field `{key}` is read by `{crashed.node_name}`, which crashed on it, "
+                    f"but `{origin.node_name}` never wrote it."
+                )
+                origin.status = "fail"
+
     def _get_successor_fns(self, node_name: str) -> list[Any]:
         # ponytail: router nodes fan out to multiple branches but only one runs;
         # validating against all causes false positives — skip them
@@ -1299,10 +1644,33 @@ class ArgusSession:
             total = len(indices)
             for idx in indices:
                 self._events[idx].total_iterations = total
-            final = self._events[indices[-1]]
-            if final.status == "pass":
-                for idx in indices[:-1]:
+            # The final *round*, not the final event (E4): `Send` workers that
+            # ran in one superstep are siblings — two names to screen, two
+            # items to price — and the last one passing supersedes nothing.
+            last = self._events[indices[-1]].superstep
+            final = [i for i in indices if last is not None and self._events[i].superstep == last]
+            final = final or indices[-1:]
+            if all(self._events[i].status == "pass" for i in final):
+                for idx in indices:
+                    if idx in final:
+                        continue
+                    # A data accumulator keeps every iteration's write
+                    # (`operator.add`). Relabelling an earlier page `retried`
+                    # hides a swallowed timeout once the last page passes
+                    # (#131). Message history (`add_messages`) stays a retry:
+                    # a ReAct agent that saw the 404 and tried again is
+                    # conversation, not lost rows.
+                    if self._wrote_data_accumulator(self._events[idx]):
+                        continue
                     self._events[idx].status = "retried"
+
+    def _wrote_data_accumulator(self, event: NodeEvent) -> bool:
+        """Did this step write a field reduced with ``operator.add`` (not messages)?"""
+        update = event.output_dict
+        if not isinstance(update, dict):
+            return False
+        kinds = self.reducer_kinds
+        return any(kinds.get(key) == "add" for key in update)
 
     # ── Finalization ──────────────────────────────────────────────────────────
 
@@ -1343,6 +1711,8 @@ class ArgusSession:
         except Exception:
             duration_ms = None
 
+        self._demote_consequential_judge_fails(events_snapshot)
+
         # Exclude retried/skipped events — not real failures
         active_events = [e for e in events_snapshot if e.status not in ("retried", "skipped")]
         has_crash = any(e.status == "crashed" for e in active_events)
@@ -1363,6 +1733,12 @@ class ArgusSession:
             overall_status = "silent_failure"
         else:
             overall_status = "clean"
+
+        # After overall_status is decided (a crashed run stays `crashed`) but
+        # before first_failure — the omitter ran *before* the crash site, so it
+        # is the first failing step, and naming the crash site there would put
+        # the victim at the top of every report.
+        self._blame_crash_origins(events_snapshot)
 
         _fail_statuses = ("fail", "crashed", "semantic_fail", "degraded_input")
         first_failure = next(
@@ -1409,6 +1785,8 @@ class ArgusSession:
             graph_node_names=self.graph_node_names,
             graph_edge_map=self.graph_edge_map,
             initial_state=self._initial_state,
+            reducer_kinds=self.reducer_kinds,
+            state_keys=list(self.state_keys),
             steps=events_snapshot,
             schema_version=SCHEMA_VERSION,
             is_cyclic=self._is_cyclic,
@@ -1455,13 +1833,34 @@ class ArgusSession:
             # more accurate than the inspector's backward walk which can
             # conflate semantic failures with causal failures.
             # ponytail: only for failed runs — clean/retried runs shouldn't be overridden
+            #
+            # `crashed` is excluded too. The correlator diffs input→output, so it
+            # can only nominate nodes that produced output — never the node that
+            # quietly omitted a field and returned a perfectly normal-looking
+            # update. On a crash it therefore replaces the walk's origin with the
+            # crash site, which is the blame ARGUS exists to move.
             if correlation.degradation_origins and record.overall_status not in (
                 "clean",
                 "interrupted",
+                "crashed",
             ):
                 top = correlation.degradation_origins[0]
-                if top.confidence >= 0.8:
-                    corr_chain = [o.node_name for o in correlation.degradation_origins]
+                # The correlator may only move the headline onto a node that
+                # actually failed. It scores input→output degradation, so a
+                # healthy `retrieve` carrying a warning could outrank the
+                # `rerank` that emptied the field — and `argus show` then led
+                # with a node `argus check` never named.
+                failing = {
+                    e.node_name
+                    for e in record.steps
+                    if e.status in ("fail", "crashed", "semantic_fail", "degraded_input")
+                }
+                if top.confidence >= 0.8 and top.node_name in failing:
+                    corr_chain = [
+                        o.node_name
+                        for o in correlation.degradation_origins
+                        if o.node_name in failing
+                    ]
                     record.root_cause_chain = corr_chain
                     record.first_failure_step = corr_chain[0]
         except Exception:

@@ -68,7 +68,7 @@ export default function CorrelationPanel({ run }: { run: RunRecord }) {
                         <span
                           key={i}
                           className="text-[10px] px-2 py-0.5 rounded-full"
-                          style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--muted-foreground)' }}
+                          style={{ background: 'var(--hover)', color: 'var(--muted-foreground)' }}
                         >
                           {sig}
                         </span>
@@ -92,7 +92,7 @@ export default function CorrelationPanel({ run }: { run: RunRecord }) {
                             <span key={ni} className="flex items-center gap-1.5">
                               <span
                                 className="font-mono text-[12px] font-semibold px-2 py-0.5 rounded text-foreground"
-                                style={{ background: 'rgba(255,255,255,0.05)' }}
+                                style={{ background: 'var(--hover)' }}
                               >
                                 {node}
                               </span>
@@ -119,7 +119,7 @@ export default function CorrelationPanel({ run }: { run: RunRecord }) {
                 <div className="text-[11px] font-medium uppercase tracking-wider mb-2" style={{ color: 'var(--text-tertiary)' }}>
                   Summary
                 </div>
-                <p className="mt-1.5 border-l-2 border-border pl-3 text-sm italic leading-relaxed" style={{ color: '#aaaaaa' }}>
+                <p className="mt-1.5 border-l-2 border-border pl-3 text-sm italic leading-relaxed" style={{ color: 'var(--ink-2)' }}>
                   &ldquo;{corr.causal_summary.split(/(`[^`]+`)/).map((part, i) =>
                     part.startsWith('`') && part.endsWith('`')
                       ? <code key={i} className="font-mono not-italic text-foreground">{part.slice(1, -1)}</code>
@@ -142,7 +142,7 @@ export default function CorrelationPanel({ run }: { run: RunRecord }) {
                           <span
                             key={i}
                             className="font-mono text-[11px] px-2 py-0.5 rounded-full"
-                            style={{ background: 'rgba(34,197,94,0.08)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.2)' }}
+                            style={{ background: 'var(--ok-dim)', color: 'var(--success)', border: '1px solid color-mix(in srgb, var(--ok) 34%, transparent)' }}
                           >
                             {n}
                           </span>
@@ -156,7 +156,7 @@ export default function CorrelationPanel({ run }: { run: RunRecord }) {
                           <span
                             key={i}
                             className="font-mono text-[11px] px-2 py-0.5 rounded-full"
-                            style={{ background: 'rgba(239,68,68,0.08)', color: 'var(--failure)', border: '1px solid rgba(239,68,68,0.2)' }}
+                            style={{ background: 'var(--tool-dim)', color: 'var(--failure)', border: '1px solid color-mix(in srgb, var(--tool) 34%, transparent)' }}
                           >
                             {n}
                           </span>
@@ -226,7 +226,7 @@ function ToolChainRow({ finding }: { finding: ToolChainFinding }) {
         </span>
         <span
           className="text-[10px] px-2 py-0.5 rounded-full text-muted-foreground"
-          style={{ background: 'rgba(255,255,255,0.06)' }}
+          style={{ background: 'var(--hover)' }}
         >
           {FINDING_LABELS[finding.finding_type] ?? finding.finding_type}
         </span>
@@ -235,7 +235,7 @@ function ToolChainRow({ finding }: { finding: ToolChainFinding }) {
             <span key={ni} className="flex items-center gap-1.5">
               <span
                 className="font-mono text-[12px] font-semibold px-2 py-0.5 rounded text-foreground"
-                style={{ background: 'rgba(255,255,255,0.05)' }}
+                style={{ background: 'var(--hover)' }}
               >
                 {node}
               </span>

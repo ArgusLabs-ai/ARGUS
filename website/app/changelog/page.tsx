@@ -13,6 +13,28 @@ interface Release {
 
 const RELEASES: Release[] = [
   {
+    version: '0.12.0-dev',
+    title: 'Fat traces: ArgusRecorder replaces the wrap path',
+    date: '2026-09-24',
+    tag: 'beta',
+    highlights: [
+      'On the pivot/fat-traces branch — not on PyPI yet. pip install argus-agents still gets 0.11.0',
+      'ArgusRecorder: capture via LangChain callbacks, nothing patched. Keeps the dict each node returned — its update, not the merged state',
+      'consumers={"field": ["reader"]}: declare who reads what, so a field never written / written empty / dropped in between is blamed on the node responsible',
+      'argus ingest langsmith: grade a LangSmith export with no app and no graph. Skinny traces are refused, not graded green',
+      'report_tool_call(): file a tool the callback path cannot see, so a 404 body or a raised tool is not silently absent from the step',
+      'Parallel Send workers are siblings, not retries — a swallowed error in the first of five workers no longer hides behind the last one passing',
+      "A node's own verdict (status: denied, a linter's errors list) is a warning, not a CI fail. The same shape from a tool response stays critical",
+      'The judge reviews soft flags only: it cannot originate a fail, clear a hard fail, or move blame off an origin',
+      'Barren subgraphs: every inner node wrote something, all of it to inner-only keys, parent state unchanged (subgraph_no_contribution)',
+      'httpx traffic recorded via httpcore; a capture session that records nothing warns instead of writing an empty cassette',
+      "A ReAct agent's blank final reply (empty content, no tool calls) fails the gate; intermediate tool-calling turns stay exempt",
+      'A KeyError from a node\'s own conditional edge is blamed on that node, not on the upstream bystander that last touched the state',
+      'Consumer keys accept dotted paths (email.body) so a blanked nested leaf is caught; a top-level declaration still means the whole value',
+      'allow_empty reaches the writer\'s tool responses, so a clean sanctions screen returning hits: [] no longer fails CI. Undeclared empty retrieval stays critical',
+    ],
+  },
+  {
     version: '0.11.0',
     title: 'Findings, check JSON, replay patches',
     date: '2026-09-07',
@@ -362,10 +384,10 @@ const RELEASES: Release[] = [
 ]
 
 const TAG_STYLES: Record<Release['tag'], { bg: string; text: string; label: string }> = {
-  beta: { bg: 'rgba(124,127,199,0.1)', text: '#7c7fc7', label: 'BETA' },
-  major: { bg: 'rgba(61,158,125,0.1)', text: '#3d9e7d', label: 'MAJOR' },
-  minor: { bg: 'rgba(212,154,46,0.1)', text: '#d49a2e', label: 'MINOR' },
-  patch: { bg: 'rgba(156,163,175,0.1)', text: '#5d6370', label: 'PATCH' },
+  beta: { bg: 'var(--iris-dim)', text: 'var(--iris)', label: 'BETA' },
+  major: { bg: 'var(--ok-dim)', text: 'var(--ok)', label: 'MAJOR' },
+  minor: { bg: 'var(--quality-dim)', text: 'var(--quality)', label: 'MINOR' },
+  patch: { bg: 'var(--fill-subtle)', text: 'var(--ink-4)', label: 'PATCH' },
 }
 
 function ReleaseBadge({ tag }: { tag: Release['tag'] }) {
@@ -412,8 +434,8 @@ export default function ChangelogPage() {
               <div
                 className="absolute left-0 top-[6px] w-[15px] h-[15px] rounded-full border-2 flex items-center justify-center"
                 style={{
-                  borderColor: i === 0 ? '#7c7fc7' : 'var(--border-subtle)',
-                  background: i === 0 ? '#7c7fc7' : 'var(--card-bg)',
+                  borderColor: i === 0 ? 'var(--iris)' : 'var(--border-subtle)',
+                  background: i === 0 ? 'var(--iris)' : 'var(--panel)',
                 }}
               >
                 {i === 0 && (

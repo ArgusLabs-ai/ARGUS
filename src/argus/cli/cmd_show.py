@@ -567,6 +567,9 @@ def _print_run(record: RunRecord) -> None:
     # ── Tool Chain ────────────────────────────────────────────────────────
     _print_tool_chain_panel(record)
 
+    # ── Run reviewer (#149) ───────────────────────────────────────────────
+    _print_review_panel(record)
+
     # ── AI Fix Advice ─────────────────────────────────────────────────────
     _print_investigation_panel(record)
 
@@ -653,6 +656,41 @@ def _print_correlation_panel(record: RunRecord) -> None:
     )
     console.print()
     console.print(panel)
+
+
+_REVIEW_ROLE = {
+    "confirms": ("bold red", "agrees with a rule"),
+    "promoted": ("bold red", "rule warning + reviewer → fail"),
+    "two_models": ("bold red", "two models agree → fail"),
+    "advisory": ("bold yellow", "advisory, not gating"),
+}
+
+
+def _print_review_panel(record: RunRecord) -> None:
+    """What the run reviewer verified, per step. Advisory notes live only here."""
+    lines: list[str] = []
+    for e in record.steps:
+        for item in e.review:
+            style, label = _REVIEW_ROLE.get(item.get("role", ""), ("dim", item.get("role", "")))
+            lines.append(
+                f"  [bold]{e.node_name}[/bold]  [{style}]{label}[/{style}]  "
+                f"[dim]{item.get('kind', '')}[/dim]"
+            )
+            lines.append(f"    [italic]{item.get('why') or item.get('claim', '')}[/italic]")
+            if item.get("correction"):
+                lines.append(f"    [dim]should be: {item['correction']}[/dim]")
+            lines.append("")
+    if not lines:
+        return
+    console.print(
+        Panel(
+            "\n".join(lines).rstrip(),
+            title="[dim]Run reviewer[/dim]",
+            title_align="left",
+            border_style="dim",
+            padding=(0, 1),
+        )
+    )
 
 
 def _print_tool_chain_panel(record: RunRecord) -> None:

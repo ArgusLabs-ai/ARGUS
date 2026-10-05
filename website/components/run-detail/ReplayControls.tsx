@@ -80,14 +80,9 @@ export default function ReplayControls({
     }
 
     if (resp.status === 422) {
-      const body = await resp.json().catch(() => ({})) as { error?: string }
-      if (body.error === 'no_node_ref') {
-        setReplayState({ phase: 'error', message: `No stored function ref for '${nodeName}'. Re-record with latest argus.` })
-        setReplayingNode(null)
-        return
-      }
+      // A trace holds state, not code: the rerun needs the app factory (#79).
       setPendingNode(nodeName)
-      setReplayState({ phase: 'no_factory' })
+      setReplayState({ phase: 'no_factory', mode, nodeName })
       setReplayingNode(null)
       setTimeout(() => factoryInputRef.current?.focus(), 50)
       return
@@ -142,7 +137,7 @@ export default function ReplayControls({
           setReplayingNode(null)
           if (pdata.error_code === 'bad_factory') {
             setPendingNode(nodeName ?? null)
-            setReplayState({ phase: 'no_factory' })
+            setReplayState({ phase: 'no_factory', mode, nodeName, message: pdata.message })
             setTimeout(() => factoryInputRef.current?.focus(), 50)
           } else {
             setReplayState({ phase: 'error', message: pdata.message ?? 'Rerun failed' })
@@ -171,96 +166,49 @@ export default function ReplayControls({
     if (!appFactory.trim()) return
     await saveFactory(appFactory)
     if (pendingNode) {
-      submitReplay(pendingNode)
+      submitReplay(pendingNode, replayState.mode ?? 'full')
     }
   }
 
   return (
     <>
-      {/* Factory input - only shown when auto-detection failed */}
+      {/* App factory prompt — only when auto-detection failed */}
       {replayState.phase === 'no_factory' && (
-        <div
-          className="px-3 py-2 rounded-lg text-[13px] flex items-center gap-2"
-          style={{ background: 'var(--card)', border: '1px solid var(--warning)' }}
+        <form
+          className="note-line"
+          onSubmit={(e) => { e.preventDefault(); handleFactorySubmit() }}
         >
-          <span className="text-[12px] shrink-0" style={{ color: 'var(--warning)' }}>
-            app factory needed — provide the function that builds your StateGraph:
+          <span>
+            {replayState.message ? `That factory did not work: ${replayState.message}. ` : ''}
+            Rerun needs the function that builds your graph:
           </span>
-          <form
-            onSubmit={(e) => { e.preventDefault(); handleFactorySubmit() }}
-            className="flex items-center gap-1"
-          >
-            <input
-              ref={factoryInputRef}
-              type="text"
-              value={appFactory}
-              onChange={(e) => setAppFactory(e.target.value)}
-              placeholder="module:build_graph"
-              className="font-mono text-[10px] px-2 py-1 rounded-md outline-none w-[180px] transition-colors"
-              style={{
-                background: 'var(--card)',
-                border: '1px solid var(--warning)',
-                color: appFactory ? 'var(--foreground)' : '#2a2a2a',
-              }}
-            />
-            <button
-              type="submit"
-              className="font-mono text-[10px] px-2 py-1 rounded-md transition-colors"
-              style={{ background: 'var(--warning)', color: '#000' }}
-            >
-              retry
-            </button>
-            {factorySaved && (
-              <span className="text-[10px] font-mono text-green-400">saved</span>
-            )}
-          </form>
-        </div>
+          <input
+            ref={factoryInputRef}
+            type="text"
+            value={appFactory}
+            onChange={(e) => setAppFactory(e.target.value)}
+            placeholder="module:build_graph"
+            aria-label="App factory"
+          />
+          <button type="submit" className="btn btn-sm">Retry</button>
+          {factorySaved && <span style={{ color: 'var(--ok)' }}>saved</span>}
+        </form>
       )}
 
-      {/* Full replay status banner */}
+      {/* Full rerun progress */}
       {replayState.phase !== 'idle' && replayState.phase !== 'no_factory' && replayState.phase !== 'node_done' && replayState.mode !== 'node' && (
-        <div
-          className="px-3 py-2 rounded-lg text-[13px] flex items-center gap-2"
-          style={{ background: 'var(--card)', border: '1px solid var(--border)' }}
-        >
-          {replayState.phase === 'submitting' && (
-            <span className="font-mono text-[12px]" style={{ color: 'var(--warning)' }}>submitting rerun...</span>
-          )}
-          {replayState.phase === 'polling' && (
-            <span className="font-mono text-[12px]" style={{ color: 'var(--warning)' }}>
-              rerun in progress<span className="animate-pulse">...</span>
-            </span>
-          )}
+        <p className={`note-line${replayState.phase === 'error' ? ' bad' : replayState.phase === 'done' ? ' ok' : ''}`} style={{ margin: 0 }}>
+          {replayState.phase === 'submitting' && 'Submitting rerun…'}
+          {replayState.phase === 'polling' && <>Rerun in progress from <span style={{ fontFamily: 'var(--mono)' }}>{replayState.nodeName}</span>…</>}
           {replayState.phase === 'done' && (
-            <>
-              <span className="font-mono text-[12px]" style={{ color: 'var(--success)' }}>rerun complete</span>
-              {replayState.newRunId && (
-                <a
-                  href={`/?run=${replayState.newRunId}`}
-                  className="ml-2 hover:underline font-mono text-[12px]"
-                  style={{ color: 'var(--success)' }}
-                >
-                  view run
-                </a>
-              )}
-            </>
+            <>Rerun complete.{replayState.newRunId && <a href={`/?run=${replayState.newRunId}`} style={{ color: 'inherit' }}>Open the new run</a>}</>
           )}
-          {replayState.phase === 'error' && (
-            <span className="font-mono text-[12px]" style={{ color: 'var(--failure)' }}>rerun failed: {replayState.message}</span>
-          )}
-        </div>
+          {replayState.phase === 'error' && <>Rerun failed: {replayState.message}</>}
+        </p>
       )}
 
-      {/* Node replay error banner */}
       {replayState.phase === 'error' && replayState.mode === 'node' && (
-        <div
-          className="px-3 py-2 rounded-lg text-[13px] flex items-center gap-2"
-          style={{ background: 'var(--card)', border: '1px solid var(--failure)' }}
-        >
-          <span className="font-mono text-[12px]" style={{ color: 'var(--failure)' }}>
-            node rerun failed: {replayState.message}
-          </span>
-        </div>
+        <p className="note-line bad" style={{ margin: 0 }}>Node rerun failed: {replayState.message}</p>
       )}
 
       {/* Pass diff state down to children so it renders inline */}

@@ -38,9 +38,13 @@ Writes `.cursor/skills/argus-debug/` and `.claude/skills/argus-debug/`. Commit t
 Ask your editor agent to wire ARGUS. (The skill already contains this AI setup prompt; the landing-page copy is just a fallback.)
 
 ```python
-from argus import ArgusWatcher
-app = ArgusWatcher().attach(graph)
+from argus import ArgusRecorder
+app = ArgusRecorder().attach(graph)
 ```
+
+`attach()` returns the app you invoke. Nothing about your graph is patched or
+rewritten — ARGUS rides LangGraph's own callback stream. See
+[Which entry point?](#which-entry-point) if you are on the older `ArgusWatcher`.
 
 <img src="https://github.com/VaradDurge/ARGUS/blob/master/assets/Argus%20Guidelines%20and%20Contribution.png?raw=true" width="700"/>
 
@@ -99,14 +103,187 @@ Hosted cloud sync (`argus login`) is optional and only applies if a hosted backe
 ## Quick Start (manual)
 
 ```python
+from argus import ArgusRecorder
+
+app = ArgusRecorder().attach(compiled_graph)   # returns the app you invoke
+result = app.invoke(initial_state)             # run is persisted automatically
+```
+
+ARGUS records every node, grades the run, and saves it. No changes to your node
+functions, and no changes to the graph either.
+
+What it keeps is **the dict each node returned** — its update, before LangGraph
+merges it into shared state. That is the whole trick. A node that searches,
+throws the result away and returns `{}` leaves a full-looking merged state
+behind; only the update shows the silent no-op, and only then can blame land on
+the node that caused it instead of whoever crashes three steps later.
+
+`invoke`, `ainvoke`, `stream`, `astream` and `batch` all work. One `attach()`
+serves many runs — each `invoke`, and each `.batch()` item, gets its own run
+file and its own verdict.
+
+<a id="which-entry-point"></a>
+### Which entry point?
+
+| | `ArgusRecorder` **(use this)** | `ArgusWatcher` (legacy) |
+|---|---|---|
+| How it captures | Listens to LangGraph callbacks | Patches `compile()` and rebinds `invoke` / `stream` / `batch` |
+| Touches your graph | No | Yes |
+| Contract for "who needs this field" | Declared — `consumers=` | Read from successor type hints |
+| Status | The path under active development | Still supported, not being extended |
+
+`ArgusWatcher` keeps working and its docs below still apply to it. New code
+should use `ArgusRecorder`.
+
+### Declaring who reads what
+
+A recording carries state, not code, so it cannot know that `write` three steps
+later needs the `audience` field `plan` produced. Tell it:
+
+```python
+app = ArgusRecorder(consumers={"audience": ["write"]}).attach(graph)
+```
+
+Now a field that is **never written**, **written empty**, or **written and then
+dropped** fails on the node responsible — not on the node that happened to
+notice. Without a declaration ARGUS still catches empty updates, tool failures,
+crashes and degraded output; `consumers=` is what adds long-range field
+contracts.
+
+A key can be a **dotted path** into nested state:
+
+```python
+consumers={"email.body": ["send_email"]}
+```
+
+A top-level declaration means the whole value, so `{"email": {"subject": "Re: order", "body": ""}}`
+counts as a non-empty `email` — blanking a leaf is only caught if you declare the leaf.
+
+**Loops.** Every visit of a reader is checked, not just the first. A field
+present on pass 1 and dropped before pass 2 fails on the node that dropped it. A
+field that only shows up by a later pass (filled in as the loop goes) is fine.
+
+**Two subgraphs with a node of the same name** (two copies of one sub-agent, each
+with a `retrieve`) are kept apart as `a:retrieve` / `b:retrieve`, the subgraph name
+followed by the node name. Findings name them that way, and a consumer map must
+too (`{"docs": ["b:retrieve"]}`). Names that appear only once stay bare.
+
+On a healthy run, `argus consumers` lists every later node that was handed a
+field and did not write it. Delete the nodes that only saw the field in shared
+state, then pass the file yourself. ARGUS does not load it, and does not fail
+CI on the guess.
+
+It only sees what that one run did. A reader on a branch the run did not take
+is not listed, so record one healthy run per branch and merge the files.
+Fields you passed in as the graph's input are not listed either. Add them by
+hand when a later node depends on them.
+
+```bash
+argus consumers last --write argus.consumers.json
+```
+
+```python
+import json
+from pathlib import Path
+
+consumers = json.loads(Path("argus.consumers.json").read_text())
+app = ArgusRecorder(consumers=consumers).attach(compiled_graph)
+```
+
+**Fields that are legitimately empty.** A PR review's `issues: []` *is* the LGTM; a clean
+sanctions screen *is* `hits: []`. Declare them presence-only and absence alone fails:
+
+```python
+consumers={"hits": {"readers": ["decide"], "allow_empty": True}}
+```
+
+That declaration also covers the **tool responses** of the node that writes the field, not just
+its own update — the OFAC tool returns `{"hits": []}` on a clean customer, and grading that
+critically failed every healthy KYC onboarding. A tool that raised, or a 4xx/5xx body, still
+fails hard. Undeclared empty retrieval lists keep the RAG default: critical.
+
+**Fields read on some paths only.** `draft_reply` reads `order` when the ticket
+is a refund; on the FAQ path nothing writes it, and that is the design. Say so,
+and a field that was never written is fine, while one that was written and then
+dropped or blanked still fails:
+
+```python
+consumers={"order": {"readers": ["draft_reply"], "required": False}}
+```
+
+Without that, "never written" blames the first step of the run, because a
+recording cannot say who was meant to write the field. That blame is a guess. When a
+node before the reader already failed, the guess lands on that node instead.
+With the [run reviewer](#run-reviewer) on, the guess only fails CI if the
+reviewer verified a problem on that step or on a node declared to read the field.
+
+A **final** node is different: `empty_output` only fires when a node has a
+successor waiting, so a last node that returns `{}` is exempt by design (a
+terminal `send_email` legitimately returns nothing), and no later node reads its
+field. A [healthy baseline](#healthy-baseline) closes that gap: a node that stops
+writing a key it writes on every healthy run fails.
+
+### Healthy baseline
+
+Record what healthy runs write, per node, and pass it in. A later run that drops a key the node
+always writes, changes a field's type, or writes `N/A` / `unknown` / `-1` where healthy runs held
+data then fails CI:
+
+```bash
+argus baseline <run-id> <run-id> --write argus.baseline.json   # one healthy run per branch
+```
+
+```python
+baseline = json.loads(Path("argus.baseline.json").read_text())
+app = ArgusRecorder(consumers=consumers, baseline=baseline).attach(compiled_graph)
+```
+
+Only what every given run agrees on is kept, so a key written on one branch is not required on
+another. The file holds kinds (`text`, `nonneg`, `object`), never values. Without it those three
+checks are off; everything else runs.
+
+### Tools the callbacks cannot see
+
+ARGUS files every tool call LangChain reports, and grades its payload as strictly as a node's
+own update. Under langgraph 1.x, code running *inside* a node function can hold an empty
+callback manager — so a tool the node invokes directly never fires `on_tool_start`, leaves
+`tool_calls` empty, and a 404 body or a raised exception has nothing to be found in. File it
+yourself:
+
+```python
+from argus import report_tool_call
+
+def fetch(state):
+    try:
+        hits = search_tool.invoke(state["query"])
+    except Exception as exc:
+        report_tool_call("search", input=state["query"], error=exc)
+        raise
+    report_tool_call("search", input=state["query"], output=hits)
+    return {"hits": hits}
+```
+
+It writes the call in the exact shape the callback path uses, onto the node step currently open,
+so the graders cannot tell the two apart. The active recorder is resolved for you — pass
+`recorder=` or `config=` to be explicit. It never raises into your code: a call that cannot be
+placed logs one warning on the `argus` logger and returns `False`.
+
+**Async nodes on Python 3.9 / 3.10.** Before 3.11, asyncio cannot hand LangChain's callback
+context to a child task. A tool awaited inside `async def node(state)` therefore fires no
+callback, and its errors are never graded. Pass the node's `config` on
+(`async def node(state, config)` … `await tool.ainvoke(args, config)`), call
+`report_tool_call`, or run 3.11+. `attach` logs a warning naming your async nodes when this
+applies.
+
+### `ArgusWatcher` (legacy path)
+
+```python
 from argus import ArgusWatcher
 
 watcher = ArgusWatcher()
 app = watcher.attach(graph)         # StateGraph or already-compiled app
-result = app.invoke(initial_state)  # run is persisted automatically
+result = app.invoke(initial_state)
 ```
-
-ARGUS monitors every node, detects failures, and saves the run. No changes to your node functions.
 
 > **`finalize()` is optional.** `attach()` wraps `invoke()` / `ainvoke()` / `batch()` / `abatch()` / `stream()` so the run is written to `.argus/runs/` when the outermost call returns — including cyclic graphs. Calling `watcher.finalize()` afterwards is a no-op.
 
@@ -123,10 +300,23 @@ result = app.invoke(initial_state)
 
 | Problem | Example |
 |---------|---------|
-| **Silent failures** | Node returns `{}` or drops a required field — no exception, pipeline keeps running broken |
+| **Silent failures** | Node returns `{}` or drops a required field — no exception, pipeline keeps running broken. Caught on the node itself however it routes: a plain edge, a conditional edge with or without a path map, or `Command(goto=...)` with or without a return annotation. Healthy loops grade with no warnings |
 | **Semantic failures** | Output structure is fine but values are wrong (placeholders, refusals, degraded text) |
-| **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field |
-| **Contract violations** | Output types don't match the next node's expected input schema |
+| **Crash root cause** | Traces `KeyError` at node 5 back to the upstream node that actually dropped the field — unless the `KeyError` came from the node's *own* conditional edge, which is that node's bug, not its predecessor's |
+| **Blank final answer** | A ReAct agent's last turn returns empty `content` with no tool calls — the customer gets nothing back. An intermediate tool-calling turn with empty `content` is still exempt |
+| **Wrong subject entirely** | The [judge](#semantic-judge) reviews *rule flags* (is this really a refusal?). It does not walk a clean graph looking for helicopters — that painted healthy nodes red |
+| **Contract violations** | A field a later node needs was never written, written empty, or dropped in between — blamed on the node responsible ([`consumers=`](#declaring-who-reads-what)), including a supervisor that routes with `Command(goto=...)` straight past the node that should have written it |
+| **Failed lookups** | A tool answered 200 with nothing in it — `documents` / `hits` / `results` / `items` / `sources`, a FHIR Bundle's `entry`, a metrics query's `series` — and the node carried on. Critical unless the field is declared `allow_empty` |
+| **Unfinished templates** | A node wrote a template instruction into its output — `[INSERT CAP AMOUNT]`, `[ENTER DATE]`, `[YOUR NAME]`. Other placeholders (`[TOPIC]`, `[Your Name]`, `{var}`, all-caps labels like `[EXTERNAL EMAIL]`) are warnings, since real text contains them |
+| **Barren subgraphs** | Every node inside a subgraph returned something, but all of it landed on keys that exist only in the subgraph's own schema — the parent graph gains nothing and the next node reads unchanged state. Each inner update looks busy; only the subgraph as a whole shows the no-op (`subgraph_no_contribution`), blamed on the subgraph's exit node — the last inner node that ran |
+| **Typo'd state keys** | A node writes `traige` instead of `triage`. LangGraph drops keys the state does not have, silently, so the field never arrives — blamed on the writer, not on whichever node ran first |
+| **Vendor error bodies** | Salesforce `[{"errorCode": …}]`, a SOAP `Fault`, AWS `__type: …Exception`, Jira `errorMessages`, an HTML 503 page — stored by the node as if it were data |
+| **Empty lookups, any key** | `{"totalSize": 0, "records": []}`, `{"Items": [], "Count": 0}`, a BigQuery response with `totalRows: "0"`, `"No results found."` |
+| **Pagination ignored** | The tool said `has_more` / `next_page_token` and the node passed page one on as the whole result. Heuristic: a web search's top page is the design, so with the [run reviewer](#run-reviewer) on this fails only when the reviewer agrees |
+| **Regressions vs a healthy run** | With [`argus baseline`](#healthy-baseline): a node stops writing a key it always writes (including a final node returning `{}`), a field changes type (a list comes back as a JSON string), or `N/A` / `unknown` / `-1` appears where healthy runs hold data |
+| **Broken model output** | Unrendered `{{var}}`, lorem ipsum, `Dear [Customer Name]`; the model repeating itself; a generation cut at its token limit that was used anyway; JSON that did not parse, replaced by a default |
+| **Ungrounded claims** | A number in a model's output that nothing it was given supports (sums and % changes are allowed); an ID one or two characters off the one it was given (`A-1002` for `A-1001`); "I've refunded your order" or "I've processed your refund" with no refund call anywhere in the run; a loop repeating one tool call. Heuristic: with the [run reviewer](#run-reviewer) on, these fail only when it agrees |
+| **Not a failure** | A node's own verdict — `{"status": "denied"}` or a linter's `errors: [...]` — is a warning on that node's update, not a CI fail. The same shape from a **tool** response stays critical |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
 | **Conditional path confusion** | Unchosen branches correctly shown as "skipped" — not false "crashed" |
 
@@ -136,12 +326,20 @@ result = app.invoke(initial_state)
 
 Runs in order, each more expensive — only fires when needed. Every status a layer can assign, and how node statuses roll up into the run verdict, is specified in [`docs/STATUS.md`](docs/STATUS.md).
 
-1. **Heuristics** — 150+ failure signatures (placeholders, empty results, error keys, semantic degradation). Zero cost.
+1. **Heuristics** — 150+ failure signatures (placeholders, empty results, error keys, semantic degradation). Zero cost. On a node's *own* update, a status word (`denied` / `declined` / `voided`) or a findings list (`errors: [...]`) is warning-severity; a singular truthy `error`, bare `success: False`, and numeric HTTP status stay critical. Tool payloads are always graded critically. An empty lookup list fails unless declared `allow_empty`; a placeholder inside prose warns, except a template instruction (`[INSERT …]`, `[ENTER …]`, `[YOUR …]`, `[ADD …]`) the node wrote itself, which fails.
 2. **Validators** — custom per-node business-logic constraints. Deterministic.
 3. **Anomaly detector** — statistical checks for output size anomalies, timing outliers. Deterministic.
 4. **Correlator** — traces failure propagation across nodes. Points at the *origin*, not the crash site.
-5. **LLM semantic judge** — evidence-aware final ruling. Receives all signals from layers 1–4 before deciding. Cannot override validator failures or critical anomalies.
-6. **LLM investigator** — root cause explanations and debugging suggestions. Only on ambiguous failures.
+
+   Blame is decided against the state each node really saw, read off the recording. Where ARGUS
+   has to reconstruct that state — it replays your reducers from a saved *name*, since a reducer
+   callable cannot be stored in a run file — and its reconstruction disagrees with what the run
+   actually recorded, the recording wins. A custom reducer (anything that is not `operator.add`
+   or `add_messages`) is therefore approximated, never trusted over the trace, so a node whose
+   `[]` your reducer discards is not reported as having dropped anything.
+5. **Whole-trace rules** (`argus.trace_rules`) — read the finished run once, for what one step cannot show: the state schema, a healthy baseline, the model's raw output, every tool call in the run. Deterministic, critical, blamed on the step that caused it. A step that runs after another node already failed is not blamed again. Measured on a 255-fault suite: coverage 51% → 90%, with no false positive on 63 healthy runs, 54 of them real model prose.
+6. **Run reviewer** (when node purposes are given) — reads the whole run once and verifies what looks wrong; a *heuristic* rule hit fails CI only when the reviewer agrees, and a rule *warning* it agrees with fails CI. Never clears a strict fail, never fails a step alone. See [Run Reviewer](#run-reviewer). Without purposes, the **LLM semantic judge** runs instead: it reviews warning-level signatures the rules already raised, can dismiss a false-positive warning, and cannot fail CI or clear a hard rule fail.
+7. **LLM investigator** — root cause explanations and debugging suggestions. Only on ambiguous failures.
 
 ---
 
@@ -149,9 +347,18 @@ Runs in order, each more expensive — only fires when needed. Every status a la
 
 Pipelines with loops (LLM -> compiler -> if fail, retry) get special treatment:
 
-- Earlier iterations that self-corrected are marked `retried` (not counted as failures)
-- Only the **final iteration** determines pass/fail
+- Earlier rounds that self-corrected are marked `retried` (not counted as failures)
+- Only the **final round** determines pass/fail
 - Dashboard shows iteration badges, collapse/expand across attempts
+
+**A round, not a node name.** Two `Send` workers running side by side are siblings, not a loop —
+they share a superstep. Each is graded on its own and none can relabel another, so a swallowed
+tool error in the first of five parallel workers still fails the build; previously the last
+worker's success buried it. An earlier round is only demoted to `retried` when *every* sibling in
+the final round passed.
+
+A sequential loop still self-corrects as before: a ReAct agent whose first tool call 404s and
+whose second succeeds stays clean.
 
 ---
 
@@ -160,12 +367,23 @@ Pipelines with loops (LLM -> compiler -> if fail, retry) get special treatment:
 Fix a bug, re-run from the failing node. Skip upstream nodes entirely:
 
 ```bash
-argus replay <run-id> node_7          # re-run from node_7 onward
-argus replay <run-id> node_7 --only   # just that one node
-argus diff <rerun-id>                 # compare vs original
+argus replay <run-id> node_7 --only --app mypkg.graph:build   # re-run that node against your graph
+argus replay <run-id> node_7                                  # re-run from node_7 onward
+argus diff <rerun-id>                                         # compare vs original
 ```
 
-External API calls (OpenAI, etc.) are recorded by default — replays are free and deterministic.
+**A rerun takes the state from the run file and the code from you.** The input is the state
+node_7 really saw, rebuilt from the steps that already passed — they are never re-executed. The
+function comes from the compiled graph you pass with `--app` (a zero-arg callable returning it),
+so the fix you just made is what runs. ARGUS never goes looking for your source to import it.
+
+Runs recorded the older way (`ArgusWatcher`) stored references to their own node functions and
+still replay without `--app`; those are labelled `(legacy refs)` in the header, and external API
+calls made during them were recorded to cassettes, so their replays are free and deterministic.
+On the trace path there are no cassettes — external calls execute live, and the command says so
+before it runs.
+
+To grade a saved run with no graph at all, that's `argus check <id>`, not replay.
 
 ### Time-Travel: edit the state, then resume
 
@@ -178,7 +396,9 @@ argus replay <run-id> node_7 --patch fix.json         # a full patch document
 argus replay <run-id> node_7 --set status=OK --dry-run  # preview, run nothing
 ```
 
-Upstream nodes stay frozen, so only the resumed trajectory changes. Paths are dotted with list
+The same rule applies: a trace run needs `--app` alongside these, `--dry-run` included — the
+graph is required before the patch is previewed. Upstream nodes stay frozen, so only the resumed
+trajectory changes. Paths are dotted with list
 indices — `items[0].name` — and match the `field_path` ARGUS reports on a failing signal, so you
 can paste one straight in. A patch file takes the same three ops:
 
@@ -196,30 +416,113 @@ the patch it ran with, so the run explains its own divergence from the original.
 
 ---
 
-## Semantic Judge
+## Run Reviewer
 
-For subtle quality issues that pattern matching can't catch:
+Rules come in two kinds.
 
-```python
-watcher = ArgusWatcher(graph, semantic_judge=True)  # opt-in; default is off
+- **Strict**: nothing healthy produces them. A tool raised; a 5xx or an error body; `{}` with
+  nodes waiting; a blank final answer; a cut-off generation that was used; a JSON-parse
+  fallback; a regression against the healthy baseline. These fail CI on their own.
+- **Heuristic**: usually a failure, sometimes the design. "I've approved a refund" matched
+  against tool names; `has_more` on a web search (taking the top page *is* the design); a 404
+  that is the answer to "does this exist?" or a 409 "already exists" on an idempotent re-run; a
+  number or ID the rule could not trace; `N/A` where the baseline had data; one tool call
+  repeated (polling); a tool's `requires_approval` recorded as `scheduled`; "never written, so
+  blame the first step".
+
+Give ARGUS one sentence per node saying what it is for, and it runs a reviewer once per run.
+One model call reads the whole recording (each step's input, update, tool calls and model
+output) and lists what looks wrong. A second call checks each item against that step's own
+evidence only, must name the exact value the step should have written, and hands any
+arithmetic to code. What survives is *verified*.
+
+| The rules say | Reviewer verified that step? | `argus check` |
+|---|---|---|
+| strict failure | either | **fail** |
+| heuristic failure | yes | **fail** |
+| heuristic failure | no | pass (kept as a warning) |
+| a warning (e.g. `{customer_name}` left in a reply) | yes | **fail** (`review_confirmed`) |
+| nothing | yes, and a second, different model (`o4-mini`) verifies it too | **fail** (`review_verified`) |
+| nothing | yes, one model only | pass, with an advisory finding |
+| nothing | no | pass |
+
+Two independent checks must agree before a judgement call fails the build: a rule and the
+reviewer, or, where no rule can see the problem (paying 10× over the purchase order, the
+wrong vendor's bank account), two different models verifying the same item cold. The reviewer
+never clears a strict failure.
+
+```bash
+argus baseline <healthy-run> <healthy-run> --purposes --write argus.baseline.json
 ```
 
-LLM evaluates output quality on every node. Catches wrong tone, unhelpful responses, outdated info. Requires a provider key (OpenAI, Anthropic, or Google) — set via `argus key set [--provider ...]` (see [BYOK](#bring-your-own-key-byok)).
+That drafts a `purposes` block next to the baseline. **Edit it**: it is what lets the
+reviewer tell "the reply is written before the refund runs, by design" from a defect.
+Then pass the file as usual:
 
-The judge receives **all prior evidence** — validator failures, anomaly signals, inspection results — so it rules with full context, not just input/output. Every decision includes an audit trail:
+```python
+baseline = json.loads(Path("argus.baseline.json").read_text())
+app = ArgusRecorder(consumers=consumers, baseline=baseline).attach(compiled_graph)
+# or: ArgusRecorder(purposes={"draft_reply": "Writes the customer reply ..."})
+# review=False turns it off; review=True raises if there are no purposes
+```
+
+Everything it verified, gating or advisory, is listed under **Run reviewer** in
+`argus show <run>`. It runs when there are purposes and a key (or `argus login`). Without purposes it does not
+run: the same model with no purposes flagged about 40% of healthy runs.
+
+**Cost.** One call per run plus one per reported item (at most 8), `gpt-4.1` by default
+(mapped to your provider's capable model). It runs when the run finishes, so `invoke()`
+returns a few seconds later. Use it for CI and pre-deploy test runs, not on every
+production request. If any reviewer call fails, the run is graded by the rules alone.
+When the reviewer runs, the per-step judge below does not.
+
+## Semantic Judge
+
+The rules fail the build. The judge reviews the flags they raised — that is all.
+
+```python
+app = ArgusRecorder().attach(graph)                       # on when a key is set
+app = ArgusRecorder(semantic_judge=False).attach(graph)   # rules only, fully deterministic
+```
+
+On by default once a provider key exists (`argus key set`). No key → off.
+
+### Judge last, never first
+
+1. **Rules (the cop) fail `argus check`.** Empty `{}`, dropped field, HTTP 4xx, a tool that raised.
+2. **The judge is called only if those rules left a *soft* flag** on that step (a warning-level signature — "this looks like a refusal"). Clean nodes are not asked. Hard fails are not up for debate.
+3. **If the judge says the flag is wrong, the flag is dropped.** Customer text that reads like a refusal; an empty `issues: []` that is a real LGTM.
+4. **If the judge agrees, the cop's answer stands.** No second origin.
+
+Walking every node looking for hallucinations is how a healthy pipeline went red on one run in a hundred, a different node each time. That path is closed.
+
+| Situation | Judge called? | `argus check` |
+|---|---|---|
+| Rules said nothing | no | pass |
+| Soft flag, judge says "wrong" | yes | pass (flag dropped) |
+| Soft flag, judge says "right" | yes | still the rule's call (usually a warning → pass) |
+| Hard fail (`{}`, missing field, 404) | no | **fail** |
+
+> Judging is also skipped for a turn that only issued tool calls — an empty
+> `content` next to a populated `tool_calls` is how every tool-calling model
+> works, and there is no prose there to rule on.
+
+Every verdict carries an audit trail:
 
 ```json
 {
   "pass": false,
-  "reason": "Validator correctly identified missing resolution_ticket",
-  "confidence": 0.85,
+  "reason": "The output is completely unrelated to the input, which is about ingredients for a recipe.",
+  "failure_kind": "unrelated",
+  "confidence": 1.0,
   "evidence_considered": ["validator:payment_check", "anomaly:BA-003"],
   "overridden_signals": []
 }
 ```
 
-- `evidence_considered` — which prior signals the LLM weighed
-- `overridden_signals` — which signals the LLM disagreed with (passed despite the flag)
+- `failure_kind` — `unrelated` / `contradiction` / `empty_or_missing` / `other` (audit only; none of these fail CI alone)
+- `evidence_considered` — which prior signals the judge weighed
+- `overridden_signals` — which it disagreed with and dropped
 
 ---
 
@@ -258,7 +561,7 @@ Validator failures cannot be overridden by the LLM judge — they are hard const
 from argus import ArgusWatcher, ArgusConfig
 
 config = ArgusConfig(
-    semantic_judge=True,           # LLM judge on every node (default: False)
+    semantic_judge=True,           # review soft rule flags (default: on when a key is set)
     judge_model="gpt-4o",          # model for the judge
     node_timeout_ms=30000,         # flag outputs at ≥95% of this
     min_expected_ms=500,           # flag suspiciously fast LLM nodes
@@ -266,6 +569,7 @@ config = ArgusConfig(
     persist_failures=True,         # always persist failed runs
 )
 
+app = ArgusRecorder().attach(graph)   # ArgusConfig applies to ArgusWatcher today
 watcher = ArgusWatcher(graph, config=config)
 ```
 
@@ -284,9 +588,11 @@ argus check last --format json       # same verdict as one JSON object (run_id, 
 argus check last --fail-on crashed,silent_failure   # only these run statuses fail the gate
 argus inspect <id> --step <node>     # dump raw input/output for a node
 argus fix <id>                       # fix prompt for the root cause, ready to paste
-argus replay <id> <node>             # re-run from a node
+argus replay <id> <node> --app m:fn  # re-run from a node, against the graph you pass
 argus diff <id-a> <id-b>             # compare two runs
 argus stats                          # signature hit stats, disable/enable/dispute signatures
+argus ingest langsmith <file.jsonl>  # grade a LangSmith export — no app, no graph needed
+argus edges mypkg.graph:build -o edges.json   # real topology for `ingest --edges`
 argus ignore <SIG-ID> [--node N]     # silence a noisy signature project-wide or on one node
 argus ignore --list                  # show active suppressions (.argus/config.json)
 argus ui                             # web dashboard
@@ -311,7 +617,7 @@ Silent failures become test failures without changing how you invoke the graph:
 pytest --argus
 ```
 
-ARGUS auto-wraps `StateGraph.compile()` / compiled `invoke()` for the test session. A clean pipeline stays a passing test; missing fields, tool failures, crashes, and semantic degradation fail that test. Tests that never invoke a graph are unchanged. After a standalone CI run, pass its exact id with `argus check <id>` or `ARGUS_RUN_ID=<id> argus check`; `argus check last` only means the newest file and can select a stale or unrelated run in a shared workspace.
+ARGUS records every LangGraph run in the test session through LangChain's public callback hook — nothing in LangGraph is patched or wrapped — and grades it exactly as `ArgusRecorder().attach(graph)` would. A graph you attached yourself is not recorded twice. A clean pipeline stays a passing test; missing fields, tool failures, crashes, and semantic degradation fail that test. Each test is graded against the run IDs saved during that test, so parallel `pytest -n` workers cannot grade one another's runs. Tests that never invoke a graph are unchanged. After a standalone CI run, pass its exact id with `argus check <id>` or `ARGUS_RUN_ID=<id> argus check`; `argus check last` only means the newest file and can select a stale or unrelated run in a shared workspace.
 
 ---
 
@@ -327,6 +633,8 @@ If the table is empty, the UI is serving a different `.argus` than the project t
 
 - **Distinct failure colors** — crashed (red), silent failure (amber), semantic fail (purple), degraded input (orange), skipped (gray)
 - **Evidence audit trail** — see exactly which signals the LLM judge considered and which it overrode
+- **Fat-trace step detail** — every tool call a step made (input, output, and the error a tool raised even when the node swallowed it), plus what the run reviewer verified on that step
+- **Rerun from the dashboard** — *Rerun node* / *Rerun from here* on a recorder run need the function that builds your graph (`argus ui --app module:build_graph`, or enter it when asked). A trace holds state, not code, and the dashboard never guesses where your code lives.
 - **Side-by-side diff** — compare any two runs node-by-node
 
 ---
@@ -351,11 +659,30 @@ session.finalize()
 
 Works with any framework — Prefect, Temporal, plain Python.
 
+### From a trace file, with no app at all
+
+Already tracing to LangSmith? Grade the export directly — nothing imported, no graph, no rerun:
+
+```bash
+argus edges mypkg.graph:build -o edges.json        # real topology (optional but better)
+argus ingest langsmith run.jsonl --edges edges.json --consumers consumers.json
+argus check last
+```
+
+Tool and model child runs become the step's `tool_calls` / `llm_usage`. Without `--edges`,
+successors are guessed from step order; `--consumers` takes the same `{"field": ["reader"]}`
+map as `ArgusRecorder(consumers=)`.
+
+A **skinny** trace is refused rather than graded green: sampled runs, LLM-only spans, or payloads
+stripped at export leave nothing to detect a silent no-op with. ARGUS needs the dict each node
+returned. The one exception is a root run carrying an `error` — a graph that raised has no final
+state to export.
+
 ---
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.9+ (3.11+ to capture tool calls inside `async` nodes without forwarding `config`)
 - LangGraph 0.2+ (only for `ArgusWatcher`)
 - A provider key (OpenAI, Anthropic, or Google) for semantic features — set via `argus key set [--provider ...]` (optional; all heuristic detection works without it)
 

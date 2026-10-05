@@ -77,14 +77,14 @@ function InlineNodeDiff({ diff, onDismiss }: { diff: NodeDiffData; onDismiss?: (
   return (
     <div className="mt-3">
       <div className="flex items-center gap-2 py-2">
-        <div className="flex-1 border-t-2 border-dashed" style={{ borderColor: '#9a6dc640' }} />
-        <span className="text-[10px] uppercase tracking-widest font-semibold shrink-0" style={{ color: '#9a6dc6' }}>
+        <div className="flex-1 border-t-2 border-dashed" style={{ borderColor: 'color-mix(in srgb, var(--semantic) 25%, transparent)' }} />
+        <span className="text-[10px] uppercase tracking-widest font-semibold shrink-0" style={{ color: 'var(--semantic)' }}>
           node rerun diff
         </span>
         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0" style={{ color: verdictColor, background: `color-mix(in srgb, ${verdictColor} 10%, transparent)` }}>
           {verdictLabel}
         </span>
-        <div className="flex-1 border-t-2 border-dashed" style={{ borderColor: '#9a6dc640' }} />
+        <div className="flex-1 border-t-2 border-dashed" style={{ borderColor: 'color-mix(in srgb, var(--semantic) 25%, transparent)' }} />
         {onDismiss && (
           <button type="button" onClick={onDismiss} className="p-0.5 rounded hover:bg-white/5 transition-colors shrink-0 text-muted-foreground">
             <X size={12} />
@@ -262,7 +262,7 @@ export default function StepRow({
 
             {/* Replaying spinner */}
             {isReplaying && (
-              <div className="mt-2 flex items-center gap-1.5 text-[11px] font-medium" style={{ color: '#9a6dc6' }}>
+              <div className="mt-2 flex items-center gap-1.5 text-[11px] font-medium" style={{ color: 'var(--semantic)' }}>
                 <span className="inline-block w-3 h-3 border-2 border-purple-300 border-t-purple-600 rounded-full animate-spin" />
                 replaying...
               </div>
@@ -344,7 +344,7 @@ export default function StepRow({
             <div className="p-3 border-t border-border">
               <div className="text-[10px] uppercase tracking-widest font-semibold mb-2" style={{ color: 'var(--failure)' }}>Full Exception</div>
               <pre className="text-[11px] rounded-[8px] p-3 overflow-x-auto whitespace-pre-wrap leading-5 font-mono border"
-                style={{ color: '#ef9a9a', background: 'color-mix(in srgb, var(--failure) 4%, transparent)', borderColor: 'color-mix(in srgb, var(--failure) 15%, transparent)' }}>
+                style={{ color: 'var(--tool)', background: 'color-mix(in srgb, var(--failure) 4%, transparent)', borderColor: 'color-mix(in srgb, var(--failure) 15%, transparent)' }}>
                 {event.exception}
               </pre>
             </div>

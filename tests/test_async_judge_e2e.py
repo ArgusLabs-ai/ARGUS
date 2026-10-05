@@ -23,6 +23,7 @@ class PipelineState(TypedDict, total=False):
     answer: str
     score: float
     sources: list[str]
+    notes: str
 
 
 # ── Helper nodes ────────────────────────────────────────────────────────────
@@ -143,7 +144,15 @@ class TestAsyncJudgeE2E:
         assert gen_event.inspection.has_tool_failure
 
     def test_placeholder_detected(self, monkeypatch):
-        """'I don't know' is a known placeholder — should be caught when LLM judge runs."""
+        """`answer: "I don't know"` is caught by the rules, before the judge.
+
+        It used to land as `semantic_fail` — the heuristic scored the signature
+        as a warning, so only the LLM's verdict failed the node. A placeholder
+        that is the *entire* value of the answer field is now critical on its
+        own (`inspector._is_the_whole_answer`), so the node fails as `fail`
+        whether or not a model is configured. Judge-authored `semantic_fail` is
+        covered by `test_async_judge_applies_fail_verdict`.
+        """
         monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
         monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _mock_llm_fail)
 
@@ -153,8 +162,10 @@ class TestAsyncJudgeE2E:
             "score": score_answer,
         })
         gen_event = next(e for e in events if e.node_name == "generate")
-        # With LLM saying fail, this should be caught
-        assert gen_event.status == "semantic_fail"
+        assert gen_event.status in ("fail", "semantic_fail")
+        assert gen_event.inspection is not None
+        assert gen_event.inspection.has_tool_failure, "gated by the rules, not only the judge"
+        assert record.overall_status != "clean"
 
     def test_crash_propagates(self):
         def crash_node(state):
@@ -216,20 +227,42 @@ class TestAsyncJudgeWithMockedLLM:
                 assert e.semantic_check.passed is True
 
     def test_async_judge_applies_fail_verdict(self, monkeypatch):
+        """A whole-value placeholder on `answer` is a hard rule fail.
+
+        The judge is not asked — hard fails are the cop's. The mock that
+        always votes fail must not be able to change that.
+        """
         self._enable_llm(monkeypatch)
         monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _mock_llm_fail)
 
         _, events, record = _build_and_run({
             "fetch": fetch_context,
-            "generate": generate_answer,
+            "generate": generate_answer_placeholder,
             "score": score_answer,
         })
         assert record.overall_status != "clean"
-        semantic_fails = [e for e in events if e.status == "semantic_fail"]
-        assert len(semantic_fails) >= 1
+        assert [e for e in events if e.status in ("fail", "semantic_fail")]
+
+    def test_an_uncorroborated_judge_fail_does_not_gate_the_run(self, monkeypatch):
+        """The judge is not asked about a step the rules cleared.
+
+        Walking every node is how a healthy `create_react_agent` failed two
+        runs in three at confidence 1.0. No soft flag → no call → no gate.
+        """
+        self._enable_llm(monkeypatch)
+        monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _mock_llm_fail)
+
+        _, events, record = _build_and_run({
+            "fetch": fetch_context,
+            "generate": generate_answer,  # healthy — the rules find nothing
+            "score": score_answer,
+        })
+        assert record.overall_status == "clean", record.overall_status
+        assert not [e for e in events if e.status == "semantic_fail"]
+        assert all(e.semantic_check is None for e in events)
 
     def test_async_judge_concurrent_calls(self, monkeypatch):
-        """Verify multiple LLM calls fire and complete."""
+        """Several soft flags → several background judge calls."""
         self._enable_llm(monkeypatch)
         call_count = {"n": 0}
 
@@ -240,14 +273,23 @@ class TestAsyncJudgeWithMockedLLM:
 
         monkeypatch.setattr("argus.llm_proxy.create_chat_completion", _counting_llm)
 
+        def fetch_flagged(state: PipelineState) -> PipelineState:
+            return {**fetch_context(state), "notes": "TODO"}
+
+        def generate_flagged(state: PipelineState) -> PipelineState:
+            return {**generate_answer(state), "notes": "TODO"}
+
+        def score_flagged(state: PipelineState) -> PipelineState:
+            return {**score_answer(state), "notes": "TODO"}
+
         _, events, record = _build_and_run({
-            "fetch": fetch_context,
-            "generate": generate_answer,
-            "score": score_answer,
+            "fetch": fetch_flagged,
+            "generate": generate_flagged,
+            "score": score_flagged,
         })
-        # 3 per-node judge calls + 1 per-run investigator call = 4
         assert call_count["n"] >= 3, f"Expected ≥3 LLM calls, got {call_count['n']}"
         assert all(e.semantic_check is not None for e in events)
+        assert record.overall_status == "clean"
 
     def test_judge_failure_warn_doesnt_crash(self, monkeypatch):
         self._enable_llm(monkeypatch)

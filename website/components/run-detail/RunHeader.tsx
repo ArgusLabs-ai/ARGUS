@@ -7,11 +7,11 @@ import { STATUS_DOT, formatDur, formatTimestamp } from '@/lib/run-utils'
 import SendReportDialog from '@/components/SendReportDialog'
 
 const STATUS_COLOR: Record<string, string> = {
-  clean: '#22c55e',
-  silent_failure: '#f59e0b',
-  crashed: '#ef4444',
-  semantic_fail: '#a855f7',
-  interrupted: '#8b8fa0',
+  clean: 'var(--ok)',
+  silent_failure: 'var(--quality)',
+  crashed: 'var(--tool)',
+  semantic_fail: 'var(--semantic)',
+  interrupted: 'var(--ink-3)',
 }
 
 export default function RunHeader({
@@ -22,7 +22,7 @@ export default function RunHeader({
   actions?: React.ReactNode
 }) {
   const [showReport, setShowReport] = useState(false)
-  const statusInfo = STATUS_DOT[run.overall_status] ?? { dot: '\u25CF', color: '#5d6370' }
+  const statusInfo = STATUS_DOT[run.overall_status] ?? { dot: '\u25CF', color: 'var(--ink-4)' }
   const steps = run.steps ?? []
 
   return (
@@ -36,7 +36,7 @@ export default function RunHeader({
               <span className="font-mono text-base text-foreground">{run.run_id}</span>
             </h1>
             {(() => {
-              const sc = STATUS_COLOR[run.overall_status] ?? '#8b8fa0'
+              const sc = STATUS_COLOR[run.overall_status] ?? 'var(--ink-3)'
               return (
                 <span
                   className="text-[11px] font-semibold px-2.5 py-1 rounded-full border"
@@ -64,13 +64,13 @@ export default function RunHeader({
             {run.is_cyclic && (
               <>
                 <span style={{ color: 'var(--text-tertiary)' }}>&middot;</span>
-                <span style={{ color: '#a855f7' }}>cyclic</span>
+                <span style={{ color: 'var(--semantic)' }}>cyclic</span>
               </>
             )}
             {run.dry_run && (
               <>
                 <span style={{ color: 'var(--text-tertiary)' }}>&middot;</span>
-                <span style={{ color: '#6b7280' }}>dry run</span>
+                <span style={{ color: 'var(--ink-3)' }}>dry run</span>
               </>
             )}
           </div>

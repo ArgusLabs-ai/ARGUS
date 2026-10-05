@@ -583,9 +583,41 @@ def _run_replay_worker(
     """
     from argus.replay import ReplayEngine  # noqa: PLC0415
 
+    def fail(error: str, code: str) -> None:
+        with _replay_lock:
+            _replay_jobs[job_id] = {
+                "status": "error",
+                "run_id": None,
+                "error": error,
+                "error_code": code,
+            }
+
+    try:
+        factory = _import_factory_for_ui(app_module_str) if app_module_str else None
+    except Exception as exc:
+        # `bad_factory` makes the dashboard ask again. Anything else left the
+        # saved spec in .argus/config.json, retried on every click.
+        fail(str(exc), "bad_factory")
+        return
+
     try:
         engine = ReplayEngine()
-        if mode == "node":
+        if mode == "node" and factory is not None:
+            # A trace run: input from the ledger, the node off the user's graph.
+            app = factory()
+            if not hasattr(app, "nodes"):
+                raise ValueError(
+                    "app_factory must return a LangGraph StateGraph or CompiledGraph. "
+                    f"Got: {type(app).__name__}"
+                )
+            new_run_id = engine.replay_live(
+                run_id=run_id,
+                node_name=from_node,
+                app=app,
+                patch=patch,
+                create_missing=create_missing,
+            )
+        elif mode == "node":
             new_run_id = engine.replay_node(
                 run_id=run_id,
                 node_name=from_node,
@@ -593,7 +625,6 @@ def _run_replay_worker(
                 create_missing=create_missing,
             )
         else:
-            factory = _import_factory_for_ui(app_module_str) if app_module_str else None
             new_run_id = engine.replay(
                 run_id=run_id,
                 from_node=from_node,
@@ -605,18 +636,8 @@ def _run_replay_worker(
             _replay_jobs[job_id] = {"status": "done", "run_id": new_run_id, "error": None}
     except Exception as exc:
         error_str = str(exc)
-        error_code = "replay_failed"
-        if "returned a dict" in error_str or "app_factory must return" in error_str:
-            error_code = "bad_factory"
-        elif "returned None" in error_str:
-            error_code = "bad_factory"
-        with _replay_lock:
-            _replay_jobs[job_id] = {
-                "status": "error",
-                "run_id": None,
-                "error": error_str,
-                "error_code": error_code,
-            }
+        bad = ("returned a dict", "app_factory must return", "returned None")
+        fail(error_str, "bad_factory" if any(s in error_str for s in bad) else "replay_failed")
 
 
 def _all_run_files(project_dir: Path) -> list[Path]:
@@ -686,28 +707,9 @@ def _make_handler(
             self.end_headers()
             self.wfile.write(body)
 
-        @staticmethod
-        def _try_auto_locate(record: object) -> object:
-            """Attempt post-hoc source resolution for a run record."""
-            try:
-                from argus.source_locator import (  # noqa: PLC0415
-                    derive_node_fn_refs,
-                    locate_node_sources,
-                )
-                from argus.storage import save_run as _save  # noqa: PLC0415
-
-                resolved = locate_node_sources(record, use_llm=True)
-                if resolved:
-                    record.node_fn_paths = resolved
-                    refs = derive_node_fn_refs(resolved)
-                    if refs:
-                        record.node_fn_refs = refs
-                        _save(record)
-            except Exception:
-                pass  # best-effort — fall through to original error handling
-            return record
-
         def _list_runs(self) -> None:
+            from argus.hotspots import finding_index  # noqa: PLC0415
+
             all_files = _all_run_files(_project_dir)
             if not all_files:
                 self._send_json([])
@@ -722,6 +724,7 @@ def _make_handler(
                     if rid in seen:
                         continue
                     seen.add(rid)
+                    origins, finding_nodes = finding_index(run)
                     summaries.append(
                         {
                             "run_id": rid,
@@ -735,12 +738,44 @@ def _make_handler(
                             "parent_run_id": run.get("parent_run_id"),
                             "replay_from_step": run.get("replay_from_step"),
                             "alias": aliases.get(rid),
+                            "origins": origins,
+                            "finding_nodes": finding_nodes,
                         }
                     )
                 except Exception:
                     pass
             summaries.sort(key=lambda r: r["started_at"], reverse=True)
             self._send_json(summaries)
+
+        def _hotspots(self, tag: str | None) -> None:
+            """origin x node finding counts across every stored run (US-4.4)."""
+            from argus.hotspots import HOTSPOT_RUN_CAP, aggregate_hotspots  # noqa: PLC0415
+
+            # Newest first by mtime, so only the newest HOTSPOT_RUN_CAP files are
+            # read. Parsing every run on a directory with thousands of them, then
+            # capping afterwards, made this the slowest call on the page.
+            files = sorted(
+                _all_run_files(_project_dir),
+                key=lambda f: f.stat().st_mtime if f.exists() else 0.0,
+                reverse=True,
+            )
+            runs: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for f in files:
+                if len(runs) >= HOTSPOT_RUN_CAP:
+                    break
+                try:
+                    run = json.loads(f.read_text())
+                except Exception:
+                    continue
+                rid = run.get("run_id")
+                if not rid or rid in seen:
+                    continue
+                seen.add(rid)
+                runs.append(run)
+            # mtime orders the reads; started_at is the order the matrix reports.
+            runs.sort(key=lambda r: r.get("started_at") or "", reverse=True)
+            self._send_json(aggregate_hotspots(runs, tag=tag))
 
         def _get_run(self, run_id: str) -> None:
             for f in _all_run_files(_project_dir):
@@ -750,6 +785,52 @@ def _make_handler(
                         return
                     except Exception:
                         pass
+            self._send_json({"error": "not found"}, 404)
+
+        def _get_fix(
+            self, run_id: str, *, node: str | None, sanitized: bool
+        ) -> None:
+            """Same markdown `argus fix` prints — for the dashboard Copy action."""
+            from argus.fix_prompt import (  # noqa: PLC0415
+                FixPromptError,
+                build_fix_prompt_for_record,
+            )
+            from argus.storage import _deserialize_run  # noqa: PLC0415
+
+            if not run_id:
+                self._send_json({"error": "not found"}, 404)
+                return
+            # Exact id first, so a run whose id prefixes another's can't be
+            # shadowed by it; then the prefix match `argus fix` also accepts.
+            files = _all_run_files(_project_dir)
+            files = [f for f in files if f.stem == run_id] + [
+                f for f in files if f.stem != run_id and f.stem.startswith(run_id)
+            ]
+            for f in files:
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    record = _deserialize_run(data)
+                except Exception:
+                    continue
+                try:
+                    result = build_fix_prompt_for_record(
+                        record, node=node, sanitized=sanitized
+                    )
+                except FixPromptError as exc:
+                    self._send_json({"error": str(exc)}, 400)
+                    return
+                except Exception as exc:
+                    self._send_json({"error": str(exc)}, 500)
+                    return
+                self._send_json(
+                    {
+                        "run_id": record.run_id,
+                        "node": result.node,
+                        "source_path": result.source_path,
+                        "prompt": result.prompt,
+                    }
+                )
+                return
             self._send_json({"error": "not found"}, 404)
 
         def _get_run_children(self, run_id: str) -> None:
@@ -867,12 +948,25 @@ def _make_handler(
                     self._send_json({"error": "not logged in"}, 401)
             elif path == "/api/runs":
                 self._list_runs()
+            elif path == "/api/hotspots":
+                qs = parse_qs(parsed.query)
+                self._hotspots(qs.get("tag", [""])[0] or None)
             elif path.startswith("/api/runs/") and path.endswith("/children"):
                 rid = path[len("/api/runs/") : -len("/children")]
                 self._get_run_children(rid)
             elif path.startswith("/api/runs/") and path.endswith("/tree"):
                 rid = path[len("/api/runs/") : -len("/tree")]
                 self._get_run_tree(rid)
+            elif path.startswith("/api/runs/") and path.endswith("/fix"):
+                rid = unquote(path[len("/api/runs/") : -len("/fix")])
+                qs = parse_qs(parsed.query)
+                node = qs.get("node", [None])[0] or None
+                sanitized = (qs.get("sanitized", [""])[0] or "").lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                self._get_fix(rid, node=node, sanitized=sanitized)
             elif path.startswith("/api/runs/"):
                 self._get_run(path[len("/api/runs/") :])
             elif path.startswith("/api/logs/"):
@@ -1125,41 +1219,28 @@ def _make_handler(
                     self._send_json({"error": "run not found"}, 404)
                     return
 
-                # Single-node replay only needs node_fn_refs
+                # The code half of a rerun comes from the refs a wrap-path run
+                # stored about itself, or from the user's app factory. A trace
+                # holds state, not code, and replay never guesses where a
+                # node's function lives (#79).
+                refs = run_record.node_fn_refs or {}
+                has_refs = from_step in refs if replay_mode == "node" else bool(refs)
                 effective_app: str | None = None
-
-                # Auto-locate source files if refs are missing
-                if not run_record.node_fn_refs:
-                    run_record = self._try_auto_locate(run_record)
-
-                if replay_mode == "node":
-                    if not run_record.node_fn_refs or from_step not in run_record.node_fn_refs:
+                if not has_refs:
+                    effective_app = (
+                        app_module_str
+                        or _load_config_app_factory()
+                        or run_record.app_factory_ref
+                    )
+                    if not effective_app:
                         self._send_json(
                             {
-                                "error": "no_node_ref",
-                                "message": f"No stored function ref for '{from_step}'. Re-record with latest argus.",  # noqa: E501
+                                "error": "no_app_factory",
+                                "message": "This run is a trace: it holds state, not code. Set your app factory in the UI or run argus ui --app module:fn",  # noqa: E501
                             },
                             422,
                         )
                         return
-                else:
-                    # Full replay: check factory requirements
-                    has_node_refs = bool(run_record.node_fn_refs)
-                    if not has_node_refs:
-                        effective_app = (
-                            app_module_str
-                            or _load_config_app_factory()
-                            or run_record.app_factory_ref
-                        )
-                        if not effective_app:
-                            self._send_json(
-                                {
-                                    "error": "no_app_factory",
-                                    "message": "Set your app factory in the UI or run argus ui --app module:fn",  # noqa: E501
-                                },
-                                422,
-                            )
-                            return
 
                 # Validate the optional state patch up front. A patch that fails
                 # inside the worker thread would surface only as a generic job

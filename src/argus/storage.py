@@ -15,7 +15,9 @@ from argus.models import (
     FieldMismatch,
     Finding,
     InspectionResult,
+    LLMCallInfo,
     LLMInvestigationResult,
+    LLMUsage,
     NodeDiffSummary,
     NodeEvent,
     PropagationChain,
@@ -32,6 +34,7 @@ from argus.models import (
     ToolFailure,
     ValidatorResult,
 )
+from argus.run_context import record_run_id
 
 _ARGUS_DIR = ".argus"
 _RUNS_DIR = "runs"
@@ -107,6 +110,7 @@ def save_run(record: RunRecord) -> Path:
     data = _to_json_serializable(record)
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.rename(path)
+    record_run_id(record.run_id)
 
     # Update hit metadata for learned/shared signatures, then prune stale ones
     try:
@@ -348,6 +352,8 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         graph_node_names=data.get("graph_node_names", []),
         graph_edge_map=data.get("graph_edge_map", {}),
         initial_state=data.get("initial_state", {}),
+        reducer_kinds=data.get("reducer_kinds", {}),
+        state_keys=data.get("state_keys", []),
         steps=steps,
         schema_version=data.get("schema_version", "0"),
         parent_run_id=data.get("parent_run_id"),
@@ -360,6 +366,9 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         interrupted=data.get("interrupted", False),
         interrupt_node=data.get("interrupt_node"),
         state_patch=data.get("state_patch"),
+        total_llm_calls=data.get("total_llm_calls", 0),
+        total_tokens=data.get("total_tokens", 0),
+        total_cost_usd=data.get("total_cost_usd"),
         behavior_config=behavior_config,
         correlation=correlation,
         llm_investigation=llm_investigation,
@@ -637,6 +646,11 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
         semantic_check = SemanticCheckResult(**sc)
     else:
         semantic_check = None
+    usage = data.get("llm_usage")
+    llm_usage = None
+    if usage:
+        calls = [LLMCallInfo(**c) for c in usage.get("calls", [])]
+        llm_usage = LLMUsage(**{**usage, "calls": calls})
     return NodeEvent(
         step_index=data.get("step_index", 0),
         node_name=data.get("node_name", ""),
@@ -657,4 +671,9 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
         suppressed_anomalies=suppressed_anomalies,
         semantic_check=semantic_check,
         total_iterations=data.get("total_iterations"),
+        tool_calls=data.get("tool_calls", []),
+        goto=data.get("goto", []),
+        llm_usage=llm_usage,
+        superstep=data.get("superstep"),
+        review=data.get("review", []),
     )

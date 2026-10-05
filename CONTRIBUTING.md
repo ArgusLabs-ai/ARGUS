@@ -2,6 +2,17 @@
 
 Thanks for your interest in contributing. ARGUS is a production readiness platform for AI agent pipelines — there's a lot of surface area and we welcome help across the board.
 
+## How detection works (read this before touching the judge)
+
+Two roles. Do not mix them.
+
+1. **Rules (the cop)** — `inspector.py`, `contextual.py`, signatures, validators. These fail `argus check`. Empty `{}`, dropped fields, HTTP 4xx, a tool that raised. On a node's *own* update (`inspect_tool_outputs(..., own_output=True)`), a status word or a findings list (`errors: [...]`) is warning-only — a singular truthy `error` and tool payloads stay critical (`tests/test_own_verdict_vs_tool_response.py`).
+2. **LLM judge (the reviewer)** — `semantic_checker.py`, applied in `session.py`. Called **only** when the rules left a *soft* flag on that step — any warning-level `semantic_signals` entry, including shape warnings (`shallow_output`, `json_in_string`). If it says the flag is wrong, the flag is dropped. If it agrees, the cop's answer stands. The judge cannot originate a fail and cannot clear a hard fail.
+
+The judge does **not** walk a clean graph looking for hallucinations. That path failed healthy pipelines at random.
+
+Tests that pin this: `tests/test_judge_last.py`. Detection changes also need both matrices (`tests/test_silent_failure_matrix.py`, `tests/test_shipped_shapes_matrix.py`).
+
 ## Discord
 
 **Join the [ARGUS Discord](https://discord.gg/67XTFTDSgd) before opening a PR.**
@@ -50,14 +61,15 @@ ARGUS currently has no export integrations. These would be high-impact contribut
 
 ### Web UI — Planned Pages
 
-Several pages in the dashboard are stubbed but not yet implemented (marked "soon" in the sidebar):
+These pages are **planned**, not stubbed in the sidebar. The shipped dashboard shows
+Runs, Compare, Approvals, Guide, Changelog, and Settings. Maintainers can restore
+the planned list with `?preview=1` (documented in `website/README.md`).
 
 - **Traces** — distributed tracing view across pipeline runs
 - **Evaluation** — benchmark pipelines against golden datasets
 - **Graphs** — visualize pipeline topology and evolution over time
 - **Alerts** — configurable alert rules (failure rate thresholds, latency spikes)
 - **Datasets** — manage test datasets for regression testing
-- **Settings** — UI for configuration (currently CLI-only)
 - **Logs Comparison** — side-by-side log diff in the Compare view
 
 ### Unit Tests

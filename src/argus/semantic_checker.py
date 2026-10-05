@@ -18,27 +18,56 @@ from typing import Any
 from argus.models import DisambiguationResult, SemanticCheckResult, SemanticSignal
 
 _SYSTEM_PROMPT = (
-    "You verify whether an AI pipeline node produced semantically correct "
-    "output given its input. Respond with JSON:\n"
+    "You review the flags a deterministic checker already raised on one node "
+    "in an AI pipeline. You do not hunt for new failures. Respond with JSON:\n"
     '{"pass": bool, "reason": "<1 sentence>", "confidence": <0.0-1.0>, '
+    '"failure_kind": "unrelated"|"contradiction"|"empty_or_missing"|"other", '
     '"evidence_considered": ["<signal1>", ...], '
     '"overridden_signals": ["<signal_you_disagree_with>", ...], '
     '"disambiguation_verdicts": [{"sig_id": "<id>", "is_failure": <bool>, '
     '"confidence": <0.0-1.0>, "reason": "<1 sentence>"}]}\n\n'
+    '- failure_kind: when "pass" is false, say which kind of failure it is.\n'
+    '    "unrelated" — the output is about a DIFFERENT SUBJECT than the input. '
+    "This is about subject matter only. Cake ingredients in, helicopter rotors "
+    "out: unrelated. A node that stays on the input's subject but does not "
+    "answer the question, covers only one aspect of it, or contributes a single "
+    "fact to a shared list is NOT unrelated — that is a normal step in a "
+    'pipeline and must be "pass": true. Ask "is this the same topic?", '
+    'never "does this answer the question?".\n'
+    "    A short output that is a LABEL rather than prose — a verdict "
+    "(APPROVE/REVISE), a category, a routing key, a score, a count, a boolean, "
+    'a status — is a classification result. It is never "unrelated", however '
+    "little it resembles the input text.\n"
+    '    "contradiction" — the output asserts the opposite of the input or of '
+    "itself (a summary saying a recipe has no eggs when the input lists eggs). "
+    "A field that appears in BOTH Input and Output is being UPDATED by this "
+    "node: a list that was empty and now has items, a count that changed, a "
+    "status that moved on, a flag that flipped — that is the node's work and is "
+    'NEVER a contradiction. "contradiction" is only about output text versus '
+    "input facts the node did not write.\n"
+    '    "empty_or_missing" — a field is blank, null or absent.\n'
+    '    "other" — anything else. Use "other" when "pass" is true.\n'
     "- evidence_considered: list every Prior Signal you evaluated (empty list if none provided)\n"
     "- overridden_signals: list any Prior Signals you chose to PASS despite "
     "(empty list if you agreed with all signals or none were provided)\n"
     "- disambiguation_verdicts: verdict for each Ambiguous Heuristic Match "
     "(empty list if none provided)\n\n"
     "Rules:\n"
-    '- "pass": true if the output is a reasonable response to the input\n'
-    '- "pass": false ONLY if the output is completely unrelated, contradictory, '
-    "or nonsensical given the input\n"
+    '- "pass": true if the Prior Signals are wrong or the output is a reasonable '
+    "response to the input (a false-positive flag: customer text that reads like "
+    "a refusal, an empty list that is a real LGTM, a field the node is updating)\n"
+    '- "pass": false if those Prior Signals are correct — keep them. Do not invent '
+    "a new failure the signals did not name\n"
     "- Do not judge quality or completeness, only semantic relevance\n"
     "- EXCEPTION: if a key output field is empty string, null, or blank while "
     "the input contained meaningful data for that field, FAIL the node — "
     "an empty output is not semantically relevant regardless of other fields "
     "like logs or metadata\n"
+    "- That exception applies to the OUTPUT ONLY. NEVER fail a node because a "
+    "field in the INPUT is empty, missing or blank — the input is context you "
+    "are given, not the node's work. In particular, a message history often "
+    "contains assistant turns whose 'content' is empty because they carried a "
+    "tool call instead; that is normal and is never a reason to fail.\n"
     "- If you cannot determine relevance (insufficient context), pass it\n"
     "- This is one node in a MULTI-STEP pipeline. The output does not need to "
     "directly answer the input — it may be an intermediate transformation "
@@ -59,6 +88,16 @@ _SYSTEM_PROMPT = (
     "is missing). You MUST weigh these heavily — if a validator flagged a "
     "missing required field and you can confirm it is absent from the output, "
     "FAIL the node regardless of how reasonable the text looks.\n"
+    "- EARLIER STEPS: If an 'Earlier steps' section is provided, it is the run's "
+    "history for the fields this node cares about — what each prior step wrote "
+    "and whether the field was still populated after it. Use it only to explain "
+    "an empty or missing value in THIS node's input or output: if a field this "
+    "node needed was populated earlier and an earlier step emptied or dropped "
+    'it, fail with failure_kind "empty_or_missing" and name that step in the '
+    "reason. Never fail a node for what an earlier step did to a field this "
+    "node neither reads nor writes, and never fail a node for a change it made "
+    "itself — consuming a queue, filtering a list or replacing a value it "
+    "writes is the node doing its job.\n"
     "- DISAMBIGUATION: If 'Ambiguous Heuristic Matches' are provided, these are "
     "pattern matches with borderline confidence. For each, determine if the matched "
     "pattern represents a real problem (placeholder text, corrupted output, semantic "
@@ -202,6 +241,21 @@ def _coerce_verdict(value: Any) -> bool | None:
     return None
 
 
+_FAILURE_KINDS = frozenset({"unrelated", "contradiction", "empty_or_missing", "other"})
+
+
+def _coerce_failure_kind(value: Any) -> str:
+    """Normalise the judge's `failure_kind`, defaulting to the cautious answer.
+
+    An unknown or absent value becomes ``"other"``, which needs a corroborating
+    rule finding before it can fail a build — so a malformed reply degrades to
+    "annotate only" rather than to a standalone gate failure.
+    """
+    if isinstance(value, str) and value.strip().lower() in _FAILURE_KINDS:
+        return value.strip().lower()
+    return "other"
+
+
 def _skip_result(reason: str, model: str, ms: float) -> SemanticCheckResult:
     return SemanticCheckResult(
         passed=True,
@@ -217,6 +271,85 @@ def _skip_result(reason: str, model: str, ms: float) -> SemanticCheckResult:
     )
 
 
+def _is_tool_call_turn(output_dict: dict[str, Any]) -> bool:
+    """Is this update a model turn that only issued tool calls?
+
+    A tool-calling turn puts its payload in ``tool_calls`` and leaves
+    ``content`` empty. There is no prose to rule on, and asked anyway the judge
+    reliably answers "the content field is empty, so the output is not
+    semantically relevant" — at full confidence, on every agent turn, which is
+    enough on its own to fail a working ``create_react_agent``. Judging a
+    function call as if it were an answer is a category error, so skip it.
+    """
+    messages = output_dict.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    return all(
+        isinstance(m, dict) and bool(m.get("tool_calls")) and _is_blank(m.get("content"))
+        for m in messages
+    )
+
+
+def _tracked_fields(
+    node_name: str,
+    consumers: dict[str, Any] | None,
+    input_state: dict[str, Any],
+    output_dict: dict[str, Any],
+) -> set[str]:
+    """Which fields this node's *history* can legitimately turn on.
+
+    What the node reads — its input keys, plus every field the consumer map
+    declares it reads. Wider than that is every field of every prior row: the
+    trace-size blow-up #85 rules out, and evidence about fields the node never
+    touches is what makes a judge invent failures.
+
+    Fields the node **writes** are removed, even when it also reads them. The
+    node's update is the authority on their current value and is already in the
+    prompt; adding "this used to be fuller" turns every legitimate consumption
+    into an accusation. Measured, not theorised: on a supervisor loop draining a
+    work queue (`{"pending": [...]}` → `[]` as workers consume it), showing the
+    writer its own field's history failed the worker on 6 of 6 live runs, a
+    pipeline the blind judge passed. A node that empties what it writes is doing
+    its job; a node that *reads* a field someone else emptied is #85's case, and
+    that is the one this keeps.
+    """
+    declared = {f for f, spec in (consumers or {}).items() if node_name in _readers_of(spec)}
+    return (declared | set(input_state)) - set(output_dict)
+
+
+def _readers_of(spec: Any) -> tuple[str, ...]:
+    """Readers from either consumer-map shape: a list, or a dict with ``readers``."""
+    if isinstance(spec, dict):
+        return tuple(spec.get("readers") or ())
+    return tuple(spec or ())
+
+
+def _history_lines(
+    prior_rows: list[Any],
+    fields: set[str],
+) -> list[str]:
+    """One line per prior step that wrote a tracked field.
+
+    ``prior_rows`` are :class:`argus.ledger.LedgerRow`s for the steps *before*
+    this one. A step that wrote nothing relevant is not a line: the judge needs
+    the field's history, not the run's.
+    """
+    lines: list[str] = []
+    for row in prior_rows:
+        update = row.update if isinstance(row.update, dict) else {}
+        wrote = {k: v for k, v in update.items() if k in fields}
+        if not wrote:
+            continue
+        for key, value in wrote.items():
+            state = "now empty" if _is_blank(value) else "populated"
+            lines.append(f'  - "{row.node}" wrote {key} = {_truncate(value)} ({state})')
+    return lines
+
+
+def _is_blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip()) or value == []
+
+
 def check_semantic_coherence(
     node_name: str,
     input_state: dict[str, Any],
@@ -228,11 +361,20 @@ def check_semantic_coherence(
     anomaly_signals: list[Any] | None = None,
     inspection: Any | None = None,
     ambiguous_signals: list[SemanticSignal] | None = None,
+    prior_rows: list[Any] | None = None,
+    consumers: dict[str, Any] | None = None,
 ) -> tuple[SemanticCheckResult, list[DisambiguationResult]]:
     """Check coherence and disambiguate heuristic signals in one LLM call.
 
     Returns (coherence_result, disambiguation_results).
     On error returns a passing result and empty disambiguation list.
+
+    ``prior_rows`` are the ledger rows for the steps *before* this node (#85).
+    Without them the judge sees one node's I/O and is structurally blind to the
+    commonest silent failure in a shared-state graph: a field written early,
+    emptied legitimately partway through, still needed here. Scoped to the
+    fields this node reads or writes (``consumers`` declares the rest), so the
+    prompt grows with the node's contract, not with the run.
     """
     t0 = time.perf_counter()
 
@@ -247,11 +389,23 @@ def check_semantic_coherence(
     if not compact_in or not compact_out:
         return _skip_result("check skipped: empty input or output", model, 0.0), []
 
+    if _is_tool_call_turn(output_dict):
+        return _skip_result("check skipped: tool-call turn, no prose to judge", model, 0.0), []
+
     user_msg = (
         f'Node: "{node_name}"\n'
         f"Input: {json.dumps(compact_in, default=str)}\n"
         f"Output: {json.dumps(compact_out, default=str)}"
     )
+
+    history = _history_lines(
+        prior_rows or [],
+        _tracked_fields(node_name, consumers, input_state, output_dict),
+    )
+    if history:
+        user_msg += "\n\nEarlier steps (the run so far, fields this node reads or writes):\n" + (
+            "\n".join(history)
+        )
 
     evidence_lines: list[str] = []
 
@@ -368,6 +522,7 @@ def check_semantic_coherence(
             duration_ms=round(elapsed, 2),
             evidence_considered=tuple(parsed.get("evidence_considered", ())),
             overridden_signals=tuple(parsed.get("overridden_signals", ())),
+            failure_kind=_coerce_failure_kind(parsed.get("failure_kind")),
         )
 
         dis_results: list[DisambiguationResult] = []

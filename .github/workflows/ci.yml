@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, dev, "pivot/**"]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, dev, "pivot/**"]
 
 jobs:
   test:
@@ -12,6 +12,12 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.9", "3.11", "3.12"]
+        # The recorder needs langgraph 0.6+ (pyproject floor). Test the floor
+        # and the current major. 1.x requires Python 3.10+, so 3.9 gets 0.6 only.
+        langgraph: ["~=0.6.0", ">=1,<2"]
+        exclude:
+          - python-version: "3.9"
+            langgraph: ">=1,<2"
 
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +29,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[dev]"
+          pip install -e ".[dev]" "langgraph${{ matrix.langgraph }}"
 
       - name: Lint
         run: ruff check .
@@ -36,3 +42,56 @@ jobs:
       # silent-failure tests would fail the outer gate until #54 hardens binding).
       - name: Test pytest --argus gate
         run: pytest tests/test_argus_ci_gate.py --argus --tb=short
+
+  website:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: No colour literals
+        run: npm run check:literals
+
+      - name: Build
+        run: npm run build
+
+  dist-freshness:
+    # `argus ui` serves the committed src/argus/ui_dist/, so a UI change that
+    # does not rebuild it ships the previous dashboard. This is a git check, not
+    # a rebuild-and-diff: chunk filenames carry content hashes that differ across
+    # Node versions, which would make a diff gate fail on every PR.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ui_dist must be rebuilt when the dashboard source changes
+        run: |
+          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          source_changed=$(echo "$changed" | grep -E '^website/(app|components|lib|public)/|^website/(next\.config\.mjs|tailwind\.config\.ts|postcss\.config\.[mc]?js|package(-lock)?\.json|tsconfig\.json)$' || true)
+          dist_changed=$(echo "$changed" | grep '^src/argus/ui_dist/' || true)
+          if [ -n "$source_changed" ] && [ -z "$dist_changed" ]; then
+            echo "::error::website/ source changed but src/argus/ui_dist/ was not rebuilt."
+            echo "Run: bash scripts/build_ui.sh && git add src/argus/ui_dist"
+            exit 1
+          fi
+          echo "ui_dist is in step with the dashboard source."

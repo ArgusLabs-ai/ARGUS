@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import TypedDict
 
 import pytest
+from conftest import make_run_record
 from langgraph.graph import END, StateGraph
 
 from argus.pytest_instrument import (
     install_auto_instrumentation,
     uninstall_auto_instrumentation,
 )
-from argus.storage import last_run_id, load_run
+from argus.storage import last_run_id, load_run, save_run
 
 pytest.importorskip("langgraph")
 
@@ -189,12 +191,54 @@ def test_auto_wrap_missing_fields_are_recorded(auto_wrap):
 
 
 @pytest.mark.unit
+def test_reinstall_then_uninstall_leaves_nothing_patched():
+    """install → uninstall → install → uninstall must fully restore LangGraph.
+
+    The second install found the methods already wrapped and returned without
+    recording the originals, which uninstall had just cleared — so the class
+    stayed patched in the host interpreter for good.
+    """
+    from langgraph.graph.state import StateGraph
+    from langgraph.pregel import Pregel
+
+    from argus.watcher import _RUNTIME_METHODS
+
+    for _ in range(2):
+        install_auto_instrumentation()
+        uninstall_auto_instrumentation()
+
+    still_patched = [
+        name
+        for name in (*_RUNTIME_METHODS, "compile")
+        for cls in (StateGraph if name == "compile" else Pregel,)
+        if getattr(getattr(cls, name), "_argus_pytest_wrapped", False)
+    ]
+    assert not still_patched
+
+
+@pytest.mark.unit
 def test_uninstall_restores_uninstrumented_compile(auto_wrap):
     uninstall_auto_instrumentation()
     app = _clean_graph().compile()
     before = last_run_id()
     app.invoke({"n": 0})
     assert last_run_id() == before
+
+
+@pytest.mark.unit
+def test_run_capture_collects_runs_saved_by_worker_threads():
+    from argus.run_context import begin_run_capture, captured_run_ids, end_run_capture
+
+    capture = begin_run_capture()
+    try:
+        worker = threading.Thread(
+            target=lambda: save_run(make_run_record(run_id="thread-run")),
+        )
+        worker.start()
+        worker.join()
+        assert captured_run_ids(capture) == {"thread-run"}
+    finally:
+        end_run_capture(capture)
 
 
 @pytest.mark.unit
@@ -395,6 +439,59 @@ def test_silent():
     asyncio.run(_drain())
 """
 
+_PARALLEL_CLEAN = """
+import time
+from pathlib import Path
+from typing import TypedDict
+from langgraph.graph import END, StateGraph
+
+class S(TypedDict):
+    n: int
+
+def test_clean():
+    Path("clean-started").write_text("ready")
+    time.sleep(0.5)
+    g = StateGraph(S)
+    g.add_node("inc", lambda s: {"n": s["n"] + 1})
+    g.set_entry_point("inc")
+    g.add_edge("inc", END)
+    assert g.compile().invoke({"n": 0})["n"] == 1
+"""
+
+_PARALLEL_SILENT = """
+import time
+from pathlib import Path
+from typing import TypedDict
+from langgraph.graph import END, StateGraph
+
+class S(TypedDict, total=False):
+    n: int
+    results: list
+    error: str
+    status_code: int
+
+def test_silent():
+    deadline = time.monotonic() + 5
+    while not Path("clean-started").exists():
+        if time.monotonic() >= deadline:
+            raise AssertionError("clean test did not start")
+        time.sleep(0.01)
+
+    def api_call(state):
+        return {"results": [], "error": "Connection refused", "status_code": 503}
+
+    def process(state):
+        return {"n": 1}
+
+    g = StateGraph(S)
+    g.add_node("api_call", api_call)
+    g.add_node("process", process)
+    g.set_entry_point("api_call")
+    g.add_edge("api_call", "process")
+    g.add_edge("process", END)
+    g.compile().invoke({"n": 0})
+"""
+
 
 _SILENT_BATCH = """
 from typing import TypedDict
@@ -502,6 +599,73 @@ def test_pytest_argus_silent_astream_fails_test(pytester: pytest.Pytester):
     result.assert_outcomes(failed=1)
     combined = str(result.stdout) + str(result.stderr)
     assert "argus check failed" in combined
+
+
+@pytest.mark.unit
+def test_pytest_argus_binds_parallel_runs_to_their_own_tests(pytester: pytest.Pytester):
+    pytest.importorskip("xdist")
+    pytest.importorskip("argus.pytest_plugin")
+    _prepare_plugin_project(pytester)
+    pytester.makepyfile(test_clean=_PARALLEL_CLEAN, test_silent=_PARALLEL_SILENT)
+    result = pytester.runpytest("--argus", "-n", "2", "--dist=loadfile", "-q")
+    result.assert_outcomes(passed=1, failed=1)
+
+
+# ── #78: a configure hook, not a patch ───────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_install_replaces_nothing_on_langgraph():
+    from langgraph.graph.state import StateGraph
+    from langgraph.pregel import Pregel
+
+    names = ("invoke", "ainvoke", "stream", "astream", "batch", "abatch")
+    before = {n: getattr(Pregel, n) for n in names} | {"compile": StateGraph.compile}
+    install_auto_instrumentation()
+    try:
+        after = {n: getattr(Pregel, n) for n in names} | {"compile": StateGraph.compile}
+        assert after == before
+    finally:
+        uninstall_auto_instrumentation()
+
+
+@pytest.mark.unit
+def test_an_explicit_attach_is_not_recorded_twice(auto_wrap):
+    from argus import ArgusRecorder
+    from argus.storage import list_runs
+
+    before = {r["run_id"] for r in list_runs()}
+    ArgusRecorder(semantic_judge=False).attach(_silent_graph().compile()).invoke({"n": 0})
+    new = {r["run_id"] for r in list_runs()} - before
+    assert len(new) == 1
+
+
+@pytest.mark.unit
+def test_a_graph_invoked_from_a_plain_thread_is_recorded(auto_wrap):
+    """Threads a test starts itself do not inherit contextvars; the hook still sees them."""
+    app = _silent_graph().compile()
+    worker = threading.Thread(target=lambda: app.invoke({"n": 0}))
+    worker.start()
+    worker.join()
+    _assert_silent_failure_recorded()
+
+
+@pytest.mark.unit
+def test_a_graph_composed_under_another_runnable_is_recorded(auto_wrap):
+    from langchain_core.runnables import RunnableLambda
+
+    app = _silent_graph().compile()
+    (RunnableLambda(lambda x: x) | app).invoke({"n": 0})
+    _assert_silent_failure_recorded()
+
+
+@pytest.mark.unit
+def test_a_plain_chain_is_ignored(auto_wrap):
+    from langchain_core.runnables import RunnableLambda
+
+    before = last_run_id()
+    RunnableLambda(lambda x: x + 1).invoke(1)
+    assert last_run_id() == before
 
 
 @pytest.mark.unit
