@@ -175,6 +175,21 @@ def test_doctor_runs_writable_ok(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_doctor_runs_writable_does_not_create_the_folder(tmp_path, monkeypatch):
+    """Doctor only looks: run from the wrong folder, it must not leave a .argus behind."""
+    import shutil
+
+    from argus.cli.cmd_doctor import _check_runs_writable
+
+    root = _git_project(tmp_path, monkeypatch)
+    shutil.rmtree(root / ".argus", ignore_errors=True)
+    ok, msg = _check_runs_writable()
+    assert ok is True
+    assert "first run" in msg
+    assert not (root / ".argus").exists()
+
+
+@pytest.mark.unit
 def test_doctor_runs_writable_fails_when_not_writable(tmp_path, monkeypatch):
     from argus.cli.cmd_doctor import _check_runs_writable
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -200,10 +201,20 @@ def _check_optional_deps() -> tuple[bool, str]:
 
 
 def _check_runs_writable() -> tuple[bool, str]:
-    """Verify ``.argus/runs/`` exists (or can be created) and accepts writes."""
+    """Verify ``.argus/runs/`` accepts writes.
+
+    Doctor only looks: a folder that does not exist yet is judged by its
+    nearest existing parent, not created — run from the wrong directory, it
+    must not leave a ``.argus`` behind.
+    """
     from argus.storage import runs_dir  # noqa: PLC0415
 
-    target = runs_dir(create=True)
+    target = runs_dir()
+    if not target.exists():
+        parent = next(p for p in target.parents if p.exists())
+        if os.access(parent, os.W_OK):
+            return True, f"writable — {target} is created on the first run"
+        return False, f"cannot write to {target} — {parent} is not writable"
     probe = target / ".doctor_write_probe"
     try:
         probe.write_text("ok", encoding="utf-8")
