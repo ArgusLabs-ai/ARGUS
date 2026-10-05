@@ -62,6 +62,13 @@ def _node_from_app(app: Any, node_name: str) -> Callable[[Any], Any]:
     return lambda state: bound.invoke(mapper(state))
 
 
+def _crashed(session: Any) -> bool:
+    """A node raised and the session recorded it: that crashed run is the rerun's
+    answer, as in ``_replay_direct``. A failure before any node ran (the input
+    state did not validate) recorded nothing, and is still an error."""
+    return any(e.status == "crashed" for e in (getattr(session, "_events", None) or []))
+
+
 def _smart_merge(state: dict, partial: dict) -> dict:
     """Merge partial output into state, respecting list-append semantics.
 
@@ -256,7 +263,11 @@ class ReplayEngine:
         session.replay_from_step = node_name
         session.state_patch = patch or None
 
-        session.wrap(node_name, fn)(state)
+        try:
+            session.wrap(node_name, fn)(state)
+        except Exception:
+            if not _crashed(session):
+                raise
         session.finalize()
         return session.run_id
 
@@ -483,7 +494,11 @@ class ReplayEngine:
                 "Got: " + type(graph).__name__
             )
 
-        app.invoke(state)
+        try:
+            app.invoke(state)
+        except Exception:
+            if not _crashed(watcher._session if watcher is not None else None):
+                raise
 
         if watcher is not None:
             watcher.finalize()

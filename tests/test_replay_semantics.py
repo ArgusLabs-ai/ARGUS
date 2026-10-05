@@ -117,6 +117,56 @@ def test_a_trace_with_a_typed_state_reruns_one_node(schema):
     assert step.output_dict == {"summary": "summary of refunds"}
 
 
+def _raises(s: _S) -> dict:
+    raise KeyError("docs")
+
+
+@pytest.mark.integration
+def test_a_node_rerun_that_raises_is_kept_as_a_crashed_run():
+    """The crash is the rerun's answer: return it, as the legacy path does (#157)."""
+    run_id = _trace_run()
+
+    new_id = ReplayEngine().replay_live(run_id, "summarize", app=_graph(_raises))
+
+    rerun = load_run(new_id)
+    assert rerun.parent_run_id == run_id
+    assert rerun.overall_status == "crashed"
+    assert "KeyError" in (rerun.steps[0].exception or "")
+
+
+@pytest.mark.integration
+def test_a_rerun_from_a_factory_that_raises_is_kept_as_a_crashed_run():
+    run_id = _trace_run()
+
+    new_id = ReplayEngine().replay(run_id, "summarize", app_factory=lambda: _graph(_raises))
+
+    rerun = load_run(new_id)
+    assert rerun.parent_run_id == run_id
+    assert rerun.overall_status == "crashed"
+    assert [s.node_name for s in rerun.steps if s.status == "crashed"] == ["summarize"]
+
+
+@pytest.mark.integration
+def test_a_rerun_that_fails_before_any_node_runs_is_still_an_error():
+    """Only a node's crash is a result; a state that does not validate is not a run."""
+    from pydantic import ValidationError
+
+    def build():
+        g = StateGraph(_PM)
+        g.add_node("summarize", lambda s: {"summary": s.query})
+        g.add_edge(START, "summarize")
+        g.add_edge("summarize", END)
+        return g.compile()
+
+    rec = ArgusRecorder()
+    rec.attach(build()).invoke({"query": "refunds"})
+
+    with pytest.raises(ValidationError):
+        ReplayEngine().replay(
+            rec.session.run_id, "summarize", app_factory=build, patch={"set": {"query": 123}}
+        )
+
+
 @pytest.mark.integration
 def test_an_app_factory_returning_a_compiled_graph_replays():
     """`--app module:fn` where fn returns `graph.compile()` — the common shape.
