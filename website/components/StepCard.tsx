@@ -32,13 +32,13 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
     (step.inspection?.missing_fields?.length ?? 0)
 
   const borderColor = isBreakpoint
-    ? '#d65c5c'
+    ? 'var(--tool)'
     : hasIssues
-    ? 'rgba(214,92,92,0.3)'
+    ? 'color-mix(in srgb, var(--tool) 45%, transparent)'
     : 'var(--border-default)'
 
   const bgColor = isBreakpoint
-    ? 'rgba(214,92,92,0.08)'
+    ? 'var(--tool-dim)'
     : 'var(--bg-surface)'
 
   return (
@@ -48,7 +48,7 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
         style={{
           border: `1px solid ${borderColor}`,
           background: bgColor,
-          boxShadow: isBreakpoint ? '0 0 28px rgba(214,92,92,0.1)' : '0 2px 8px rgba(0,0,0,0.04)',
+          boxShadow: isBreakpoint ? '0 0 28px var(--tool-dim)' : 'var(--shadow-md)',
         }}
       >
         {/* Breakpoint accent */}
@@ -63,16 +63,16 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
           onClick={() => setOpen(!open)}
           className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-white/[0.03] transition-colors"
         >
-          <span className={`font-mono text-xs w-5 shrink-0 tabular-nums ${isBreakpoint ? 'text-red-400' : 'text-[#35353e]'}`}>
+          <span className={`font-mono text-xs w-5 shrink-0 tabular-nums ${isBreakpoint ? 'text-red-400' : 'text-[var(--line-3)]'}`}>
             {step.step_index}
           </span>
 
-          <span className="text-[#52525e] text-xs shrink-0">{open ? '▾' : '▸'}</span>
+          <span className="text-[var(--ink-4)] text-xs shrink-0">{open ? '▾' : '▸'}</span>
 
           <span className={`text-sm font-mono flex-1 truncate ${isPass ? 'text-[var(--text-muted)]' : 'text-[var(--text-primary)]'}`}>
             {step.node_name}
             {step.is_subgraph_entry && (
-              <span className="ml-2 text-[10px] text-[#52525e] border border-[var(--border-subtle)] px-1 rounded">
+              <span className="ml-2 text-[10px] text-[var(--ink-4)] border border-[var(--border-subtle)] px-1 rounded">
                 ↳ sub
               </span>
             )}
@@ -83,9 +83,9 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
             <span
               className="text-[10px] font-bold px-1.5 py-0.5 rounded-full tabular-nums"
               style={{
-                color: toolFailures.some((f) => f.severity === 'critical') ? '#ef4444' : '#f59e0b',
+                color: toolFailures.some((f) => f.severity === 'critical') ? 'var(--tool)' : 'var(--quality)',
                 background: toolFailures.some((f) => f.severity === 'critical')
-                  ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)',
+                  ? 'var(--tool-dim)' : 'var(--quality-dim)',
               }}
             >
               {issueCount}
@@ -106,7 +106,7 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
             style={{ borderTop: '1px solid var(--border-default)', background: 'var(--bg-elevated)' }}
           >
             {step.attempt_index > 0 && (
-              <div className="text-xs text-[#8a8a96] font-mono border border-[var(--border-subtle)] rounded px-2 py-1 w-fit">
+              <div className="text-xs text-[var(--ink-3)] font-mono border border-[var(--border-subtle)] rounded px-2 py-1 w-fit">
                 attempt #{step.attempt_index}
               </div>
             )}
@@ -125,7 +125,7 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
             {step.inspection && step.inspection.severity !== 'ok' && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
-                  <div className="text-[10px] uppercase tracking-widest font-semibold text-[#52525e]">Inspection</div>
+                  <div className="text-[10px] uppercase tracking-widest font-semibold text-[var(--ink-4)]">Inspection</div>
                   <SeverityBadge severity={step.inspection.severity} />
                 </div>
 
@@ -134,7 +134,7 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
                     <span className="text-red-400 font-medium">missing:</span>
                     {step.inspection.missing_fields.map((f) => (
                       <code key={f} className="rounded px-1.5 py-0.5 font-mono text-[11px]"
-                        style={{ background: 'rgba(239,68,68,0.08)', color: '#f87171' }}>
+                        style={{ background: 'var(--tool-dim)', color: 'var(--tool)' }}>
                         {f}
                       </code>
                     ))}
@@ -143,8 +143,8 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
 
                 {step.inspection.empty_fields.length > 0 && (
                   <div className="text-xs">
-                    <span className="text-[#52525e]">empty optional: </span>
-                    <span className="text-[#8a8a96] font-mono">{step.inspection.empty_fields.join(', ')}</span>
+                    <span className="text-[var(--ink-4)]">empty optional: </span>
+                    <span className="text-[var(--ink-3)] font-mono">{step.inspection.empty_fields.join(', ')}</span>
                   </div>
                 )}
 
@@ -153,9 +153,9 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
                     {step.inspection.type_mismatches.map((m, i) => (
                       <div key={i} className="text-xs font-mono pl-2">
                         <span className="text-blue-400">{m.field_name}</span>
-                        <span className="text-[#52525e]"> expected </span>
+                        <span className="text-[var(--ink-4)]"> expected </span>
                         <span className="text-green-400">{m.expected_type}</span>
-                        <span className="text-[#52525e]"> got </span>
+                        <span className="text-[var(--ink-4)]"> got </span>
                         <span className="text-amber-400">{m.actual_type}</span>
                       </div>
                     ))}
@@ -167,7 +167,7 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
                   <div className="space-y-1.5">
                     {toolFailures.map((tf, i) => {
                       const meta = getFailureMeta(tf.failure_type)
-                      const sevColor = tf.severity === 'critical' ? '#ef4444' : '#f59e0b'
+                      const sevColor = tf.severity === 'critical' ? 'var(--tool)' : 'var(--quality)'
                       return (
                         <div
                           key={i}
@@ -192,9 +192,9 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
                             <span className="font-medium" style={{ color: sevColor }}>
                               {meta.label}
                             </span>
-                            <code className="text-[11px] font-mono text-[#8a8a96]">{tf.field_name}</code>
+                            <code className="text-[11px] font-mono text-[var(--ink-3)]">{tf.field_name}</code>
                           </div>
-                          <div className="text-[#8a8a96] mt-0.5 font-mono text-[11px]">{tf.evidence}</div>
+                          <div className="text-[var(--ink-3)] mt-0.5 font-mono text-[11px]">{tf.evidence}</div>
                         </div>
                       )
                     })}
@@ -204,25 +204,25 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
                 {/* Semantic signals */}
                 {semanticSignals.length > 0 && (
                   <div className="space-y-1.5">
-                    <div className="text-[10px] uppercase tracking-widest font-semibold text-[#52525e]">Semantic Signals</div>
+                    <div className="text-[10px] uppercase tracking-widest font-semibold text-[var(--ink-4)]">Semantic Signals</div>
                     {semanticSignals.map((sig, i) => {
-                      const sevColor = sig.severity === 'critical' ? '#ef4444' : '#f59e0b'
+                      const sevColor = sig.severity === 'critical' ? 'var(--tool)' : 'var(--quality)'
                       return (
                         <div
                           key={i}
                           className="text-xs rounded-lg px-3 py-2"
                           style={{
-                            background: 'color-mix(in srgb, #a855f7 4%, transparent)',
-                            border: '1px solid color-mix(in srgb, #a855f7 12%, transparent)',
+                            background: 'color-mix(in srgb, var(--semantic) 4%, transparent)',
+                            border: '1px solid color-mix(in srgb, var(--semantic) 12%, transparent)',
                           }}
                         >
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="size-1.5 rounded-full" style={{ background: sevColor }} />
-                            <code className="text-[10px] font-mono font-bold text-[#8a8a96]">{sig.sig_id}</code>
-                            <span className="font-medium text-[#e2e2e6]">{sig.description}</span>
+                            <code className="text-[10px] font-mono font-bold text-[var(--ink-3)]">{sig.sig_id}</code>
+                            <span className="font-medium text-[var(--ink)]">{sig.description}</span>
                           </div>
                           {sig.evidence && (
-                            <div className="text-[#8a8a96] mt-0.5 font-mono text-[11px]">{sig.evidence}</div>
+                            <div className="text-[var(--ink-3)] mt-0.5 font-mono text-[11px]">{sig.evidence}</div>
                           )}
                         </div>
                       )
@@ -235,13 +235,13 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
             {/* Validators */}
             {step.validator_results.length > 0 && (
               <div>
-                <div className="text-[10px] uppercase tracking-widest font-semibold text-[#52525e] mb-2">Validators</div>
+                <div className="text-[10px] uppercase tracking-widest font-semibold text-[var(--ink-4)] mb-2">Validators</div>
                 <div className="space-y-1">
                   {step.validator_results.map((v, i) => (
                     <div key={i} className="flex items-start gap-2.5 text-xs">
                       <span className={v.is_valid ? 'text-green-400' : 'text-red-400'}>{v.is_valid ? '✓' : '✗'}</span>
-                      <span className="text-[#52525e]">{v.validator_name}</span>
-                      {v.message && <span className="text-[#8a8a96]">{v.message}</span>}
+                      <span className="text-[var(--ink-4)]">{v.validator_name}</span>
+                      {v.message && <span className="text-[var(--ink-3)]">{v.message}</span>}
                     </div>
                   ))}
                 </div>
@@ -252,13 +252,13 @@ export default function StepCard({ step, defaultOpen = false, isBreakpoint = fal
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {step.input_state !== null && (
                 <div>
-                  <div className="text-[10px] uppercase tracking-widest font-semibold text-[#52525e] mb-2">Input</div>
+                  <div className="text-[10px] uppercase tracking-widest font-semibold text-[var(--ink-4)] mb-2">Input</div>
                   <JsonViewer data={step.input_state} defaultCollapsed={true} />
                 </div>
               )}
               {step.output_dict !== null && (
                 <div>
-                  <div className="text-[10px] uppercase tracking-widest font-semibold text-[#52525e] mb-2">Output</div>
+                  <div className="text-[10px] uppercase tracking-widest font-semibold text-[var(--ink-4)] mb-2">Output</div>
                   <JsonViewer data={step.output_dict} defaultCollapsed={true} />
                 </div>
               )}

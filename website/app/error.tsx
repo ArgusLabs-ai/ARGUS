@@ -18,12 +18,12 @@ export default function Error({
       <div
         className="rounded-xl px-6 py-5 space-y-3 max-w-lg w-full"
         style={{
-          background: 'rgba(214,92,92,0.04)',
-          border: '1px solid rgba(214,92,92,0.2)',
+          background: 'var(--tool-dim)',
+          border: '1px solid color-mix(in srgb, var(--tool) 34%, transparent)',
         }}
       >
         <p className="text-xs font-medium text-red-400">Something went wrong</p>
-        <p className="text-xs font-mono" style={{ color: '#71717a' }}>
+        <p className="text-xs font-mono" style={{ color: 'var(--ink-3)' }}>
           {error.message || 'An unexpected error occurred.'}
         </p>
         <button

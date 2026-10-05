@@ -109,3 +109,5 @@ ship_eval/
 
 # Blind probe of the fat-trace architecture (local only)
 blind_eval/
+# Local demo pipeline (real API keys / real network calls; not for the repo)
+demo/research_agent/

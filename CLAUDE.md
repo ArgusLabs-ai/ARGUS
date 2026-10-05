@@ -117,8 +117,12 @@ Every wrapped node executes through this pipeline:
 | `src/argus/cli/main.py` | `argus` CLI entry point (Typer) |
 | `src/argus/cli/cmd_doctor.py` | `argus doctor` diagnostic command |
 | `src/argus/findings.py` | `collect_findings()` — builds `RunRecord.findings`; also the one-line terminal summary after invoke |
+<<<<<<< HEAD
 | `src/argus/suppressions.py` | `argus ignore` — project-level signature/anomaly suppressions in `.argus/config.json`; applied in `session.py` before status is decided, hits kept on `NodeEvent.suppressed_*` |
 | `src/argus/cli/cmd_ignore.py` | `argus ignore` CLI |
+=======
+| `src/argus/hotspots.py` | Cross-run origin × node finding counts for the dashboard hotspot matrix |
+>>>>>>> origin/dev
 | `src/argus/data/signatures.json` | Bundled semantic failure signatures |
 
 ### Semantic Signature Registry (`registry.py` + `data/signatures.json`)

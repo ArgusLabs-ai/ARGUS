@@ -21,3 +21,10 @@ render:
 - `steps[*].inspection` is populated for silent failures and warnings.
 - `overall_status` uses ARGUS statuses: `clean`, `silent_failure`, `crashed`.
 
+### Maintainer preview
+
+The shipped sidebar only lists pages that exist (Runs, Compare, Approvals, Guide,
+Changelog, Settings). Add `?preview=1` to any dashboard URL to show the planned
+Traces / Evaluation / Graphs / Alerts / Datasets items for design review. They
+stay disabled until each has a backing feature.
+

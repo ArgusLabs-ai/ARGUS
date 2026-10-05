@@ -1,73 +1,35 @@
 'use client'
 
-import { Suspense, useEffect, useMemo, useState } from 'react'
-import { useSearchParams, useRouter } from 'next/navigation'
-import { useRunList } from '@/lib/hooks'
-import type { RunStatus } from '@/lib/types'
+import { Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { useWorkspace } from '@/lib/workspace'
 import RunListPanel from '@/components/RunListPanel'
 import RunDetailPanel from '@/components/RunDetailPanel'
 
-function RunListPageInner() {
-  const router = useRouter()
+function RunsPageInner() {
   const searchParams = useSearchParams()
-  const selectedRunId = searchParams.get('run')
+  const { runs, runsLoading, activeRunId, goHome } = useWorkspace()
   const previousRunId = searchParams.get('from')
-  const { runs, loading, isLocal, user } = useRunList()
 
-  useEffect(() => {
-    if (!loading && isLocal === false && !user) {
-      router.replace('/login')
-    }
-  }, [loading, isLocal, user, router])
-
-  const handleSelectRun = (id: string) => {
-    router.replace(`/?run=${id}`, { scroll: false })
-  }
-
-  const handleCloseDetail = () => {
-    router.replace('/', { scroll: false })
-  }
-
-  if (loading && !runs.length) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <span className="text-sm text-muted-foreground">Loading...</span>
-      </div>
-    )
-  }
-
-  /* Full-width toggle: list OR detail */
-  if (selectedRunId) {
+  if (activeRunId) {
     return (
       <RunDetailPanel
-        runId={selectedRunId}
+        key={activeRunId}
+        runId={activeRunId}
         previousRunId={previousRunId}
-        onClose={handleCloseDetail}
+        onClose={goHome}
         allRuns={runs}
       />
     )
   }
 
-  return (
-    <RunListPanel
-      runs={runs}
-      selectedRunId={selectedRunId}
-      onSelectRun={handleSelectRun}
-      loading={loading}
-    />
-  )
+  return <RunListPanel runs={runs} loading={runsLoading} />
 }
 
-export default function RunListPage() {
+export default function RunsPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="h-full flex items-center justify-center">
-          <span className="text-sm text-muted-foreground">Loading...</span>
-        </div>
-      }
-    >
-      <RunListPageInner />
+    <Suspense fallback={null}>
+      <RunsPageInner />
     </Suspense>
   )
 }

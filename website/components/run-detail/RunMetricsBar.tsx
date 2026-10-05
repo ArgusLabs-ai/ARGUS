@@ -1,7 +1,7 @@
 'use client'
 
 import type { RunRecord } from '@/lib/types'
-import { formatDur, fmtTokens, fmtCost } from '@/lib/run-utils'
+import { formatDur, fmtTokens, fmtCost, displayNodes } from '@/lib/run-utils'
 
 function formatStarted(iso: string): { time: string; ago: string } {
   try {
@@ -25,9 +25,7 @@ function formatStarted(iso: string): { time: string; ago: string } {
 
 export default function RunMetricsBar({ run }: { run: RunRecord }) {
   const steps = run.steps ?? []
-  const totalSteps = run.graph_node_names?.filter(
-    (n) => !n.startsWith('__') && n !== 'START' && n !== 'END'
-  ).length ?? steps.length
+  const totalSteps = displayNodes(run.graph_node_names).length || steps.length
   const completedSteps = steps.length
   const failedCount = steps.filter((s) => s.status !== 'pass').length
   const totalTokens = run.total_tokens ?? 0

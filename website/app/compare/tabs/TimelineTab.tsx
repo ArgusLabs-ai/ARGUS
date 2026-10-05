@@ -22,7 +22,7 @@ function TimelineColumn({ run, label }: { run: RunRecord; label: string }) {
               style={{ borderBottom: i < steps.length - 1 ? '1px solid var(--border)' : 'none' }}
             >
               <span className="w-5 text-right tabular-nums" style={{ color: 'var(--text-tertiary)' }}>{i + 1}</span>
-              <span style={{ color: icon?.color ?? '#6b6b6b' }}>{icon?.icon ?? '\u25CF'}</span>
+              <span style={{ color: icon?.color ?? 'var(--ink-3)' }}>{icon?.icon ?? '\u25CF'}</span>
               <span className="font-semibold" style={{ color: 'var(--foreground)' }}>{step.node_name}</span>
               <span className="ml-auto tabular-nums" style={{ color: 'var(--text-tertiary)' }}>{formatDur(step.duration_ms)}</span>
             </div>
