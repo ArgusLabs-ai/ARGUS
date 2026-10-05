@@ -37,11 +37,59 @@ jobs:
       - name: Test
         run: pytest --tb=short
 
-      # Eat our own cooking (#56): if pytest --argus regresses, this job goes red.
-      # Narrow gate only — do not dump --argus on the full suite (intentional
-      # silent-failure tests would fail the outer gate until #54 hardens binding).
-      - name: Test pytest --argus gate
-        run: pytest tests/test_argus_ci_gate.py --argus --tb=short
+      # Eat our own cooking (#56) through the Action users get (#57): if
+      # pytest --argus regresses, this job goes red. Narrow gate only — the
+      # suite's intentional silent-failure tests would fail an outer --argus.
+      - name: Test pytest --argus gate (the published Action)
+        uses: ./.github/actions/argus-gate
+        with:
+          install: "false"
+          pytest-args: tests/test_argus_ci_gate.py --tb=short
+
+      # A gate that passes everything is worse than none: record a run that
+      # fails silently and require the Action to fail it.
+      - name: Record a silently failing run
+        id: silent
+        run: |
+          python - <<'PY'
+          import os
+          from typing import TypedDict
+
+          from langgraph.graph import END, START, StateGraph
+
+          from argus import ArgusRecorder
+
+
+          class S(TypedDict, total=False):
+              query: str
+              docs: list
+
+
+          g = StateGraph(S)
+          g.add_node("search", lambda s: {})  # the silent no-op
+          g.add_node("answer", lambda s: {"query": s["query"]})
+          g.add_edge(START, "search")
+          g.add_edge("search", "answer")
+          g.add_edge("answer", END)
+          rec = ArgusRecorder(semantic_judge=False)
+          rec.attach(g.compile()).invoke({"query": "refunds"})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"run_id={rec.session.run_id}\n")
+          PY
+
+      - name: Grade that run with the Action
+        id: gate
+        continue-on-error: true
+        uses: ./.github/actions/argus-gate
+        with:
+          install: "false"
+          run-id: ${{ steps.silent.outputs.run_id }}
+
+      - name: The Action must have failed it
+        if: steps.gate.outcome != 'failure'
+        run: |
+          echo "::error::The ARGUS Action passed run ${{ steps.silent.outputs.run_id }}, which has a silent failure."
+          exit 1
 
   website:
     runs-on: ubuntu-latest

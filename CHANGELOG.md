@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.0 — 2026-10-05
+
+- `ArgusRecorder().attach(graph)` — fat-trace capture through LangChain callbacks; nothing in LangGraph is patched. Keeps each node's update, its tool calls and model calls. `ArgusWatcher` still ships as the legacy wrap path
+- Whole-trace rules D1–D17: typo'd state keys, vendor error bodies, empty lookups, unfollowed pagination, healthy-baseline regressions (`argus baseline`), unrendered templates, repetition, truncated output used, unparseable model JSON, ungrounded numbers, near-miss IDs, claimed actions with no tool call, stuck loops, overstated status
+- Consumer map (`consumers={"field": ["reader"]}`, dotted paths allowed): a field never written, written empty or dropped before a reader is blamed on the node responsible, never on the reader
+- Run reviewer (#149): with node purposes (`purposes=` or `argus baseline --purposes`), an LLM checker and verifier must agree before a heuristic finding fails CI; a finding no rule saw fails only when two models verify it. Any LLM error falls back to the rules
+- `pytest --argus` records through LangChain's configure hook with nothing patched (#78), and binds each run to the test that produced it (#152)
+- `argus ingest langsmith` grades a LangSmith export with no app; `argus edges`, `argus consumers`; `report_tool_call()` for tools that bypass callbacks
+- Dashboard redesign (#71, #155, #156), wired to fat traces: each step's tool calls and run-reviewer verdicts, a label for every finding type, rerun from the failing step through your app factory (#157)
+- GitHub Action: `uses: ArgusLabs-ai/ARGUS/.github/actions/argus-gate@v0.12.0` (#57)
+- `argus ignore` (#62), `argus check --strict warn_as_fail` (#77), `argus doctor` checks run storage writability, keys and disk usage (#154)
+- Fixed: dataclass / pydantic state recorded as `{}` inputs; a crashing rerun is kept as a crashed run instead of an error; an `--app` factory returning `graph.compile()` is accepted
+
 ## 0.11.0 — 2026-09-07
 
 - `RunRecord.findings` — one Finding per inspection, validator, anomaly, judge, crash, and tool-chain signal (stable id, full-sentence reason, source). Older records are back-filled on load (#60)

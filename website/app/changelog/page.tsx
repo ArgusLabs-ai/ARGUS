@@ -13,13 +13,18 @@ interface Release {
 
 const RELEASES: Release[] = [
   {
-    version: '0.12.0-dev',
-    title: 'Fat traces: ArgusRecorder replaces the wrap path',
-    date: '2026-09-24',
-    tag: 'beta',
+    version: '0.12.0',
+    title: 'Fat traces, the run reviewer, and the new dashboard',
+    date: '2026-10-05',
+    tag: 'minor',
     highlights: [
-      'On the pivot/fat-traces branch — not on PyPI yet. pip install argus-agents still gets 0.11.0',
       'ArgusRecorder: capture via LangChain callbacks, nothing patched. Keeps the dict each node returned — its update, not the merged state',
+      'Run reviewer: with node purposes, an LLM checker and verifier must agree before a heuristic finding fails CI; a finding no rule saw fails only when two models verify it',
+      'Whole-trace rules D1–D17: typo\'d keys, vendor errors, unfollowed pagination, ungrounded numbers, near-miss IDs, claimed actions with no tool call, stuck loops',
+      'Dashboard: each step shows its tool calls and what the run reviewer verified; rerun from the failing step through your app factory',
+      'GitHub Action: uses: ArgusLabs-ai/ARGUS/.github/actions/argus-gate@v0.12.0',
+      'pytest --argus records through LangChain\'s configure hook — nothing patched — and binds each run to the test that produced it',
+      'argus ignore, argus check --strict warn_as_fail, and argus doctor checks for storage, keys and disk usage',
       'consumers={"field": ["reader"]}: declare who reads what, so a field never written / written empty / dropped in between is blamed on the node responsible',
       'argus ingest langsmith: grade a LangSmith export with no app and no graph. Skinny traces are refused, not graded green',
       'report_tool_call(): file a tool the callback path cannot see, so a 404 body or a raised tool is not silently absent from the step',

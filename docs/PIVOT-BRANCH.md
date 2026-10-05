@@ -71,17 +71,19 @@ failed both before and after (3 of them a KYC config gap). Start at
 **[The run reviewer](#the-run-reviewer-two-checks-must-agree-149)**, then the two sections
 after it.
 
-**Open work, by GitHub issue** (nothing else is tracked as open):
+**Open work, by GitHub issue** (nothing else is tracked as open; updated 5 Oct, release 0.12.0):
 
 | Issue | What | Blocks |
 |---|---|---|
-| ~~#78~~ | **Done (3 Oct):** `pytest --argus` records through a LangChain configure hook, nothing patched; see "`pytest --argus` on the recorder" at the end. Was assigned to @Sravan1011; close or reassign on GitHub | — |
-| #152 | `pytest --argus` binds runs by diffing `.argus/runs`, so parallel tests can steal each other's run. A fix (#153) is on `origin/pivot/fat-traces`; pull before touching the plugin | — |
-| #83 | Delete the wrap path (`patcher.py`, `watcher.py`, `http_recorder.py`). #78 no longer blocks it; replay continuing the tail (below) still does | — |
-| #91 | Recorder lock is held across grading: fan-out serializes and LLM calls block every callback | — |
-| #149 | **Built** as the run reviewer (last section). Purposes live in the `argus baseline --purposes` file or `purposes=`. Open: a live-model test in CI, and an eval nobody on the team wrote | — |
-| #57 | One-file GitHub Action for the CI gate | — |
-| #49, #25 | Re-triage signature severities; more `argus doctor` checks | — |
+| ~~#78~~ | **Closed:** `pytest --argus` records through a LangChain configure hook, nothing patched (#158) | — |
+| ~~#152~~ | **Closed:** runs are bound to the test that produced them (#153) | — |
+| ~~#149~~ | **Closed:** built as the run reviewer (last section). Follow-ups not filed yet: a live-model test in CI, an eval written outside the team | — |
+| ~~#57~~ | **Done:** `.github/actions/argus-gate`, used by this repo's own CI, including a run it must fail | — |
+| ~~#25~~ | **Done:** `argus doctor` checks run storage writability, keys and disk usage (#154) | — |
+| #83 | Delete the wrap path (`patcher.py`, `watcher.py`, `http_recorder.py`). Replay continuing the tail (below) still needs the watcher | — |
+| #91 | Recorder lock is held across per-step grading. Findings on the issue: the session lock also covers it, so the fix is two-part. Left for after launch | — |
+| #160, #159 | Warn on nodes with no purpose; Elasticsearch partial results. Good first issues | — |
+| #49 | Re-triage signature severities | — |
 
 **Eval defects (`test-cases.md` §6):** E1, E2, E4, E4b, E5, E6, E7, E8, E9 are
 fixed. E3 is fixed only for its narrow shape (a short policy decline that cites a
