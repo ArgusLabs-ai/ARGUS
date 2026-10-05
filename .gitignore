@@ -109,6 +109,9 @@ ship_eval/
 
 # Blind probe of the fat-trace architecture (local only)
 blind_eval/
+# Internal planning docs (PRD, market, status): kept out of the public repo
+visual/
+
 # Local editor / AI-tool working files
 .cursor/
 docs/superpowers/
