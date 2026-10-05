@@ -11,7 +11,8 @@ the project with an LLM to guess where a node's function lived and import it.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from dataclasses import dataclass
+from typing import Optional, TypedDict
 
 import pytest
 import typer
@@ -25,6 +26,7 @@ pytest.importorskip("langchain_core")
 pytest.importorskip("langgraph")
 
 from langgraph.graph import END, START, StateGraph  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
 
 
 class _S(TypedDict, total=False):
@@ -78,6 +80,41 @@ def test_a_trace_run_reruns_a_node_against_the_callers_graph():
     assert step.input_state["docs"] == ["doc about refunds"]
     # Output came from the graph the caller passed, not from the run file.
     assert step.output_dict["summary"].startswith("FIXED:")
+
+
+@dataclass
+class _DC:
+    query: str = ""
+    summary: Optional[str] = None
+
+
+class _PM(BaseModel):
+    query: str = ""
+    summary: Optional[str] = None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("schema", [_DC, _PM], ids=["dataclass", "pydantic"])
+def test_a_trace_with_a_typed_state_reruns_one_node(schema):
+    """`bound.invoke` skips LangGraph's input mapper, so the node was handed a dict."""
+
+    def build():
+        g = StateGraph(schema)
+        g.add_node("summarize", lambda s: {"summary": f"summary of {s.query}"})
+        g.add_edge(START, "summarize")
+        g.add_edge("summarize", END)
+        return g.compile()
+
+    rec = ArgusRecorder()
+    rec.attach(build()).invoke({"query": "refunds"})
+    # The node is handed the schema object; the trace used to record it as `{}`.
+    assert load_run(rec.session.run_id).steps[0].input_state["query"] == "refunds"
+
+    new_id = ReplayEngine().replay_live(rec.session.run_id, "summarize", app=build())
+
+    step = load_run(new_id).steps[0]
+    assert step.status == "pass", step.exception
+    assert step.output_dict == {"summary": "summary of refunds"}
 
 
 @pytest.mark.integration

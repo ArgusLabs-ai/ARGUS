@@ -35,6 +35,7 @@ reviewer needs that warning to decide.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import logging
 import sys
@@ -158,6 +159,21 @@ def _superstep(metadata: dict[str, Any] | None) -> str | None:
         return None
     parent_ns = str(m.get("langgraph_checkpoint_ns") or "").rpartition("|")[0]
     return f"{parent_ns}#{step}"
+
+
+def _state_input(inputs: Any) -> Any:
+    """A chain's input, if it is graph state: a dict, or a dataclass / pydantic state.
+
+    A graph with a dataclass or pydantic schema hands each node the schema
+    object, not a dict. Dropping every non-dict recorded ``{}`` as the input of
+    every step, so the ledger was empty and a rerun had nothing to replay.
+    Anything else (a bare string through a chain) is not state.
+    """
+    if isinstance(inputs, dict) or hasattr(inputs, "model_dump") or hasattr(inputs, "__fields__"):
+        return inputs
+    if dataclasses.is_dataclass(inputs) and not isinstance(inputs, type):
+        return inputs
+    return {}
 
 
 def _node_update(outputs: Any) -> Any:
@@ -649,7 +665,7 @@ class ArgusRecorder(BaseCallbackHandler):
                     self._roots[root] = started
                 self.session = started
                 _register_run_start(self)
-                started.capture_state(inputs if isinstance(inputs, dict) else {})
+                started.capture_state(_state_input(inputs))
             return
 
         session = self._roots.get(root)
@@ -680,7 +696,7 @@ class ArgusRecorder(BaseCallbackHandler):
             # recorded.
             return
 
-        input_snap = session.capture_state(inputs if isinstance(inputs, dict) else {})
+        input_snap = session.capture_state(_state_input(inputs))
         with self._lock:
             self._pending[run_id] = (node, input_snap, time.perf_counter(), _superstep(metadata))
         session.on_node_start(node, input_snap)
@@ -718,7 +734,7 @@ class ArgusRecorder(BaseCallbackHandler):
         _register_run_start(self)
         # The first node's input is the graph's state on entry; `capture_state`
         # latches the initial state off the first non-empty snapshot.
-        started.capture_state(inputs if isinstance(inputs, dict) else {})
+        started.capture_state(_state_input(inputs))
         return parent_run_id
 
     def on_chain_end(

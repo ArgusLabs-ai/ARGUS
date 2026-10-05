@@ -39,6 +39,13 @@ wired to the fat trace:
   clicked. The factory may return the builder or `graph.compile()` in both modes.
 - **The empty dashboard** pointed new users at `ArgusWatcher(graph)` and an `argus demo`
   command that does not exist; it now shows `ArgusRecorder().attach(graph)`.
+- **Typed state was recorded empty** (recorder, found while wiring rerun). A graph with a
+  dataclass or pydantic schema hands each node the schema object, and the recorder kept
+  only dicts — so every step's input was `{}`: the ledger had no inputs, every rule that
+  reads one was blind, and a rerun had nothing to replay. The recorder now keeps them
+  (`_state_input`, through `safe_serialize`), and `replay_live` turns the row back into
+  the schema object with the node's own mapper. TypedDict / `MessagesState` graphs are
+  unchanged; both matrices still pass.
 
 Suite: 1,391 tests pass (5 skipped, 2 xfailed).
 
@@ -453,7 +460,7 @@ Until then that non-`--only` path runs through the legacy `ArgusWatcher` wrap (`
 
 ### 2. Node function is read off a LangGraph-internal field
 
-Replay finds `app.nodes[name].bound.invoke`. That is LangGraph’s own handle, not a public “give me node X” API. It works on current LangGraph. A future rename could break `--app` replay until we swap the accessor.
+Replay finds `app.nodes[name].bound.invoke`, and the node's `.mapper` (what turns a state dict into a dataclass / pydantic schema object). Both are LangGraph’s own handles, not a public “give me node X” API. It works on current LangGraph. A future rename could break `--app` replay until we swap the accessor.
 
 **Done when:** we use a documented API, or we pin / test the accessor in CI against the LangGraph versions we claim.
 

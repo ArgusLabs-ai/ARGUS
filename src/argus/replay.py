@@ -54,7 +54,12 @@ def _node_from_app(app: Any, node_name: str) -> Callable[[Any], Any]:
         raise ValueError(
             f"The app given has no runnable node '{node_name}'. Its nodes are: {available}"
         )
-    return bound.invoke
+    # The row is a dict; a dataclass / pydantic state node expects its schema
+    # object. LangGraph coerces with the node's own mapper (None for TypedDict).
+    mapper = getattr(node, "mapper", None)
+    if mapper is None:
+        return bound.invoke
+    return lambda state: bound.invoke(mapper(state))
 
 
 def _smart_merge(state: dict, partial: dict) -> dict:
