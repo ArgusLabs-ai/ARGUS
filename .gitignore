@@ -109,5 +109,13 @@ ship_eval/
 
 # Blind probe of the fat-trace architecture (local only)
 blind_eval/
+# Local editor / AI-tool working files
+.cursor/
+docs/superpowers/
+.issue-*-staging/
+
+# A design mock dropped into the dashboard's public folder would ship inside ui_dist
+website/public/__artifact.html
+
 # Local demo pipeline (real API keys / real network calls; not for the repo)
 demo/research_agent/

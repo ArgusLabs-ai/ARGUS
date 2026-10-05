@@ -590,7 +590,7 @@ authoritative history.
 
 ## For contributors
 
-- Work on **`pivot/fat-traces`**. Do not open a wrap-deletion PR into `master`.
+- Open PRs against **`master`**: the pivot merged on 5 Oct (`pivot/fat-traces` and `dev` were fast-forwarded to it). Do not open a wrap-deletion PR (#83) yet.
 - Do not rebuild `inspector.py` / signatures as new “layers.” They are the rules. The ledger feeds them.
 - Do not stash function pointers on the recorder to make replay work.
 - **Touching detection? Run `tests/test_silent_failure_matrix.py` first.** It is

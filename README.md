@@ -1,9 +1,9 @@
 <div align="center">
-  <img src="https://github.com/VaradDurge/ARGUS/blob/master/assets/Argus-NameTrans.png?raw=true" width="480"/><br/>
+  <img src="https://github.com/ArgusLabs-ai/ARGUS/blob/master/assets/Argus-NameTrans.png?raw=true" width="480"/><br/>
   <a href="https://arguslabs.in"><img src="https://img.shields.io/badge/website-arguslabs.in-6366f1" alt="Website"/></a>
   <a href="https://pypi.org/project/argus-agents/"><img src="https://img.shields.io/pypi/v/argus-agents" alt="PyPI version"/></a>
   <a href="https://pypi.org/project/argus-agents/"><img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9+"/></a>
-  <a href="https://github.com/VaradDurge/ARGUS/releases"><img src="https://img.shields.io/badge/status-beta-6366f1" alt="Beta"/></a>
+  <a href="https://github.com/ArgusLabs-ai/ARGUS/releases"><img src="https://img.shields.io/badge/status-beta-6366f1" alt="Beta"/></a>
   <a href="https://discord.gg/67XTFTDSgd"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"/></a>
 </div>
 
@@ -46,7 +46,7 @@ app = ArgusRecorder().attach(graph)
 rewritten — ARGUS rides LangGraph's own callback stream. See
 [Which entry point?](#which-entry-point) if you are on the older `ArgusWatcher`.
 
-<img src="https://github.com/VaradDurge/ARGUS/blob/master/assets/Argus%20Guidelines%20and%20Contribution.png?raw=true" width="700"/>
+<img src="https://github.com/ArgusLabs-ai/ARGUS/blob/master/assets/Argus%20Guidelines%20and%20Contribution.png?raw=true" width="700"/>
 
 **4. Run**
 
@@ -545,10 +545,10 @@ no longer changes the node's status or the CI gate, but is still recorded on the
 ## Custom Validators
 
 ```python
-watcher = ArgusWatcher(graph, validators={
+app = ArgusRecorder(validators={
     "classify": lambda o: (o.get("label") in ["yes", "no"], "unexpected label"),
     "*":        lambda o: ("error" not in o, "error key present"),  # runs on every node
-})
+}).attach(graph)
 ```
 
 Validator failures cannot be overridden by the LLM judge — they are hard constraints.
@@ -556,6 +556,21 @@ Validator failures cannot be overridden by the LLM judge — they are hard const
 ---
 
 ## Configuration
+
+`ArgusRecorder` takes its options as keyword arguments:
+
+```python
+app = ArgusRecorder(
+    validators={...},       # hard per-node checks (above)
+    consumers={...},        # who reads which field, so blame lands on the writer
+    purposes={...},         # one line per node: turns on the run reviewer
+    baseline=baseline,      # from `argus baseline`: regressions against healthy runs
+    semantic_judge=False,   # per-step judge (on by default when a key is set)
+    strict=True,            # warning-level tool failures (e.g. HTTP 429) fail the step
+).attach(graph)
+```
+
+`ArgusConfig` (timeouts, sampling, persistence) applies to the legacy `ArgusWatcher`:
 
 ```python
 from argus import ArgusWatcher, ArgusConfig
@@ -568,8 +583,6 @@ config = ArgusConfig(
     sample_rate=0.5,               # persist 50% of clean runs (save disk)
     persist_failures=True,         # always persist failed runs
 )
-
-app = ArgusRecorder().attach(graph)   # ArgusConfig applies to ArgusWatcher today
 watcher = ArgusWatcher(graph, config=config)
 ```
 
