@@ -42,6 +42,9 @@ wired to the fat trace:
   clicked. The factory may return the builder or `graph.compile()` in both modes. A
   saved factory that will not import, or does not build a graph, re-opens the prompt
   with the reason — before, node mode kept retrying it from `.argus/config.json`.
+  A rerun whose node raises is kept as a crashed run — that crash is the answer the
+  rerun was asked for — on the legacy, single-node and factory paths alike (#157);
+  a state that fails validation before any node runs is still an error.
 - **The empty dashboard** pointed new users at `ArgusWatcher(graph)` and an `argus demo`
   command that does not exist; it now shows `ArgusRecorder().attach(graph)`.
 - **Typed state was recorded empty** (recorder, found while wiring rerun). A graph with a

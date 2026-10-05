@@ -62,6 +62,13 @@ def _node_from_app(app: Any, node_name: str) -> Callable[[Any], Any]:
     return lambda state: bound.invoke(mapper(state))
 
 
+def _crashed(session: Any) -> bool:
+    """A node raised and the session recorded it: that crashed run is the rerun's
+    answer, as in ``_replay_direct``. A failure before any node ran (the input
+    state did not validate) recorded nothing, and is still an error."""
+    return any(e.status == "crashed" for e in (getattr(session, "_events", None) or []))
+
+
 def _smart_merge(state: dict, partial: dict) -> dict:
     """Merge partial output into state, respecting list-append semantics.
 
@@ -256,7 +263,11 @@ class ReplayEngine:
         session.replay_from_step = node_name
         session.state_patch = patch or None
 
-        session.wrap(node_name, fn)(state)
+        try:
+            session.wrap(node_name, fn)(state)
+        except Exception:
+            if not _crashed(session):
+                raise
         session.finalize()
         return session.run_id
 
@@ -399,7 +410,14 @@ class ReplayEngine:
                         f"Node '{node_name}' has no stored function reference. "
                         f"Available: {list(record.node_fn_refs.keys())}"
                     )
-                partial = fn(state)
+                try:
+                    partial = fn(state)
+                except Exception:
+                    # The pipeline itself raised. The session has recorded the
+                    # crash as this replay's run, which is the answer the
+                    # rerun was asked for, so return it rather than failing
+                    # the job with a bare exception message ("'amount_usd'").
+                    break
                 if isinstance(partial, dict) and isinstance(state, dict):
                     state = _smart_merge(state, partial)
                 else:
@@ -476,7 +494,11 @@ class ReplayEngine:
                 "Got: " + type(graph).__name__
             )
 
-        app.invoke(state)
+        try:
+            app.invoke(state)
+        except Exception:
+            if not _crashed(watcher._session if watcher is not None else None):
+                raise
 
         if watcher is not None:
             watcher.finalize()
@@ -572,9 +594,13 @@ def _load_module_from_file(module_path: str, file_path: str) -> Any:
     """Load a module directly from a .py file — no __init__.py required."""
     abs_path = Path.cwd() / file_path
     if not abs_path.exists():
+        # The path is stored relative to where the pipeline ran, so this is
+        # almost always `argus ui` serving the run from a different folder.
         raise ImportError(
-            f"Cannot import module '{module_path}': stored file path "
-            f"'{file_path}' not found at {abs_path}"
+            f"Can't find the code for this run. It was recorded as '{file_path}', "
+            f"relative to the folder the pipeline ran in, but `argus ui` is running "
+            f"in {Path.cwd()} and there is no such file there. Start `argus ui` "
+            f"from the project folder that produced this run, then rerun."
         )
     spec = importlib.util.spec_from_file_location(module_path, str(abs_path))
     if spec is None or spec.loader is None:
