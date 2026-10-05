@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
-from urllib.request import urlopen
+from typing import Any, Optional
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import pytest
 
@@ -106,7 +108,30 @@ def build():
     g.add_edge(START, "summarize")
     g.add_edge("summarize", END)
     return g  # the builder, not .compile(): both shapes must rerun
+
+
+def forgot_return():
+    build()
 '''
+
+
+@pytest.fixture
+def ui(tmp_path: Path) -> Iterator[Callable[[Optional[str]], str]]:
+    """`argus ui`'s handler over tmp_path, started with a given app factory."""
+    servers: list[ThreadingHTTPServer] = []
+
+    def start(app: Optional[str]) -> str:
+        argus_dir = tmp_path / ".argus"
+        handler = _make_handler(argus_dir / "runs", argus_dir / "logs", app, tmp_path)
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        servers.append(httpd)
+        return f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    yield start
+    for httpd in servers:
+        httpd.shutdown()
+        httpd.server_close()
 
 
 def _trace_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
@@ -122,42 +147,31 @@ def _trace_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return rec.session.run_id
 
 
-def _post_replay(tmp_path: Path, app: str | None, run_id: str) -> tuple[int, dict[str, Any], str]:
-    from urllib.error import HTTPError
-    from urllib.request import Request
-
-    argus_dir = tmp_path / ".argus"
-    handler = _make_handler(argus_dir / "runs", argus_dir / "logs", app, tmp_path)
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+def _rerun_node(base: str, run_id: str) -> tuple[int, dict[str, Any]]:
+    """POST a single-node rerun; a 202 is followed until the job settles."""
     body = json.dumps({"run_id": run_id, "from_step": "summarize", "mode": "node"}).encode()
     req = Request(f"{base}/api/replay", data=body, headers={"Content-Type": "application/json"})
     try:
         with urlopen(req) as resp:  # noqa: S310 - localhost test server
-            return resp.status, json.loads(resp.read()), base
+            status, payload = resp.status, json.loads(resp.read())
     except HTTPError as exc:
-        return exc.code, json.loads(exc.read()), base
-    finally:
-        threading.Timer(15, httpd.shutdown).start()
+        return exc.code, json.loads(exc.read())
+    deadline = time.time() + 10
+    job: dict[str, Any] = {"status": "running"}
+    while job["status"] == "running" and time.time() < deadline:
+        time.sleep(0.05)
+        job = _get(base, f"/api/replay/status/{payload['job_id']}")
+    return status, job
 
 
 def test_a_node_rerun_of_a_trace_takes_the_node_from_the_app_factory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ui: Callable[[Optional[str]], str]
 ) -> None:
-    import time
-
     from argus.storage import load_run
 
     run_id = _trace_run(tmp_path, monkeypatch)
-    status, body, base = _post_replay(tmp_path, "replay_app:build", run_id)
-    assert status == 202, body
-
-    deadline = time.time() + 10
-    job = {"status": "running"}
-    while job["status"] == "running" and time.time() < deadline:
-        time.sleep(0.05)
-        job = _get(base, f"/api/replay/status/{body['job_id']}")
+    status, job = _rerun_node(ui("replay_app:build"), run_id)
+    assert status == 202
     assert job["status"] == "done", job
 
     rerun = load_run(job["run_id"])
@@ -168,10 +182,25 @@ def test_a_node_rerun_of_a_trace_takes_the_node_from_the_app_factory(
 
 
 def test_a_node_rerun_of_a_trace_with_no_factory_asks_for_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ui: Callable[[Optional[str]], str]
 ) -> None:
     monkeypatch.setattr("argus.cli.cmd_open_ui._load_config_app_factory", lambda: None)
     run_id = _trace_run(tmp_path, monkeypatch)
-    status, body, _ = _post_replay(tmp_path, None, run_id)
+    status, body = _rerun_node(ui(None), run_id)
     assert status == 422
     assert body["error"] == "no_app_factory"
+
+
+@pytest.mark.parametrize("factory", ["replay_app:forgot_return", "no_such_module:build"])
+def test_a_factory_that_builds_no_graph_is_asked_for_again(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ui: Callable[[Optional[str]], str],
+    factory: str,
+) -> None:
+    """`bad_factory` re-opens the prompt; anything else left a broken saved spec retried."""
+    run_id = _trace_run(tmp_path, monkeypatch)
+    status, job = _rerun_node(ui(factory), run_id)
+    assert status == 202
+    assert job["status"] == "error"
+    assert job["error_code"] == "bad_factory", job

@@ -137,7 +137,7 @@ export default function ReplayControls({
           setReplayingNode(null)
           if (pdata.error_code === 'bad_factory') {
             setPendingNode(nodeName ?? null)
-            setReplayState({ phase: 'no_factory', mode, nodeName })
+            setReplayState({ phase: 'no_factory', mode, nodeName, message: pdata.message })
             setTimeout(() => factoryInputRef.current?.focus(), 50)
           } else {
             setReplayState({ phase: 'error', message: pdata.message ?? 'Rerun failed' })
@@ -178,7 +178,10 @@ export default function ReplayControls({
           className="note-line"
           onSubmit={(e) => { e.preventDefault(); handleFactorySubmit() }}
         >
-          <span>Rerun needs the function that builds your graph:</span>
+          <span>
+            {replayState.message ? `That factory did not work: ${replayState.message}. ` : ''}
+            Rerun needs the function that builds your graph:
+          </span>
           <input
             ref={factoryInputRef}
             type="text"

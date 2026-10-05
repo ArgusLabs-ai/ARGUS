@@ -4,6 +4,7 @@
 
 import type { NodeEvent, RunRecord, StepStatus } from './types'
 import { getFailureMeta } from './failure-labels'
+import { nodeStep } from './run-utils'
 
 export const W = 178          // node width — spec
 export const NODE_H = 56      // fallback node height before measurement
@@ -205,7 +206,7 @@ export interface GNode {
 export function layoutGraph(run: RunRecord, names: string[], edgeMap: Record<string, string[]>): GNode[] {
   const layers = dagLayers(names, edgeMap)
   const root = run.root_cause_chain?.[0] ?? null
-  const stepFor = (n: string) => (run.steps ?? []).find((s) => s.node_name === n)
+  const stepFor = (n: string) => nodeStep(run.steps, n)
   const cols = layers.map((layer) => layer.map((id) => {
     const st = stepFor(id)
     return { id, st, pills: pillsFor(st) }

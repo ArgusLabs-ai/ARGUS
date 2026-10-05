@@ -12,6 +12,7 @@ import { formatDuration } from '@/lib/workspace'
 import { fmtCost, fmtTokens } from '@/lib/run-detail'
 import { getFailureMeta, CATEGORY_CHIP } from '@/lib/failure-labels'
 import { STATUS_META, mapStatus } from '@/lib/graph-model'
+import { nodeStep } from '@/lib/run-utils'
 import JsonGutter from './JsonGutter'
 import Prose from './Prose'
 import { FixPromptBody, useFixPrompt } from './FixPrompt'
@@ -307,11 +308,11 @@ export default function StepInspector({
   }, [selectedNodeName])
 
   if (selectedNodeName) {
-    const step = steps.find((s) => s.node_name === selectedNodeName)
+    const step = nodeStep(steps, selectedNodeName)
     if (step) return <NodeDetail key={step.node_name} step={step} run={run} onDismiss={onDismiss} />
   }
 
-  const failed = steps.find((s) => s.status !== 'pass' && s.status !== 'skipped')
+  const failed = steps.find((s) => s.status !== 'pass' && s.status !== 'skipped' && s.status !== 'retried')
   if (!failed) return null
-  return <NodeDetail key={failed.node_name} step={failed} run={run} />
+  return <NodeDetail key={failed.node_name} step={nodeStep(steps, failed.node_name) ?? failed} run={run} />
 }

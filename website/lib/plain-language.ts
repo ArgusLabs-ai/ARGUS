@@ -6,6 +6,7 @@
    technical detail. */
 
 import type { Finding, RunRecord } from './types'
+import { nodeStep } from './run-utils'
 
 /* Signature id prefix → signature category (src/argus/data/signatures.json). */
 const SIG_KIND: Record<string, string> = {
@@ -63,7 +64,7 @@ function whatWentWrong(f: Finding, run: RunRecord): string {
 
   switch (kindOf(f)) {
     case 'crash': {
-      const step = (run.steps ?? []).find((s) => s.node_name === f.node)
+      const step = nodeStep(run.steps, f.node)
       const why = plainError(step?.exception)
       return why ? `crashed because ${why}` : 'crashed'
     }
@@ -150,7 +151,7 @@ export function explainRootCause(
     return { summary, impact: `The problem starts earlier, at ${code(origin)}, the step that should have provided the data.` }
   }
 
-  const originStep = steps.find((s) => s.node_name === origin)
+  const originStep = nodeStep(steps, origin)
   if (originStep?.status === 'crashed') return { summary, impact: 'The run stopped there.' }
 
   const surfaced = path.length > 1 ? path[path.length - 1] : null

@@ -583,14 +583,37 @@ def _run_replay_worker(
     """
     from argus.replay import ReplayEngine  # noqa: PLC0415
 
+    def fail(error: str, code: str) -> None:
+        with _replay_lock:
+            _replay_jobs[job_id] = {
+                "status": "error",
+                "run_id": None,
+                "error": error,
+                "error_code": code,
+            }
+
+    try:
+        factory = _import_factory_for_ui(app_module_str) if app_module_str else None
+    except Exception as exc:
+        # `bad_factory` makes the dashboard ask again. Anything else left the
+        # saved spec in .argus/config.json, retried on every click.
+        fail(str(exc), "bad_factory")
+        return
+
     try:
         engine = ReplayEngine()
-        if mode == "node" and app_module_str:
+        if mode == "node" and factory is not None:
             # A trace run: input from the ledger, the node off the user's graph.
+            app = factory()
+            if not hasattr(app, "nodes"):
+                raise ValueError(
+                    "app_factory must return a LangGraph StateGraph or CompiledGraph. "
+                    f"Got: {type(app).__name__}"
+                )
             new_run_id = engine.replay_live(
                 run_id=run_id,
                 node_name=from_node,
-                app=_import_factory_for_ui(app_module_str)(),
+                app=app,
                 patch=patch,
                 create_missing=create_missing,
             )
@@ -602,7 +625,6 @@ def _run_replay_worker(
                 create_missing=create_missing,
             )
         else:
-            factory = _import_factory_for_ui(app_module_str) if app_module_str else None
             new_run_id = engine.replay(
                 run_id=run_id,
                 from_node=from_node,
@@ -614,18 +636,8 @@ def _run_replay_worker(
             _replay_jobs[job_id] = {"status": "done", "run_id": new_run_id, "error": None}
     except Exception as exc:
         error_str = str(exc)
-        error_code = "replay_failed"
-        if "returned a dict" in error_str or "app_factory must return" in error_str:
-            error_code = "bad_factory"
-        elif "returned None" in error_str:
-            error_code = "bad_factory"
-        with _replay_lock:
-            _replay_jobs[job_id] = {
-                "status": "error",
-                "run_id": None,
-                "error": error_str,
-                "error_code": error_code,
-            }
+        bad = ("returned a dict", "app_factory must return", "returned None")
+        fail(error_str, "bad_factory" if any(s in error_str for s in bad) else "replay_failed")
 
 
 def _all_run_files(project_dir: Path) -> list[Path]:

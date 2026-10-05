@@ -35,6 +35,16 @@ export const STATUS_LABEL_STYLE: Record<string, string> = {
 
 export const SENTINEL_NODES = new Set(['__start__', '__end__', 'START', 'END'])
 
+/** The visit that speaks for a node that ran more than once: its last failing visit
+ *  that was not superseded (`retried` / `skipped`), else its last such visit. Rule hits
+ *  and run-reviewer verdicts land on the last visit, and a failed accumulator iteration
+ *  that kept its status (issue 131) must still show. The first visit was neither. */
+export function nodeStep(steps: NodeEvent[] | undefined, node: string): NodeEvent | undefined {
+  const visits = (steps ?? []).filter((s) => s.node_name === node)
+  const live = visits.filter((s) => s.status !== 'retried' && s.status !== 'skipped')
+  return [...live].reverse().find((s) => s.status !== 'pass') ?? live[live.length - 1] ?? visits[visits.length - 1]
+}
+
 /** Real graph nodes. `graph_node_names` is the raw `graph.nodes` key list, so it
     carries LangGraph's `__start__` / `__end__` sentinels — they never run and
     must never render as steps. Every node-list consumer goes through here. */

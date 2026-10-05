@@ -30,10 +30,12 @@ def _python_failure_types() -> set[str]:
     assert block, "_CATEGORY_TO_FAILURE not found in inspector.py"
     found |= set(re.findall(r':\s*"([a-z_]+)"', block.group(0)))
     found |= _trace_rule_types()
-    # The run reviewer names its two by assignment, not as a keyword argument.
+    # The run reviewer names its types by assignment, not as a keyword argument.
+    # Every such site must parse, or a renamed one would drop out unnoticed.
     review = (REPO / "src" / "argus" / "review.py").read_text()
-    reviewer = set(re.findall(r'failure_type, field_name = "([a-z_]+)"', review))
-    assert reviewer, "no failure types parsed out of review.py"
+    sites = re.findall(r"failure_type, field_name = (.+)", review)
+    reviewer = {m.group(1) for s in sites if (m := re.match(r'"([a-z_]+)"', s))}
+    assert sites and len(reviewer) == len(sites), f"unparsed reviewer types in review.py: {sites}"
     return found | reviewer
 
 
@@ -51,7 +53,8 @@ def _trace_rule_types() -> set[str]:
         if isinstance(node, ast.Tuple) and len(node.elts) == 3:
             first = node.elts[0]
         elif isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Hit":
-            first = node.args[1] if len(node.args) > 1 else None
+            kw = [k.value for k in node.keywords if k.arg == "failure_type"]
+            first = node.args[1] if len(node.args) > 1 else (kw[0] if kw else None)
         else:
             continue
         if isinstance(first, ast.Constant) and re.fullmatch(r"[a-z]+(_[a-z]+)+", str(first.value)):

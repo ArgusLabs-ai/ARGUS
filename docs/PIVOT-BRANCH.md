@@ -30,13 +30,18 @@ wired to the fat trace:
   `subgraph_no_contribution` and `tool_error` — 19 types — all rendered as a grey
   "Unknown" chip. It now parses `trace_rules.py` and `review.py` as well.
 - **Step detail shows the trace.** Each step lists its tool calls (input, output, the
-  error a tool raised) and what the run reviewer verified, by role.
+  error a tool raised) and what the run reviewer verified, by role. A node that ran
+  more than once is shown by its last failing visit — where rule hits and reviewer
+  verdicts land — in the graph, the step detail and the findings; every one of them
+  used to show the first visit, so a loop that failed on its third pass drew green.
 - **Rerun follows #79.** The dashboard used to scan the project with an LLM to guess a
   trace's node functions and save the guess into the run file before a rerun — the
   path #79 removed from `argus replay`. Now *Rerun node* on a trace takes the node off
   the app factory (`replay_live`), *Rerun from here* uses it as before, and with no
   factory the dashboard asks for one. Retrying after entering it keeps the mode you
-  clicked. The factory may return the builder or `graph.compile()` in both modes.
+  clicked. The factory may return the builder or `graph.compile()` in both modes. A
+  saved factory that will not import, or does not build a graph, re-opens the prompt
+  with the reason — before, node mode kept retrying it from `.argus/config.json`.
 - **The empty dashboard** pointed new users at `ArgusWatcher(graph)` and an `argus demo`
   command that does not exist; it now shows `ArgusRecorder().attach(graph)`.
 - **Typed state was recorded empty** (recorder, found while wiring rerun). A graph with a
@@ -47,7 +52,7 @@ wired to the fat trace:
   the schema object with the node's own mapper. TypedDict / `MessagesState` graphs are
   unchanged; both matrices still pass.
 
-Suite: 1,391 tests pass (5 skipped, 2 xfailed).
+Suite: 1,395 tests pass (5 skipped, 2 xfailed).
 
 **New since 2 Oct: the run reviewer (#149).** A blind probe showed the rules failing
 about half of the healthy runs they had never seen, and the per-step judge having no
