@@ -526,6 +526,22 @@ Every verdict carries an audit trail:
 
 ---
 
+## Silencing a noisy signature
+
+A signature that keeps flagging legitimate output — say `NL-002` reading the string `"none"` as a
+serialized null — should be silenced, not worked around by contorting your data:
+
+```bash
+argus ignore NL-002                    # everywhere in this project
+argus ignore RF-001 --node draft_hook  # only on one node
+argus ignore --list
+argus ignore NL-002 --remove
+```
+
+Suppressions live in `.argus/config.json` (commit it so the team shares them). A suppressed hit
+no longer changes the node's status or the CI gate, but is still recorded on the run
+(`suppressed_signals`) so `argus stats` keeps counting it. `argus doctor` lists what's active.
+
 ## Custom Validators
 
 ```python
@@ -577,6 +593,8 @@ argus diff <id-a> <id-b>             # compare two runs
 argus stats                          # signature hit stats, disable/enable/dispute signatures
 argus ingest langsmith <file.jsonl>  # grade a LangSmith export — no app, no graph needed
 argus edges mypkg.graph:build -o edges.json   # real topology for `ingest --edges`
+argus ignore <SIG-ID> [--node N]     # silence a noisy signature project-wide or on one node
+argus ignore --list                  # show active suppressions (.argus/config.json)
 argus ui                             # web dashboard
 argus doctor                         # check setup health + LLM mode (BYOK/hosted/heuristic)
 argus key set [--provider ...]       # save a provider key locally (OpenAI/Anthropic/Google) — BYOK

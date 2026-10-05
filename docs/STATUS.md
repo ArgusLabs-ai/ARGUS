@@ -27,10 +27,12 @@ Rules that follow from the table:
   and siblings never relabel each other.
 - **`degraded_input` never names the culprit.** Read `inspection.degraded_upstream_node` or
   `RunRecord.root_cause_chain[0]` for the origin.
-- **Warnings do not change status.** Warning-severity signals (`json_in_string`, `shallow_output`,
+- **Warnings do not change status by default.** Warning-severity signals (`json_in_string`, `shallow_output`,
   `truncated_llm_output`, warning-level tool failures such as HTTP 429, and a node's own verdict
   shapes under `own_output=True` — status words / `errors: [...]` lists) are recorded on the event
-  but leave it `pass`. Any warning-level entry in `inspection.semantic_signals` is a soft flag the
+  but leave it `pass`. `inspection.has_tool_warnings` is `True` when any warning-severity tool
+  failure was recorded; escalate them at check time with `argus check --strict warn_as_fail`
+  (PRD US-1.4 / #73). Any warning-level entry in `inspection.semantic_signals` is a soft flag the
   LLM judge may review — and drop, if it is a false positive (shape warnings included; F-21).
   **Exception — the run reviewer** (`argus.review`, on when node purposes are given): a warning
   on a step the reviewer independently verified becomes a critical `review_confirmed` tool
@@ -76,8 +78,9 @@ Consequences worth knowing:
   `semantic_fail`. There is no run status named `semantic_fail`; the value is listed in
   `check.UNCLEAN_OVERALL_STATUSES` and `website/lib/types.ts` `RunStatus` for tolerance only and
   is never produced.
-- `has_tool_failure` is `True` only for **critical** tool failures. Warning-level ones do not
-  make the run `silent_failure`.
+- `has_tool_failure` is `True` only for **critical** tool failures. Warning-level ones set
+  `has_tool_warnings` instead and do not make the run `silent_failure` under the default
+  roll-up. Use `argus check --strict warn_as_fail` to fail CI on those warnings.
 - `first_failure_step` is the first node (in execution order, including retried/skipped events)
   whose status is in `{fail, crashed, semantic_fail, degraded_input}`.
 
@@ -88,6 +91,10 @@ Consequences worth knowing:
 1. `overall_status` is not `clean`, **or**
 2. any active node has status in `{fail, crashed, semantic_fail}`, or its inspection shows
    `is_silent_failure`, `has_tool_failure`, or non-empty `missing_fields`.
+
+With `strict="warn_as_fail"` (`argus check --strict warn_as_fail`), warning-severity tool
+failures (`has_tool_warnings` / rate limits, etc.) also fail the gate even when
+`overall_status` is still `clean`. Default is `critical_only`.
 
 Exit code is `1` on failure, `0` when clean.
 

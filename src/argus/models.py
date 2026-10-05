@@ -172,6 +172,7 @@ class InspectionResult:
     suspicious_empty_keys: list[str] = field(default_factory=list)
     tool_failures: list[ToolFailure] = field(default_factory=list)
     has_tool_failure: bool = False  # True if any tool_failures with severity="critical"
+    has_tool_warnings: bool = False  # True if any tool_failures with severity="warning"
     semantic_signals: list[SemanticSignal] = field(default_factory=list)
     # Upstream propagation: fields missing from input because an upstream node failed
     degraded_fields: list[str] = field(default_factory=list)
@@ -253,6 +254,10 @@ class NodeEvent:
     # What the run reviewer verified on this step (argus.review): dicts with
     # kind / claim / why / correction / role ("confirms" | "promoted" | "advisory").
     review: list[dict[str, Any]] = field(default_factory=list)
+    # Hits silenced by `argus ignore` (project .argus/config.json). Kept for stats
+    # and findings; they do not affect status. See suppressions.py.
+    suppressed_signals: list[SemanticSignal] = field(default_factory=list)
+    suppressed_anomalies: list[AnomalySignal] = field(default_factory=list)
 
 
 # ── Replay comparison dataclasses ─────────────────────────────────────────────

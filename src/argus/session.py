@@ -407,6 +407,13 @@ class ArgusSession:
         self.reviewer: Any = None
 
         self._strict = strict
+        # Project-level `argus ignore` list, read once per session.
+        try:
+            from argus.suppressions import load_suppressions  # noqa: PLC0415
+
+            self._suppressions = load_suppressions()
+        except Exception:
+            self._suppressions = []
         self._redact_keys: frozenset[str] = frozenset(redact_keys or ())
         self._redact_functions: dict[str, Callable[[Any], Any]] = redact_functions or {}
         self._redact_patterns: bool = config.redact_patterns if config else redact_patterns
@@ -866,6 +873,8 @@ class ArgusSession:
             attempt_idx = self._node_attempt_counts.get(node_name, 0)
             self._node_attempt_counts[node_name] = attempt_idx + 1
 
+            suppressed_signals: list[SemanticSignal] = []
+            suppressed_anomalies: list[AnomalySignal] = []
             # determine status
             status: StepStatus
             if is_interrupt:
@@ -929,6 +938,34 @@ class ArgusSession:
                         inspection.severity = "critical"
                 # Latency-correlated degradation checks
                 self._check_latency_signals(duration_ms, inspection)
+                # `argus ignore`: move suppressed hits off the inspection so they
+                # cannot change status, but keep them for stats / findings.
+                if self._suppressions:
+                    from argus.suppressions import split_suppressed  # noqa: PLC0415
+
+                    inspection.semantic_signals, suppressed_signals = split_suppressed(
+                        inspection.semantic_signals,
+                        node_name,
+                        self._suppressions,
+                        id_attr="sig_id",
+                    )
+                    if suppressed_signals:
+                        # Rule 7 mirrors every semantic signal into a ToolFailure
+                        # carrying "[SIG-ID]" in its evidence (inspector.py). Drop
+                        # those twins too, else has_tool_failure keeps failing the
+                        # node — same removal the disambiguation path does below.
+                        _tokens = {f"[{s.sig_id}]" for s in suppressed_signals}
+                        inspection.tool_failures = [
+                            tf
+                            for tf in inspection.tool_failures
+                            if not any(t in (tf.evidence or "") for t in _tokens)
+                        ]
+                        inspection.has_tool_failure = any(
+                            tf.severity == "critical" for tf in inspection.tool_failures
+                        )
+                        inspection.is_silent_failure = bool(
+                            inspection.missing_fields or inspection.has_tool_failure
+                        )
                 # Determine raw status from inspection
                 _has_failure = inspection.is_silent_failure or inspection.has_tool_failure
                 # Only critical-severity semantic signals affect status — a
@@ -986,6 +1023,12 @@ class ArgusSession:
                     self._behavior_config,
                     input_state=input_snap,
                 )
+                if self._suppressions:
+                    from argus.suppressions import split_suppressed  # noqa: PLC0415
+
+                    anomaly_signals, suppressed_anomalies = split_suppressed(
+                        anomaly_signals, node_name, self._suppressions, id_attr="anomaly_id"
+                    )
                 if any(a.severity == "critical" for a in anomaly_signals) and status == "pass":
                     status = "semantic_fail"
             anomaly_signals.extend(_truncation_signals(llm_usage))
@@ -1083,6 +1126,8 @@ class ArgusSession:
                 llm_usage=llm_usage,
                 behavior_type=behavior_type_val,
                 anomaly_signals=anomaly_signals,
+                suppressed_signals=suppressed_signals,
+                suppressed_anomalies=suppressed_anomalies,
                 semantic_check=semantic_check_result,
                 disambiguation_results=disambiguation_results,
                 tool_calls=list(tool_calls or []),
@@ -1280,6 +1325,9 @@ class ArgusSession:
                 ]
                 inspection.has_tool_failure = any(
                     tf.severity == "critical" for tf in inspection.tool_failures
+                )
+                inspection.has_tool_warnings = any(
+                    tf.severity == "warning" for tf in inspection.tool_failures
                 )
                 inspection.is_silent_failure = bool(
                     inspection.missing_fields or inspection.has_tool_failure

@@ -1181,6 +1181,7 @@ def inspect_tool_outputs(
 
     tool_failures = list(by_field.values())
     has_tool_failure = any(tf.severity == "critical" for tf in tool_failures)
+    has_tool_warnings = any(tf.severity == "warning" for tf in tool_failures)
     semantic_signals_list: list[SemanticSignal] = list(signals)
     return InspectionResult(
         is_silent_failure=False,
@@ -1191,6 +1192,7 @@ def inspect_tool_outputs(
         message=_build_tool_failure_message(tool_failures) or "No tool failures detected",
         tool_failures=tool_failures,
         has_tool_failure=has_tool_failure,
+        has_tool_warnings=has_tool_warnings,
         semantic_signals=semantic_signals_list,
     )
 
@@ -1340,6 +1342,7 @@ def inspect_transition(
         ]
 
     has_tool_failure = any(tf.severity == "critical" for tf in tool_failures)
+    has_tool_warnings = any(tf.severity == "warning" for tf in tool_failures)
 
     if output_dict is None:
         return InspectionResult(
@@ -1351,6 +1354,7 @@ def inspect_transition(
             message="Node crashed — no output to inspect",
             tool_failures=[],
             has_tool_failure=False,
+            has_tool_warnings=False,
         )
 
     if not successor_fns:
@@ -1367,6 +1371,7 @@ def inspect_transition(
             message=message,
             tool_failures=tool_failures,
             has_tool_failure=has_tool_failure,
+            has_tool_warnings=has_tool_warnings,
             semantic_signals=semantic_signals,
         )
 
@@ -1534,6 +1539,7 @@ def inspect_transition(
         suspicious_empty_keys=suspicious_empty,
         tool_failures=tool_failures,
         has_tool_failure=has_tool_failure,
+        has_tool_warnings=has_tool_warnings,
         semantic_signals=semantic_signals,
     )
 
