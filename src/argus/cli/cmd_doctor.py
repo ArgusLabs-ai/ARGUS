@@ -90,7 +90,7 @@ def _check_storage() -> tuple[bool, str]:
     stored_argus = argus_dir()
     stored_runs = runs_dir(create=False)
     hint = (
-        "If you expected runs: call watcher.attach(graph) before invoke; "
+        "If you expected runs: invoke the app ArgusRecorder().attach(graph) returns; "
         "files go under the project root (git / pyproject.toml / $ARGUS_DIR), "
         "not the process cwd; cyclic graphs persist when invoke() returns "
         "(no finalize() needed with attach()); "

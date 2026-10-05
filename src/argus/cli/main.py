@@ -201,9 +201,8 @@ _SETUP_LINES = [
     ("argus init", "# write Cursor + Claude project skills (commit them)"),
     ("argus fix <id>", "# paste-ready prompt for the root-cause node"),
     ("argus key set <openai-key>", "# optional: enable AI-powered detection (BYOK)"),
-    ("from argus import ArgusWatcher", ""),
-    ("watcher = ArgusWatcher()", ""),
-    ("app = watcher.attach(graph)", "# StateGraph or compiled app"),
+    ("from argus import ArgusRecorder", ""),
+    ("app = ArgusRecorder().attach(graph)", "# your compiled graph; nothing is patched"),
     ("app.invoke(initial_state)", "# run persists automatically"),
 ]
 
