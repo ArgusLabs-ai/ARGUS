@@ -7,6 +7,7 @@ silently renders a grey "Unknown" chip. These tests fail instead.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -28,6 +29,37 @@ def _python_failure_types() -> set[str]:
     block = re.search(r"_CATEGORY_TO_FAILURE.*?\n}", inspector, re.S)
     assert block, "_CATEGORY_TO_FAILURE not found in inspector.py"
     found |= set(re.findall(r':\s*"([a-z_]+)"', block.group(0)))
+    found |= _trace_rule_types()
+    # The run reviewer names its types by assignment, not as a keyword argument.
+    # Every such site must parse, or a renamed one would drop out unnoticed.
+    review = (REPO / "src" / "argus" / "review.py").read_text()
+    sites = re.findall(r"failure_type, field_name = (.+)", review)
+    reviewer = {m.group(1) for s in sites if (m := re.match(r'"([a-z_]+)"', s))}
+    assert sites and len(reviewer) == len(sites), f"unparsed reviewer types in review.py: {sites}"
+    return found | reviewer
+
+
+def _trace_rule_types() -> set[str]:
+    """Failure types the whole-trace rules emit (trace_rules.py).
+
+    A rule yields ``(failure_type, field, evidence)`` and the runner wraps it in
+    ``Hit(event, ...)``; D15 builds its ``Hit`` directly. Neither is a
+    ``failure_type="..."`` literal, so the regex above never saw them and every
+    D-rule hit rendered as a grey 'Unknown' chip.
+    """
+    tree = ast.parse((REPO / "src" / "argus" / "trace_rules.py").read_text())
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Tuple) and len(node.elts) == 3:
+            first = node.elts[0]
+        elif isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Hit":
+            kw = [k.value for k in node.keywords if k.arg == "failure_type"]
+            first = node.args[1] if len(node.args) > 1 else (kw[0] if kw else None)
+        else:
+            continue
+        if isinstance(first, ast.Constant) and re.fullmatch(r"[a-z]+(_[a-z]+)+", str(first.value)):
+            found.add(first.value)
+    assert found, "no failure types parsed out of trace_rules.py"
     return found
 
 
@@ -102,13 +134,13 @@ def test_every_step_status_is_coloured_in_the_graph() -> None:
     whatever the fallback happens to be rather than flagged — `interrupted`
     rendered as a green pass this way.
     """
-    src = (WEBSITE / "components" / "run-detail" / "ExecutionGraph.tsx").read_text()
+    src = (WEBSITE / "lib" / "graph-model.ts").read_text()
     block = re.search(r"function mapStatus\(.*?\n}", src, re.S)
-    assert block, "mapStatus not found in ExecutionGraph.tsx"
+    assert block, "mapStatus not found in lib/graph-model.ts"
     handled = set(re.findall(r"case '([a-z_]+)':", block.group(0)))
     missing = _step_statuses() - handled
     assert not missing, (
-        f"step statuses with no explicit case in ExecutionGraph.mapStatus "
+        f"step statuses with no explicit case in graph-model.mapStatus "
         f"(they fall through to the default colour): {sorted(missing)}"
     )
 

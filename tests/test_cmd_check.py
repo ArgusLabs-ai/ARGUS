@@ -432,3 +432,99 @@ def test_check_fail_on_rejects_unknown_value():
     result = CliRunner().invoke(app, ["check", "last", "--fail-on", "bogus", "--format", "json"])
     assert result.exit_code == 2
     assert "bogus" in json.loads(result.output)["error"]
+
+
+# ── --strict warn_as_fail (issue #73 / PRD US-1.4) ───────────────────────────
+
+
+def _rate_limit_warning_record(run_id: str):
+    """Clean overall run whose only signal is a warning-severity rate limit."""
+    from argus.models import ToolFailure
+
+    tf = ToolFailure(
+        failure_type="rate_limit",
+        field_name="error",
+        severity="warning",
+        evidence="rate limit exceeded",
+    )
+    record = make_run_record(
+        events=[
+            make_event(
+                node_name="api_call",
+                status="pass",
+                inspection=make_inspection(
+                    tool_failures=[tf],
+                    has_tool_failure=False,
+                    has_tool_warnings=True,
+                    severity="warning",
+                    message="rate limit",
+                ),
+            )
+        ],
+        status="clean",
+        run_id=run_id,
+    )
+    record.started_at = _now()
+    return record
+
+
+@pytest.mark.unit
+def test_evaluate_run_rate_limit_warning_clean_by_default():
+    record = _rate_limit_warning_record("rl-default")
+    assert evaluate_run(record).passed is True
+    assert evaluate_run(record, strict="critical_only").passed is True
+
+
+@pytest.mark.unit
+def test_evaluate_run_rate_limit_warning_fails_under_warn_as_fail():
+    record = _rate_limit_warning_record("rl-strict")
+    result = evaluate_run(record, strict="warn_as_fail")
+    assert result.passed is False
+    assert "api_call" in result.failing_nodes
+    assert any("tool_warning" in r for r in result.reasons)
+
+
+@pytest.mark.unit
+def test_inspect_tool_outputs_sets_has_tool_warnings_for_rate_limit():
+    from argus.inspector import inspect_tool_outputs
+
+    insp = inspect_tool_outputs({"error": "rate limit exceeded"})
+    assert insp.has_tool_failure is False
+    assert insp.has_tool_warnings is True
+    assert any(tf.failure_type == "rate_limit" for tf in insp.tool_failures)
+
+
+@pytest.mark.unit
+def test_check_cli_strict_warn_as_fail_exits_one():
+    save_run(_rate_limit_warning_record("rl-cli"))
+    default = CliRunner().invoke(app, ["check", "last"])
+    assert default.exit_code == 0, default.output
+    strict = CliRunner().invoke(app, ["check", "last", "--strict", "warn_as_fail"])
+    assert strict.exit_code == 1, strict.output
+    assert "fail" in strict.output
+
+
+@pytest.mark.unit
+def test_check_json_includes_strict_and_fails_warn_as_fail():
+    import json
+
+    save_run(_rate_limit_warning_record("rl-json"))
+    result = CliRunner().invoke(
+        app, ["check", "last", "--format", "json", "--strict", "warn_as_fail"]
+    )
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["strict"] == "warn_as_fail"
+    assert payload["passed"] is False
+    assert payload["overall_status"] == "clean"  # recorded status unchanged
+    assert "api_call" in payload["failing_nodes"]
+
+
+@pytest.mark.unit
+def test_check_strict_rejects_unknown_value():
+    import json
+
+    save_run(_rate_limit_warning_record("rl-bad-strict"))
+    result = CliRunner().invoke(app, ["check", "last", "--strict", "bogus", "--format", "json"])
+    assert result.exit_code == 2
+    assert "bogus" in json.loads(result.output)["error"]

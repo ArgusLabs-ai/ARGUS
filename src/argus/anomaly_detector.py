@@ -87,6 +87,9 @@ _GENERIC_PHRASES = frozenset(
         "as an ai",
         "i don't have",
         "i am unable",
+        "i'm unable",
+        "i am not able",
+        "i'm not able",
         "not available",
         "no data",
         "no information",
@@ -350,25 +353,115 @@ def _check_info_density(
     )
 
 
-def _check_generic_response(output_dict: dict[str, Any]) -> AnomalySignal | None:
-    """BA-004: Suspiciously generic responses."""
+# The fields that carry a node's actual answer, and the length past which a
+# generic phrase reads as a mention inside real prose rather than the whole
+# reply. Kept in step with `inspector._MAIN_LLM_OUTPUT_KEYS`.
+_MAIN_OUTPUT_KEYS = frozenset({"answer", "draft", "summary", "reply", "content"})
+_WHOLE_ANSWER_MAX_LEN = 160
+_LIST_INDEX_RE = re.compile(r"\[\d+\]$")
+# A cited constraint (a number) plus a reason is a policy decision, not a
+# cop-out. "45 days" / "because" / "instead" — not "unable to answer".
+_POLICY_CONSTRAINT_RE = re.compile(
+    r"\d",
+)
+_POLICY_REASON_RE = re.compile(
+    r"\b(?:because|since|outside|within|window|instead|offer|policy|days?)\b",
+    re.IGNORECASE,
+)
+# Double quotes only. ``can't`` contains an apostrophe, so a single-quote
+# span would split the customer's words in the middle.
+_DOUBLE_QUOTE_RE = re.compile(r'["“]([^"”]*)["”]')
+
+
+def _is_short_main_output(path: str, text: str) -> bool:
+    """Is `path` a main answer field whose whole value is this short string?"""
+    leaf = _LIST_INDEX_RE.sub("", path.rsplit(".", 1)[-1])
+    return leaf.lower() in _MAIN_OUTPUT_KEYS and len(text) <= _WHOLE_ANSWER_MAX_LEN
+
+
+def _redact_quoted_input(text: str, input_text: str) -> str:
+    """Blank double-quoted spans that repeat this node's input.
+
+    ``You said "I can't reset my password" — I sent a reset link`` quotes the
+    customer. Refusal phrases inside that span are theirs (#146). The agent's
+    own words stay, so an ``I'm unable to`` outside the quotes still counts.
+    A span is blanked only when its text appears in the input: wrapping a
+    refusal in quotes does not hide it. Single quotes are not spans.
+    """
+    if not input_text:
+        return text
+    folded = " ".join(input_text.lower().split())
+
+    def _blank(match: re.Match[str]) -> str:
+        inner = " ".join(match.group(1).lower().split())
+        if len(inner) < 5 or inner not in folded:
+            return match.group(0)
+        return " " * len(match.group(0))
+
+    return _DOUBLE_QUOTE_RE.sub(_blank, text)
+
+
+def _is_grounded_policy_decline(text: str) -> bool:
+    """A refusal that cites a concrete constraint is a decision, not a cop-out.
+
+    ``I can't refund order A-1001 because it was delivered 45 days ago`` names
+    the order and the window. ``I'm unable to answer questions about company
+    revenue`` does not. Phrase match alone cannot separate them; a number plus
+    a reason can, and that is what keeps the bare refusal gating CI (#130).
+    The grounded shape stays a warning so a reviewer can still see it. It does
+    not clear a hard fail and it does not itself fail the build.
+    """
+    return bool(_POLICY_CONSTRAINT_RE.search(text) and _POLICY_REASON_RE.search(text))
+
+
+def _check_generic_response(
+    output_dict: dict[str, Any],
+    input_state: dict[str, Any] | None = None,
+) -> AnomalySignal | None:
+    """BA-004: Suspiciously generic responses.
+
+    Only the node's *own* words count. A string the node was handed and passed
+    through unchanged is the caller's text, not evidence the node degraded: a
+    support ticket reading "I cannot reset my password" is a real user, and
+    flagging the classifier that normalised it fails the build on the customer's
+    phrasing. Echoed strings are skipped entirely rather than counted as clean,
+    so a node whose only output is a pass-through raises nothing either way. If
+    the phrase really did originate from a model, the node that first emitted it
+    is still checked — which is where blame belongs. A double-quoted span that
+    repeats the input is the customer being quoted (#146), so phrases inside
+    it are not the node's words either.
+    """
     all_strings = _extract_all_strings(output_dict)
     if not all_strings:
         return None
 
+    input_strings = _extract_all_strings(input_state or {})
+    echoed = {text.strip().lower() for _, text in input_strings}
+    input_text = " ".join(text for _, text in input_strings)
+
     generic_hits = 0
+    grounded_hits = 0
     total_checked = 0
     worst_path = ""
+    is_the_whole_answer = False
 
     for path, text in all_strings:
         lower = text.lower().strip()
-        if len(lower) < 5:
+        if len(lower) < 5 or lower in echoed:
             continue
+        spoken = _redact_quoted_input(lower, input_text)
         total_checked += 1
         for phrase in _GENERIC_PHRASES:
-            if phrase in lower:
+            if phrase in spoken:
                 generic_hits += 1
                 worst_path = path
+                if _is_grounded_policy_decline(spoken):
+                    # A short legitimate decline ("outside our 30-day window,
+                    # I can offer store credit") cites the constraint. It is
+                    # not the silent cop-out BA-004 exists to catch (#130).
+                    grounded_hits += 1
+                elif _is_short_main_output(path, spoken):
+                    is_the_whole_answer = True
                 break
 
     if total_checked == 0 or generic_hits == 0:
@@ -379,7 +472,22 @@ def _check_generic_response(output_dict: dict[str, Any]) -> AnomalySignal | None
         return None
 
     score = min(1.0, ratio)
-    severity = "critical" if score > 0.7 else "warning"
+    # A refusal that *is* the answer is a silent failure, not a hint of one.
+    # Ratio alone under-rates it: an agent's update carries message plumbing
+    # (`type`, `id`) alongside the text, so the one field that matters is
+    # diluted to a warning and the run ships clean. Same calibration the
+    # registry path already makes for `{"answer": "N/A"}`.
+    # Every generic hit citing a concrete constraint is the policy-decline
+    # shape: warning, so the reviewer can see it, and not a CI fail. A bare
+    # "I'm unable to answer…" stays critical. The judge is not asked to
+    # invent that distinction or to clear the hard fail.
+    all_grounded = grounded_hits == generic_hits
+    if all_grounded:
+        severity = "warning"
+    elif score > 0.7 or is_the_whole_answer:
+        severity = "critical"
+    else:
+        severity = "warning"
     return AnomalySignal(
         anomaly_id="BA-004",
         severity=severity,
@@ -601,12 +709,21 @@ def detect_anomalies(
     behavior_type = resolve_behavior_type(node_name, output_dict, config)
     profile = BEHAVIOR_PROFILES.get(behavior_type, BEHAVIOR_PROFILES["structured_json"])
 
+    # An inferred type was read off this same output, and the fallback is
+    # `structured_json` for any flat dict — so demanding nesting of it flags
+    # every flat update (`{"rounds": 1}`) for being flat (#150). Only a declared
+    # type is a claim the output can fail.
+    declared = bool(
+        config and (node_name in config.node_behaviors or config.default_behavior_type)
+    )
+    shape_profile = profile if declared else {**profile, "expects_nested": False}
+
     checks = [
         _check_length_collapse(output_dict, profile, behavior_type),
         _check_repetitive_filler(output_dict),
         _check_info_density(output_dict, profile, behavior_type),
-        _check_generic_response(output_dict),
-        _check_structural_malformation(output_dict, profile, behavior_type),
+        _check_generic_response(output_dict, input_state),
+        _check_structural_malformation(output_dict, shape_profile, behavior_type),
         _check_shallow_empty(output_dict, profile, behavior_type, input_state),
         _check_incomplete_reasoning(output_dict, behavior_type),
         _check_abnormal_tool_response(output_dict, behavior_type),

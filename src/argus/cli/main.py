@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Annotated, Optional
 
 try:
@@ -16,10 +17,15 @@ except ImportError:
     )
     raise SystemExit(1)
 
+from argus.cli.cmd_baseline import baseline_for_runs
 from argus.cli.cmd_check import check_run
+from argus.cli.cmd_consumers import propose_for_run
 from argus.cli.cmd_diff import diff_runs
 from argus.cli.cmd_doctor import doctor
+from argus.cli.cmd_edges import export_edges
 from argus.cli.cmd_fix import fix_run
+from argus.cli.cmd_ignore import ignore_add, ignore_list, ignore_remove
+from argus.cli.cmd_ingest import ingest_langsmith_file
 from argus.cli.cmd_init import init_skills_cmd
 from argus.cli.cmd_key import key_clear, key_set, key_show, key_use
 from argus.cli.cmd_locate import locate_sources
@@ -46,6 +52,102 @@ key_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(key_app, name="key")
+
+ingest_app = typer.Typer(
+    help="Grade an exported trace file with no live app.",
+    no_args_is_help=True,
+)
+app.add_typer(ingest_app, name="ingest")
+
+
+@ingest_app.command("langsmith")
+def cmd_ingest_langsmith(
+    path: Path = typer.Argument(..., help="LangSmith JSONL export of one LangGraph run."),
+    allow_cloud: bool = typer.Option(
+        False,
+        "--allow-cloud",
+        help="Save even while logged in to ARGUS cloud (the run is uploaded).",
+    ),
+    edges: Optional[Path] = typer.Option(
+        None,
+        "--edges",
+        help="Graph topology from `argus edges`; without it edges are guessed from step order.",
+    ),
+    consumers: Optional[Path] = typer.Option(
+        None,
+        "--consumers",
+        help='JSON {"field": ["reader", ...]}: blame the step that dropped what a reader needs.',
+    ),
+) -> None:
+    """Grade a LangSmith export and save it as a run; then `argus check last`."""
+    ingest_langsmith_file(path, allow_cloud=allow_cloud, edges=edges, consumers=consumers)
+
+
+@app.command("baseline")
+def cmd_baseline(
+    run_ids: list[str] = typer.Argument(
+        ..., help="Healthy run IDs (or 'last'). One per branch is best."
+    ),
+    write: Optional[Path] = typer.Option(
+        None, "--write", help="Write the baseline to this JSON file."
+    ),
+    purposes: bool = typer.Option(
+        False,
+        "--purposes",
+        help="Also draft a one-line purpose per node with your LLM key (for the run reviewer).",
+    ),
+) -> None:
+    """Record what healthy runs write, per node, for the baseline rules.
+
+    Pass the file as ArgusRecorder(baseline=...). A node that later drops a key
+    it always writes, changes a field's type, or writes N/A / -1 where healthy
+    runs held data then fails CI. Holds kinds, never values.
+
+    With --purposes the file also gets a draft sentence per node. Edit them:
+    they are what the run reviewer reads to tell design from defect.
+    """
+    from argus.storage import last_run_id
+
+    ids = [last_run_id() if r == "last" else r for r in run_ids]
+    if not all(ids):
+        _console.print("[red]Error:[/red] No runs found in .argus/runs/.")
+        raise typer.Exit(1)
+    baseline_for_runs(ids, write, purposes=purposes)
+
+
+@app.command("consumers")
+def cmd_consumers(
+    run_id: Optional[str] = typer.Argument(
+        None, help="Run ID, 8-char prefix, or 'last'. Defaults to the latest run."
+    ),
+    write: Optional[Path] = typer.Option(
+        None,
+        "--write",
+        help="Write the candidate map to this JSON file. Edit it before use.",
+    ),
+) -> None:
+    """Propose who was handed each field. Does not change the CI gate.
+
+    Run it on a healthy recording. Delete readers that only saw the field in
+    shared state, then pass the file as consumers=. ARGUS never loads the
+    file on its own.
+    """
+    from argus.storage import last_run_id
+
+    target = run_id if run_id not in (None, "last") else last_run_id()
+    if not target:
+        _console.print("[red]Error:[/red] No runs found in .argus/runs/.")
+        raise typer.Exit(1)
+    propose_for_run(target, write)
+
+
+@app.command("edges")
+def cmd_edges(
+    spec: str = typer.Argument(..., help="Graph factory as module:function."),
+    out: Path = typer.Option(Path("edges.json"), "--out", "-o", help="File to write."),
+) -> None:
+    """Write a graph's edges for `argus ingest langsmith --edges`."""
+    export_edges(spec, out)
 
 
 @key_app.command("set")
@@ -122,10 +224,14 @@ _COMMANDS = [
     ("diff <id>", "diff a replay run against its original"),
     ("diff <id-a> <id-b>", "diff any two runs side-by-side"),
     ("fix <id>", "print a fix prompt for the root cause, ready to paste"),
+    ("ingest langsmith <file>", "grade a LangSmith JSONL export with no live app"),
+    ("edges mod:fn", "write a graph's edges for ingest --edges"),
     ("login", "(optional) hosted cloud sync — only if a hosted backend is configured"),
     ("logout", "clear stored credentials"),
     ("whoami", "show current login status"),
     ("key set", "save your OpenAI API key locally for BYOK mode"),
+    ("ignore <SIG-ID> [--node N]", "silence a signature project-wide or on one node"),
+    ("ignore --list", "show active suppressions (.argus/config.json)"),
     ("update", "check GitHub for a newer release and upgrade"),
     ("doctor", "diagnose integration issues (LangGraph, storage)"),
 ]
@@ -334,6 +440,37 @@ def _show_run_strict(run_id: str) -> None:
     show_run(run_id)
 
 
+@app.command("ignore")
+def cmd_ignore(
+    sig_id: Optional[str] = typer.Argument(
+        None, help="Signature or anomaly id to silence, e.g. NL-002, BA-005, PH-007."
+    ),
+    node: Optional[str] = typer.Option(
+        None, "--node", "-n", help="Only on this node (default: every node)."
+    ),
+    list_: bool = typer.Option(False, "--list", "-l", help="Show active suppressions."),
+    remove: bool = typer.Option(False, "--remove", "-r", help="Remove the suppression instead."),
+) -> None:
+    """Silence a noisy signature without rewriting your output.
+
+    Suppressed hits stop affecting node status and the CI gate, but stay
+    recorded on the run for `argus stats`. Shared via .argus/config.json::
+
+        argus ignore NL-002                 # everywhere in this project
+        argus ignore RF-001 --node draft    # only on one node
+        argus ignore --list
+        argus ignore NL-002 --remove
+    """
+    if list_ or sig_id is None:
+        ignore_list()
+        if sig_id is None and not list_:
+            raise typer.Exit(2)
+        return
+    ok = ignore_remove(sig_id, node) if remove else ignore_add(sig_id, node)
+    if not ok:
+        raise typer.Exit(1)
+
+
 @app.command("check")
 def cmd_check(
     run_id: Optional[str] = typer.Argument(
@@ -353,6 +490,14 @@ def cmd_check(
             "(crashed, interrupted, silent_failure). Default: any non-clean run."
         ),
     ),
+    strict: str = typer.Option(
+        "critical_only",
+        "--strict",
+        help=(
+            "Warning escalation: critical_only (default) or warn_as_fail "
+            "(fail on warning-severity tool failures such as HTTP 429)."
+        ),
+    ),
 ) -> None:
     """Fail (exit 1) if the last or given run was not clean.
 
@@ -362,8 +507,9 @@ def cmd_check(
         argus check <run-id>
         argus check last --format json
         argus check last --fail-on crashed,silent_failure
+        argus check last --strict warn_as_fail
     """
-    check_run(run_id, output_format=output_format, fail_on=fail_on)
+    check_run(run_id, output_format=output_format, fail_on=fail_on, strict=strict)
 
 
 @app.command("list")
@@ -458,7 +604,7 @@ def cmd_replay(
 
 @app.command("inspect")
 def cmd_inspect(
-    run_id: Annotated[str, typer.Argument(help="Run ID or 8-char prefix.")],
+    run_id: Annotated[str, typer.Argument(help="Run ID, 8-char prefix, or 'last'.")],
     step: Annotated[str, typer.Option("--step", "-s", help="Node name to inspect.")],
 ) -> None:
     """Dump full input/output state snapshot for a specific step."""
@@ -467,14 +613,14 @@ def cmd_inspect(
 
 @app.command("locate")
 def cmd_locate(
-    run_id: Annotated[str, typer.Argument(help="Run ID or 8-char prefix.")],
+    run_id: Annotated[str, typer.Argument(help="Run ID, 8-char prefix, or 'last'.")],
     no_save: Annotated[
         bool,
         typer.Option("--no-save", help="Display results without saving to the run record."),
     ] = False,
 ) -> None:
     """Auto-locate source files for all nodes in a run."""
-    locate_sources(run_id, save=not no_save)
+    locate_sources(_resolve_selector(run_id), save=not no_save)
 
 
 @app.command("ui")
@@ -514,9 +660,28 @@ def cmd_diff(
     diff_runs(run_id_a, run_id_b)
 
 
+def _resolve_selector(run_id: str) -> str:
+    """Turn the ``last`` alias into a real run id.
+
+    ``show`` and ``check`` have always accepted ``last`` — and ``argus show``
+    prints "argus show last" as a hint — so a user reasonably tries it
+    everywhere. On ``fix`` and ``locate`` it fell through as a literal id and
+    died with "No run found for id 'last'".
+    """
+    if run_id not in ("last", "run"):
+        return run_id
+    from argus.storage import last_run_id
+
+    resolved = last_run_id()
+    if resolved is None:
+        _console.print("[red]Error:[/red] No runs found.")
+        raise typer.Exit(1)
+    return resolved
+
+
 @app.command("fix")
 def cmd_fix(
-    run_id: Annotated[str, typer.Argument(help="Run ID or 8-char prefix.")],
+    run_id: Annotated[str, typer.Argument(help="Run ID, 8-char prefix, or 'last'.")],
     node: Annotated[
         Optional[str],
         typer.Option("--node", help="Target a specific node instead of the root cause."),
@@ -531,7 +696,7 @@ def cmd_fix(
     ] = False,
 ) -> None:
     """Print a ready-to-paste fix prompt for the run's root-cause failure."""
-    fix_run(run_id, node=node, output=output, sanitized=sanitized)
+    fix_run(_resolve_selector(run_id), node=node, output=output, sanitized=sanitized)
 
 
 @app.command("login")

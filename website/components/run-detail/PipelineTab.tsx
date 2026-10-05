@@ -9,7 +9,7 @@ import { Fragment, useMemo, useState, type ReactNode } from 'react'
 import type { NodeEvent, RunRecord } from '@/lib/types'
 import { formatDuration } from '@/lib/workspace'
 import { stepFlag, stepNote, stepTone, stepWord } from '@/lib/run-detail'
-import { SENTINEL_NODES, displayTopology } from '@/lib/run-utils'
+import { SENTINEL_NODES, displayTopology, nodeStep } from '@/lib/run-utils'
 import { segmentEvents } from '@/lib/topology'
 import ReplayControls, { type NodeDiffData } from './ReplayControls'
 import JsonGutter from './JsonGutter'
@@ -19,7 +19,7 @@ import FixPromptButton from './FixPrompt'
 /* ── execution tree ─────────────────────────────────────────────── */
 
 function statusColor(run: RunRecord, node: string): string | undefined {
-  const st = (run.steps ?? []).find((s) => s.node_name === node)?.status
+  const st = nodeStep(run.steps, node)?.status
   switch (st) {
     case 'crashed': case 'fail': return 'var(--tool)'
     case 'semantic_fail': return 'var(--semantic)'
@@ -172,14 +172,21 @@ function Marker({ children }: { children: ReactNode }) {
   return <div className="srow group">{children}</div>
 }
 
-export default function PipelineTab({ run }: { run: RunRecord }) {
+export default function PipelineTab({
+  run, replayFrom = null, onReplayStarted,
+}: {
+  run: RunRecord
+  /** Start a full rerun from this node as soon as the tab mounts. */
+  replayFrom?: string | null
+  onReplayStarted?: () => void
+}) {
   const steps = useMemo(() => run.steps ?? [], [run.steps])
   const segments = useMemo(() => segmentEvents(steps, run.graph_edge_map), [steps, run.graph_edge_map])
   const reached = steps.filter((s) => s.status !== 'skipped').length
 
   return (
     <div className="wc">
-    <ReplayControls runId={run.run_id} run={run}>
+    <ReplayControls runId={run.run_id} run={run} autoReplayFrom={replayFrom} onAutoReplayStarted={onReplayStarted}>
       {(handleReplay, handleReplayNode, { replayingNode, nodeDiff, dismissDiff }) => {
         let n = 0
         const row = (s: NodeEvent, iter?: boolean) => {

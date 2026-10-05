@@ -1,15 +1,18 @@
 'use client'
 
 /* Node detail — a flush region under the overview, not a card. The node
-   name, its status word and one lead sentence; then quiet captions with
-   rows on hairlines, each carrying a 3 px rule in the colour of its
-   severity. Nothing else on the region is coloured. */
+   name with its status capsule, the step's numbers on one strip, one lead
+   sentence; then headed compartments with rows on hairlines, each carrying
+   a 3 px rule and a capsule in the colour of its signal family. */
 
 import { useEffect, useState } from 'react'
+import { ChevronRight, X } from 'lucide-react'
 import type { NodeEvent, RunRecord } from '@/lib/types'
 import { formatDuration } from '@/lib/workspace'
-import { stepTone, stepWord, fmtCost, fmtTokens } from '@/lib/run-detail'
-import { getFailureMeta } from '@/lib/failure-labels'
+import { fmtCost, fmtTokens } from '@/lib/run-detail'
+import { getFailureMeta, CATEGORY_CHIP } from '@/lib/failure-labels'
+import { STATUS_META, mapStatus } from '@/lib/graph-model'
+import { nodeStep } from '@/lib/run-utils'
 import JsonGutter from './JsonGutter'
 import Prose from './Prose'
 import { FixPromptBody, useFixPrompt } from './FixPrompt'
@@ -41,28 +44,55 @@ function Row({ rule, children }: { rule: string; children: React.ReactNode }) {
   return <div className="irow" style={{ ['--rule' as string]: rule }}>{children}</div>
 }
 
-function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
+function Section({ title, count, extra, children }: { title: string; count?: number; extra?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="ndet-sec">
-      <p className="cap"><span>{title}{count != null ? ` · ${count}` : ''}</span></p>
+      <div className="sh sh-sm">
+        <h4>{title}</h4>
+        {count != null && <span className="sh-n">{count}</span>}
+        {extra}
+      </div>
       {children}
     </div>
   )
 }
 
-function Json({ title, value }: { title: string; value: Record<string, unknown> | null }) {
+function Cat({ family, label }: { family: keyof typeof CATEGORY_CHIP; label: string }) {
+  return <span className={`chip ${CATEGORY_CHIP[family]} irow-chip`}>{family} · {label}</span>
+}
+
+/** One line of a value that is not a keyed object: a tool's string or list result. */
+function preview(value: unknown): string {
+  if (value == null) return '—'
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? '' : 's'}`
+  const s = typeof value === 'string' ? value : JSON.stringify(value)
+  return s.length > 80 ? `${s.slice(0, 80)} …` : s
+}
+
+function Json({ title, value, hint }: { title: string; value: unknown; hint?: string }) {
   const [open, setOpen] = useState(false)
-  if (!value || !Object.keys(value).length) return null
-  const n = Object.keys(value).length
+  if (value == null || value === '') return null
+  const keys = typeof value === 'object' && !Array.isArray(value) ? Object.keys(value as object) : null
+  if (keys && !keys.length) return null
   return (
-    <div className="ndet-sec">
-      <p className="cap">
-        <span>{title} · {n} key{n === 1 ? '' : 's'}</span>
-        <a href="#" onClick={(e) => { e.preventDefault(); setOpen((v) => !v) }}>{open ? 'Hide' : 'Show'}</a>
-      </p>
-      {open && <div style={{ margin: '0 -34px' }}><JsonGutter value={value} maxLines={120} /></div>}
+    <div className="disc-wrap">
+      <button type="button" className={`disc${open ? ' open' : ''}`} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <ChevronRight className="disc-tri" />
+        <span className="disc-t">{title}</span>
+        {keys && <span className="sh-n">{keys.length}</span>}
+        <span className="disc-keys">{hint ?? (keys ? `${keys.slice(0, 6).join(' · ')}${keys.length > 6 ? ' …' : ''}` : preview(value))}</span>
+      </button>
+      {open && <div className="disc-body"><JsonGutter value={value} maxLines={120} /></div>}
     </div>
   )
+}
+
+/* Run reviewer roles (argus.review): every role but `advisory` means the step fails. */
+const REVIEW_ROLE: Record<string, { label: string; gating: boolean }> = {
+  confirms: { label: 'Confirms a rule', gating: true },
+  promoted: { label: 'Warning promoted', gating: true },
+  two_models: { label: 'Two models agree', gating: true },
+  advisory: { label: 'Advisory', gating: false },
 }
 
 function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord; onDismiss?: () => void }) {
@@ -78,36 +108,41 @@ function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord;
   const validators = step.validator_results ?? []
   const failedValidators = validators.filter((v) => !v.is_valid)
   const sc = step.semantic_check
+  const calls = step.tool_calls ?? []
+  const review = step.review ?? []
   const signalCount = toolFailures.length + semanticSignals.length + (missing.length ? 1 : 0) + mismatches.length + failedValidators.length + anomalies.length
   const sentence = lead(step)
   const src = run.node_fn_paths?.[step.node_name]
   const tokens = step.llm_usage?.total_tokens
   const cost = step.llm_usage?.total_cost_usd
   const isRoot = run.root_cause_chain?.includes(step.node_name)
+  const origin = run.root_cause_chain?.[0] === step.node_name
+  const st = STATUS_META[origin && step.status === 'pass' ? 'fail' : mapStatus(step.status)]
 
   return (
-    <div className="ndet" id={`step-${step.node_name}`}>
+    <section className="ndet ov-sec" id={`step-${step.node_name}`}>
+      <div className="ndet-eyebrow">Step detail</div>
       <div className="ndet-head">
         <span className="ndet-name">{step.node_name}</span>
-        <span className={`stat ${stepTone(step.status)}`}><i />{stepWord(step.status)}</span>
-        {isRoot && <span style={{ fontSize: 11, color: 'var(--tool)', letterSpacing: '.02em' }}>root cause</span>}
+        <span className={`chip ${st.chip}`}><span className="dot" />{st.label}</span>
+        {isRoot && <span className="chip chip-tool chip-solid">{origin ? 'root cause' : 'on blame path'}</span>}
         <span style={{ flex: 1 }} />
         {canFix && (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => { void fix.load() }}>{fix.label}</button>
+          <button type="button" className="btn btn-sm" onClick={() => { void fix.load() }}>{fix.label}</button>
         )}
         {onDismiss && (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onDismiss}>Close</button>
+          <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Close step detail" onClick={onDismiss}><X /></button>
         )}
       </div>
-      <p className="ndet-meta">
-        <span>Step <b>{step.step_index + 1}</b></span>
-        <span>· Duration <b>{formatDuration(step.duration_ms)}</b></span>
-        {tokens ? <span>· Tokens <b>{fmtTokens(tokens)}</b></span> : null}
-        {cost ? <span>· Cost <b>{fmtCost(cost)}</b></span> : null}
-        {step.attempt_index > 0 && <span>· Attempt <b>{step.attempt_index + 1}</b></span>}
-        {step.behavior_type && <span>· <b>{step.behavior_type}</b></span>}
-        {src && <span>· <b>{src}</b></span>}
-      </p>
+      <dl className="ov-stats sm">
+        <div><dt>Step</dt><dd>{step.step_index + 1}</dd></div>
+        <div><dt>Duration</dt><dd>{formatDuration(step.duration_ms)}</dd></div>
+        {tokens ? <div><dt>Tokens</dt><dd>{fmtTokens(tokens)}</dd></div> : null}
+        {cost ? <div><dt>Cost</dt><dd>{fmtCost(cost)}</dd></div> : null}
+        {step.attempt_index > 0 && <div><dt>Attempt</dt><dd>{step.attempt_index + 1}</dd></div>}
+        {step.behavior_type && <div><dt>Behaviour</dt><dd>{step.behavior_type}</dd></div>}
+        {src && <div className="wide"><dt>Source</dt><dd>{src}</dd></div>}
+      </dl>
 
       {sentence && <p className="ndet-lead"><Prose text={sentence} /></p>}
       {canFix && fix.open && (
@@ -128,12 +163,14 @@ function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord;
         <Section title="Signals" count={signalCount}>
           {missing.length > 0 && (
             <Row rule="var(--tool)">
+              <Cat family="Tool" label="Missing field" />
               Missing required fields <span className="m">{missing.join(', ')}</span>
               {run.graph_edge_map?.[step.node_name]?.[0] && <div className="d">Required by <code>{run.graph_edge_map[step.node_name][0]}</code>.</div>}
             </Row>
           )}
           {mismatches.map((m, i) => (
             <Row key={`m${i}`} rule="var(--quality)">
+              <Cat family="Quality" label="Type mismatch" />
               Type mismatch on <span className="m">{m.field_name}</span>
               <div className="d">expected <code>{m.expected_type}</code>, got <code>{m.actual_type}</code></div>
             </Row>
@@ -141,30 +178,34 @@ function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord;
           {toolFailures.map((tf, i) => {
             const meta = getFailureMeta(tf.failure_type)
             return (
-              <Row key={`t${i}`} rule={tf.severity === 'critical' ? 'var(--tool)' : 'var(--quality)'}>
-                {meta.label}{tf.field_name && <> on <span className="m">{tf.field_name}</span></>}
+              <Row key={`t${i}`} rule={meta.categoryColor}>
+                <Cat family={meta.category} label={meta.label} />
+                {tf.field_name ? <span className="m">{tf.field_name}</span> : meta.label}
                 <div className="d">{tf.evidence}</div>
               </Row>
             )
           })}
           {semanticSignals.map((sig, i) => (
             <Row key={`s${i}`} rule="var(--semantic)">
-              {sig.description} <span className="m" style={{ color: 'var(--ink-4)' }}>{sig.sig_id}</span>
+              <Cat family="Semantic" label={sig.sig_id} />
+              {sig.description}
               <div className="d">
-                {sig.category}{sig.field_path.length ? <> · <code>{sig.field_path.join('.')}</code></> : null}
+                {sig.field_path.length ? <code>{sig.field_path.join('.')}</code> : null}
                 {sig.evidence && <> · {sig.evidence}</>}
               </div>
             </Row>
           ))}
           {failedValidators.map((v, i) => (
             <Row key={`v${i}`} rule="var(--semantic)">
+              <Cat family="Semantic" label="Validator" />
               Validator <span className="m">{v.validator_name}</span> failed
               {v.message && <div className="d">{v.message}</div>}
             </Row>
           ))}
           {anomalies.map((a, i) => (
             <Row key={`a${i}`} rule={a.severity === 'critical' ? 'var(--tool)' : 'var(--quality)'}>
-              {a.reason} <span className="m" style={{ color: 'var(--ink-4)' }}>{a.anomaly_id} · {(a.suspicion_score * 100).toFixed(0)}%</span>
+              <Cat family={a.severity === 'critical' ? 'Tool' : 'Quality'} label={`Anomaly ${a.anomaly_id}`} />
+              {a.reason} <span className="m" style={{ color: 'var(--ink-4)' }}>suspicion {(a.suspicion_score * 100).toFixed(0)}%</span>
               {(a.expected_behavior || a.observed_behavior) && (
                 <div className="irow-kv">
                   {a.expected_behavior && <span>Expected <b>{a.expected_behavior}</b></span>}
@@ -181,7 +222,13 @@ function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord;
       )}
 
       {sc && (
-        <Section title={`Semantic judge · ${sc.passed ? 'coherent' : 'incoherent'} · ${Math.round(sc.confidence * 100)}%`}>
+        <Section
+          title="Semantic judge"
+          extra={<>
+            <span className={`chip ${sc.passed ? 'chip-ok' : 'chip-semantic'}`}><span className="dot" />{sc.passed ? 'coherent' : 'incoherent'}</span>
+            <span className="chip chip-idle chip-mono">{Math.round(sc.confidence * 100)}%</span>
+          </>}
+        >
           <Row rule={sc.passed ? 'var(--ok)' : 'var(--semantic)'}>
             {sc.reason}
             {(sc.evidence_considered?.length ?? 0) > 0 && (
@@ -194,6 +241,35 @@ function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord;
         </Section>
       )}
 
+      {review.length > 0 && (
+        <Section title="Run reviewer" count={review.length}>
+          {review.map((r, i) => {
+            const role = REVIEW_ROLE[r.role ?? 'advisory'] ?? REVIEW_ROLE.advisory
+            return (
+              <Row key={`r${i}`} rule={role.gating ? 'var(--tool)' : 'var(--semantic)'}>
+                <span className={`chip ${role.gating ? 'chip-tool' : 'chip-semantic'} irow-chip`}>{role.label}</span>
+                {r.claim ?? r.why}
+                {r.claim && r.why && <div className="d">{r.why}</div>}
+                {r.correction && <div className="d">Should be <code>{r.correction}</code></div>}
+              </Row>
+            )
+          })}
+        </Section>
+      )}
+
+      {calls.length > 0 && (
+        <Section title="Tool calls" count={calls.length}>
+          {calls.map((c, i) => (
+            <Json
+              key={`c${i}`}
+              title={c.name ?? 'tool'}
+              value={{ input: c.input, output: c.output, ...(c.error ? { error: c.error } : {}) }}
+              hint={c.error ? `raised ${c.error}` : preview(c.output)}
+            />
+          ))}
+        </Section>
+      )}
+
       {validators.length > failedValidators.length && (
         <p className="ndet-meta">
           Passed validators: <b>{validators.filter((v) => v.is_valid).map((v) => v.validator_name).join(', ')}</b>
@@ -201,14 +277,16 @@ function NodeDetail({ step, run, onDismiss }: { step: NodeEvent; run: RunRecord;
       )}
 
       {step.exception && (
-        <Section title="Traceback">
+        <Section title="Traceback" extra={<span className="chip chip-tool chip-mono">{step.exception.split('\n').filter((l) => l.trim()).pop()?.split(':')[0]}</span>}>
           <div style={{ margin: '0 -34px' }}><pre className="trace">{step.exception}</pre></div>
         </Section>
       )}
 
-      <Json title="Input state" value={step.input_state} />
-      <Json title="Output" value={step.output_dict} />
-    </div>
+      <div className="ndet-sec">
+        <Json title="Input state" value={step.input_state} />
+        <Json title="Output" value={step.output_dict} />
+      </div>
+    </section>
   )
 }
 
@@ -230,11 +308,11 @@ export default function StepInspector({
   }, [selectedNodeName])
 
   if (selectedNodeName) {
-    const step = steps.find((s) => s.node_name === selectedNodeName)
+    const step = nodeStep(steps, selectedNodeName)
     if (step) return <NodeDetail key={step.node_name} step={step} run={run} onDismiss={onDismiss} />
   }
 
-  const failed = steps.find((s) => s.status !== 'pass' && s.status !== 'skipped')
+  const failed = steps.find((s) => s.status !== 'pass' && s.status !== 'skipped' && s.status !== 'retried')
   if (!failed) return null
-  return <NodeDetail key={failed.node_name} step={failed} run={run} />
+  return <NodeDetail key={failed.node_name} step={nodeStep(steps, failed.node_name) ?? failed} run={run} />
 }

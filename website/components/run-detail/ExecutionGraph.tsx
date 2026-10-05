@@ -1,417 +1,375 @@
 'use client'
 
-/* Execution graph — a direct port of the Argus Instrument spec graph.
-   Drag nodes, pan the canvas, wheel-zoom, click a node to inspect it.
-   Geometry (node width, tool-row offset, bezier control points, arrowheads)
-   matches the spec exactly; see globals.css for the .g* rules. */
+/* Execution graph — the Argus Instrument spec graph (05), driven by a real
+   run. Drag nodes, drag the canvas to pan, zoom at the pointer, click a node
+   or a satellite to inspect it; selecting dims everything off its path.
+   Model and layout live in lib/graph-model.ts; .g* rules in globals.css. */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  Zap, Shuffle, Database, Sparkles, Wrench, ShieldCheck, FileOutput, Circle,
-  AlertTriangle, X as XIcon, Info, Check, Clock, Plug, Maximize2, type LucideIcon,
+  Zap, Shuffle, Database, Sparkles, Wrench, ShieldCheck, Send, Circle,
+  AlertTriangle, X as XIcon, Info, Clock, Plus, RotateCcw, type LucideIcon,
 } from 'lucide-react'
-import type { RunRecord, StepStatus } from '@/lib/types'
-import { getFailureMeta } from '@/lib/failure-labels'
+import type { RunRecord } from '@/lib/types'
 import { displayTopology } from '@/lib/run-utils'
-
-const W = 178          // node width — spec
-const NODE_H = 52      // node box height used for edge anchoring — spec
-const TOOL_GAP_Y = 30  // node bottom → tool row — spec
-const GAP_X = 96
-const GAP_Y = 132
-const PAD = 48
-
-/* ── kinds ───────────────────────────────────────────────────── */
-
-type NodeKind = 'trigger' | 'transform' | 'retrieval' | 'llm' | 'tool' | 'guard' | 'output' | 'default'
+import { failureChain } from '@/lib/run-detail'
+import {
+  W, NODE_H, TOOL_GAP_Y, BUS_Y, STATUS_META, EDGE_COLOR,
+  layoutGraph, edgeState, related, pathBetween, pillRowWidth,
+  type GNode, type GStatus, type NodeKind, type PillTone,
+} from '@/lib/graph-model'
+import GraphInspector from './GraphInspector'
 
 const KIND_ICON: Record<NodeKind, LucideIcon> = {
   trigger: Zap, transform: Shuffle, retrieval: Database, llm: Sparkles,
-  tool: Wrench, guard: ShieldCheck, output: FileOutput, default: Circle,
+  tool: Wrench, guard: ShieldCheck, output: Send, default: Circle,
+}
+const BADGE: Partial<Record<GStatus, LucideIcon>> = {
+  fail: AlertTriangle, crashed: XIcon, semantic: AlertTriangle, degraded: Info,
+}
+const PILL_ICON: Record<PillTone, LucideIcon> = {
+  error: AlertTriangle, slow: Clock, sem: Sparkles, empty: Info, more: Plus,
 }
 
-function inferKind(name: string): NodeKind {
-  const n = name.toLowerCase()
-  if (/(ingest|start|trigger|input|entry)/.test(n)) return 'trigger'
-  if (/(fetch|retriev|search|query|load|source)/.test(n)) return 'retrieval'
-  if (/(summar|synth|generat|plan|llm|model|revise|draft|answer)/.test(n)) return 'llm'
-  if (/(verify|validat|check|guard|review)/.test(n)) return 'guard'
-  if (/(final|output|report|emit|render)/.test(n)) return 'output'
-  if (/(merge|map|transform|parse|format|normal)/.test(n)) return 'transform'
-  if (/(tool|call|api|http)/.test(n)) return 'tool'
-  return 'default'
-}
+const MIN_Z = 0.3
+const MAX_Z = 2.2
+const FIT_PAD = 40
+const FULL_H = 470
+const EMBED_MAX_H = 560
 
-/* ── status ──────────────────────────────────────────────────── */
-
-type S = 'pass' | 'fail' | 'crashed' | 'semantic' | 'degraded' | 'running' | 'skipped'
-
-const STATUS_META: Record<S, { cls: string; label: string; color: string; badge: LucideIcon | null }> = {
-  pass:     { cls: 's-pass',     label: 'pass',           color: 'var(--ok)',          badge: null },
-  fail:     { cls: 's-fail',     label: 'silent failure', color: 'var(--quality)',     badge: AlertTriangle },
-  crashed:  { cls: 's-crashed',  label: 'crashed',        color: 'var(--tool)',        badge: XIcon },
-  semantic: { cls: 's-semantic', label: 'semantic fail',  color: 'var(--semantic)',    badge: AlertTriangle },
-  degraded: { cls: 's-degraded', label: 'degraded input', color: 'var(--coherence)',   badge: Info },
-  running:  { cls: 's-running',  label: 'running',        color: 'var(--iris-bright)', badge: null },
-  skipped:  { cls: 's-skipped',  label: 'not reached',    color: 'var(--ink-3)',       badge: null },
-}
-
-const SEVERITY: Partial<Record<S, number>> = { crashed: 4, semantic: 3, fail: 2, degraded: 1 }
-
-const EDGE_COLOR: Record<S, string> = {
-  pass: 'var(--edge-pass)', running: 'var(--iris)', skipped: 'var(--edge-skip)',
-  crashed: 'var(--tool)', semantic: 'var(--semantic)', fail: 'var(--quality)',
-  degraded: 'var(--coherence)',
-}
-
-function mapStatus(s: StepStatus | undefined): S {
-  switch (s) {
-    case 'pass': return 'pass'
-    case 'crashed': return 'crashed'
-    case 'semantic_fail': return 'semantic'
-    case 'degraded_input': return 'degraded'
-    case 'fail': case 'retried': return 'fail'
-    case 'interrupted': return 'running'
-    case 'skipped': case undefined: return 'skipped'
-    /* A status this UI does not know yet must not render as green. */
-    default: return 'skipped'
-  }
-}
-
-/* ── tool chips, derived from real per-node findings ──────────── */
-
-type ToolStatus = 'ok' | 'error' | 'slow' | 'empty' | 'skipped'
-const TOOL_META: Record<ToolStatus, { cls: string; icon: LucideIcon }> = {
-  ok:      { cls: 't-ok',      icon: Check },
-  error:   { cls: 't-error',   icon: AlertTriangle },
-  slow:    { cls: 't-slow',    icon: Clock },
-  empty:   { cls: 't-empty',   icon: Info },
-  skipped: { cls: 't-skipped', icon: Plug },
-}
-
-interface Tool { id: string; tag: string; status: ToolStatus }
-
-function toolsFor(run: RunRecord, node: string): Tool[] {
-  const step = (run.steps ?? []).find((s) => s.node_name === node)
-  if (!step) return []
-  const insp = step.inspection
-  const out: Tool[] = []
-
-  for (const tf of insp?.tool_failures ?? []) {
-    const meta = getFailureMeta(tf.failure_type)
-    const status: ToolStatus =
-      tf.failure_type.includes('empty') ? 'empty'
-      : /slow|timeout|latency|fast/.test(tf.failure_type) ? 'slow'
-      : tf.severity === 'critical' ? 'error' : 'slow'
-    out.push({ id: tf.field_name || meta.label, tag: meta.label, status })
-  }
-  for (const sig of insp?.semantic_signals ?? []) {
-    out.push({
-      id: sig.field_path?.join('.') || 'output',
-      tag: sig.sig_id,
-      status: sig.severity === 'critical' ? 'error' : 'slow',
-    })
-  }
-  for (const an of step.anomaly_signals ?? []) {
-    out.push({ id: an.field_path || 'behaviour', tag: an.anomaly_id, status: an.severity === 'critical' ? 'error' : 'slow' })
-  }
-  return out.slice(0, 4)
-}
-
-/* ── layout ──────────────────────────────────────────────────── */
-
-function dagLayers(names: string[], edgeMap: Record<string, string[]>): string[][] {
-  const indeg: Record<string, number> = {}
-  names.forEach((n) => { indeg[n] = 0 })
-  for (const [, tos] of Object.entries(edgeMap ?? {})) {
-    for (const t of tos) if (t in indeg) indeg[t] += 1
-  }
-  const seen = new Set<string>()
-  const layers: string[][] = []
-  let ready = names.filter((n) => indeg[n] === 0)
-  if (!ready.length) ready = names.slice(0, 1)
-
-  while (ready.length && seen.size < names.length) {
-    const layer = ready.filter((n) => !seen.has(n))
-    if (!layer.length) break
-    layers.push(layer)
-    layer.forEach((n) => seen.add(n))
-    const next = new Set<string>()
-    for (const n of layer) {
-      for (const t of edgeMap?.[n] ?? []) {
-        if (seen.has(t)) continue
-        indeg[t] -= 1
-        if (indeg[t] <= 0) next.add(t)
-      }
-    }
-    ready = Array.from(next)
-  }
-  const left = names.filter((n) => !seen.has(n))
-  if (left.length) layers.push(left)
-  return layers.length ? layers : [names]
-}
-
-interface GNode {
-  id: string; kind: NodeKind; status: S; ms: number | null
-  x: number; y: number; isRoot: boolean; tools: Tool[]
-}
-
-/* ── component ───────────────────────────────────────────────── */
+type Sel = { node: string; pill: number | null } | null
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export default function ExecutionGraph({
   run, onViewFull, onSelectNode, flush = false, selectedNode = null,
 }: {
   run: RunRecord
   onViewFull?: () => void
+  /** Open the full step detail for a node (the inspector's "Step details"). */
   onSelectNode?: (n: string) => void
-  /** Flush mode: no toolbar, hairline top/bottom, sized to its content —
-      the overview idiom. The default is the full canvas with controls. */
+  /** Embedded in a scrolling page: wheel-zoom needs ⌘/ctrl, height fits content. */
   flush?: boolean
   selectedNode?: string | null
 }) {
   const topo = useMemo(() => displayTopology(run.graph_node_names, run.graph_edge_map), [run])
-  const names = topo.nodes
   const edgeMap = topo.edges
-  const chain = useMemo(() => run.root_cause_chain ?? [], [run])
+  const initial = useMemo(() => layoutGraph(run, topo.nodes, edgeMap), [run, topo, edgeMap])
 
-  const initial = useMemo<GNode[]>(() => {
-    const layers = dagLayers(names, edgeMap)
-    const widest = Math.max(1, ...layers.map((l) => l.length))
-    const yCentre = ((widest - 1) * GAP_Y) / 2
-    /* One crown: the origin. The rest of the chain reads from the red edge. */
-    const rootSet = new Set((run.root_cause_chain ?? []).slice(0, 1))
-    const stepFor = (n: string) => (run.steps ?? []).find((s) => s.node_name === n)
-    const out: GNode[] = []
-    layers.forEach((layer, col) => {
-      layer.forEach((id, row) => {
-        const st = stepFor(id)
-        out.push({
-          id,
-          kind: inferKind(id),
-          status: mapStatus(st?.status),
-          ms: st ? Math.round(st.duration_ms) : null,
-          x: PAD + col * (W + GAP_X),
-          y: PAD + row * GAP_Y - ((layer.length - 1) * GAP_Y) / 2 + (flush ? yCentre : 150),
-          isRoot: rootSet.has(id),
-          tools: toolsFor(run, id),
-        })
-      })
-    })
+  /* The blame path, origin → where it surfaced, through every hop between. */
+  const prop = useMemo(() => {
+    const chain = failureChain(run)
+    if (chain.length < 2) return chain
+    const out: string[] = [chain[0]]
+    for (let i = 1; i < chain.length; i++) out.push(...pathBetween(edgeMap, chain[i - 1], chain[i]).slice(1))
     return out
-  }, [run, names, edgeMap, flush])
+  }, [run, edgeMap])
 
   const [nodes, setNodes] = useState<GNode[]>(initial)
   useEffect(() => setNodes(initial), [initial])
-
-  const [scale, setScale] = useState(1)
-  const [pan, setPan] = useState({ x: 0, y: 0 })
-  const [selected, setSelected] = useState<string | null>(null)
-  useEffect(() => { if (flush) setSelected(selectedNode) }, [flush, selectedNode])
-  const [panning, setPanning] = useState(false)
-  const canvasRef = useRef<HTMLDivElement>(null)
-  const drag = useRef<{ id: string | null; ox: number; oy: number } | null>(null)
-
   const byId = useMemo(() => Object.fromEntries(nodes.map((n) => [n.id, n])), [nodes])
 
-  /* One owner for window-level gesture listeners. `pointercancel` matters — a
-     cancelled touch gesture would otherwise leave the canvas panning forever —
-     and the teardown has to survive unmounting mid-drag, which plain
-     pointerup-only cleanup leaks. */
-  const endGesture = useRef<(() => void) | null>(null)
-  const trackPointer = useCallback(
-    (move: (ev: PointerEvent) => void, done: () => void) => {
-      endGesture.current?.()
-      const end = () => {
-        window.removeEventListener('pointermove', move)
-        window.removeEventListener('pointerup', end)
-        window.removeEventListener('pointercancel', end)
-        endGesture.current = null
-        done()
-      }
-      window.addEventListener('pointermove', move)
-      window.addEventListener('pointerup', end)
-      window.addEventListener('pointercancel', end)
-      endGesture.current = end
-    },
-    [],
+  const [showTools, setShowTools] = useState(true)
+  const [view, setView] = useState({ s: 1, x: 0, y: 0 })
+  const scale = view.s
+  const [height, setHeight] = useState(flush ? 300 : FULL_H)
+  const [panning, setPanning] = useState(false)
+  const [sel, setSel] = useState<Sel>(null)
+  const touched = useRef(false)
+
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const nodeEls = useRef(new Map<string, HTMLDivElement>())
+  const rowEls = useRef(new Map<string, HTMLDivElement>())
+
+  /* Measured geometry: node heights, satellite centres and row widths,
+     relative to the node — positions change on drag, these do not. */
+  const [geo, setGeo] = useState<{ h: Record<string, number>; centers: Record<string, number[]>; rowW: Record<string, number> }>(
+    { h: {}, centers: {}, rowW: {} },
   )
-  useEffect(() => () => endGesture.current?.(), [])
+  useLayoutEffect(() => {
+    const h: Record<string, number> = {}
+    const centers: Record<string, number[]> = {}
+    const rowW: Record<string, number> = {}
+    nodeEls.current.forEach((el, id) => { h[id] = el.offsetHeight })
+    rowEls.current.forEach((el, id) => {
+      rowW[id] = el.offsetWidth
+      centers[id] = Array.from(el.children).map((c) => (c as HTMLElement).offsetLeft + (c as HTMLElement).offsetWidth / 2)
+    })
+    setGeo({ h, centers, rowW })
+  }, [initial, showTools])
+  const hOf = useCallback((id: string) => geo.h[id] || NODE_H, [geo])
 
-  /* pan */
-  const onCanvasDown = useCallback((e: React.PointerEvent) => {
-    if ((e.target as HTMLElement).closest('.gnode')) return
-    setPanning(true)
-    const sx = e.clientX - pan.x
-    const sy = e.clientY - pan.y
-    trackPointer(
-      (ev) => setPan({ x: ev.clientX - sx, y: ev.clientY - sy }),
-      () => setPanning(false),
-    )
-  }, [pan, trackPointer])
+  /* ── framing ── */
+  const frame = useCallback(() => {
+    const el = canvasRef.current
+    if (!el || !nodes.length) return
+    const cw = el.clientWidth
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const n of nodes) {
+      const tools = showTools && n.pills.length
+      const w = Math.max(W, tools ? (geo.rowW[n.id] ?? pillRowWidth(n.pills)) : 0)
+      minX = Math.min(minX, n.x)
+      minY = Math.min(minY, n.y - (n.isRoot ? 22 : 0))
+      maxX = Math.max(maxX, n.x + w)
+      maxY = Math.max(maxY, n.y + hOf(n.id) + (tools ? TOOL_GAP_Y + 25 : 0))
+    }
+    const bw = maxX - minX
+    const bh = maxY - minY
+    const sx = (cw - FIT_PAD * 2) / bw
+    const ch = flush ? Math.round(clamp(Math.min(1, sx) * bh + FIT_PAD * 2, 240, EMBED_MAX_H)) : el.clientHeight
+    const s = clamp(Math.min(1, sx, (ch - FIT_PAD * 2) / bh), MIN_Z, 1)
+    setHeight(ch)
+    setView({ s, x: (cw - bw * s) / 2 - minX * s, y: (ch - bh * s) / 2 - minY * s })
+  }, [nodes, showTools, geo, hOf, flush])
 
-  /* node drag */
-  const onNodeDown = useCallback((e: React.PointerEvent, id: string) => {
-    e.stopPropagation()
-    const n = byId[id]
-    if (!n) return
-    drag.current = { id, ox: e.clientX / scale - n.x, oy: e.clientY / scale - n.y }
-    trackPointer(
-      (ev) => {
-        const d = drag.current
-        if (!d?.id) return
-        setNodes((prev) => prev.map((p) =>
-          p.id === d.id ? { ...p, x: ev.clientX / scale - d.ox, y: ev.clientY / scale - d.oy } : p))
-      },
-      () => { drag.current = null },
-    )
-  }, [byId, scale, trackPointer])
+  /* Re-frame on content or width change until the user takes the wheel. */
+  useEffect(() => { touched.current = false }, [initial])
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el) return
+    if (!touched.current) frame()
+    const ro = new ResizeObserver(() => { if (!touched.current) frame() })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [frame])
 
-  /* wheel zoom */
+  /* Zoom about a canvas point; `next` maps the current scale to the new one. */
+  const zoomAt = useCallback((px: number, py: number, next: (s: number) => number) => {
+    touched.current = true
+    setView((v) => {
+      const z = clamp(next(v.s), MIN_Z, MAX_Z)
+      return { s: z, x: px - (px - v.x) * (z / v.s), y: py - (py - v.y) * (z / v.s) }
+    })
+  }, [])
+
   useEffect(() => {
     const el = canvasRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
-      /* In the flush overview the page owns scroll; zoom needs a modifier. */
+      /* Embedded, the page owns scroll; zoom needs a modifier (trackpad
+         pinch arrives as ctrl+wheel). */
       if (flush && !(e.ctrlKey || e.metaKey)) return
       e.preventDefault()
-      setScale((s) => Math.min(2, Math.max(0.35, s - e.deltaY * 0.0015)))
+      const r = el.getBoundingClientRect()
+      zoomAt(e.clientX - r.left, e.clientY - r.top, (s) => s * (e.deltaY > 0 ? 0.9 : 1.1))
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [flush])
+  }, [flush, zoomAt])
 
-  function nudge(e: React.KeyboardEvent, id: string) {
+  /* ── selection ── */
+  useEffect(() => { if (selectedNode && byId[selectedNode]) setSel({ node: selectedNode, pill: null }) }, [selectedNode]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!sel) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSel(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [sel])
+  const keep = useMemo(() => (sel ? related(sel.node, edgeMap) : null), [sel, edgeMap])
+  const selNode = sel ? byId[sel.node] ?? null : null
+  const selPill = selNode && sel?.pill != null ? selNode.pills[sel.pill] ?? null : null
+
+  /* ── pointer: pan + drag, both with capture so a release outside the
+        canvas still ends the gesture ── */
+  const onCanvasDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('.gnode, .gtool, .ginsp')) return
+    const sx = e.clientX, sy = e.clientY, ox = view.x, oy = view.y
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+    setPanning(true)
+    const move = (ev: PointerEvent) => { touched.current = true; setView((v) => ({ ...v, x: ox + ev.clientX - sx, y: oy + ev.clientY - sy })) }
+    const up = (ev: PointerEvent) => {
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerup', up)
+      el.removeEventListener('pointercancel', up)
+      setPanning(false)
+      if (Math.abs(ev.clientX - sx) < 3 && Math.abs(ev.clientY - sy) < 3) setSel(null)
+    }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('pointercancel', up)
+  }
+
+  const onNodeDown = (e: React.PointerEvent<HTMLDivElement>, id: string) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    const n = byId[id]
+    if (!n) return
+    const el = e.currentTarget
+    const sx = e.clientX, sy = e.clientY, ox = n.x, oy = n.y
+    let moved = false
+    el.setPointerCapture(e.pointerId)
+    el.classList.add('dragging')
+    const move = (ev: PointerEvent) => {
+      const dx = (ev.clientX - sx) / scale
+      const dy = (ev.clientY - sy) / scale
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true
+      if (!moved) return
+      touched.current = true
+      setNodes((prev) => prev.map((p) => (p.id === id ? { ...p, x: Math.round(ox + dx), y: Math.round(oy + dy) } : p)))
+    }
+    const up = () => {
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerup', up)
+      el.removeEventListener('pointercancel', up)
+      el.classList.remove('dragging')
+      if (!moved) setSel({ node: id, pill: null })
+    }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('pointercancel', up)
+  }
+
+  const onNodeKey = (e: React.KeyboardEvent, id: string) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSel({ node: id, pill: null }); return }
     const d = e.shiftKey ? 24 : 8
-    const delta: Record<string, [number, number]> = {
-      ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d],
-    }
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault(); setSelected(id); onSelectNode?.(id); return
-    }
-    const mv = delta[e.key]
-    if (!mv) return
+    const mv: Record<string, [number, number]> = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] }
+    const m = mv[e.key]
+    if (!m) return
     e.preventDefault()
-    setNodes((prev) => prev.map((p) => (p.id === id ? { ...p, x: p.x + mv[0], y: p.y + mv[1] } : p)))
+    touched.current = true
+    setNodes((prev) => prev.map((p) => (p.id === id ? { ...p, x: p.x + m[0], y: p.y + m[1] } : p)))
   }
 
-  /* edges */
-  const edgeState = (a: GNode, b: GNode): S => {
-    if (a.status === 'running' || b.status === 'running') return 'running'
-    if (a.status === 'skipped' && b.status === 'skipped') return 'skipped'
-    const sa = SEVERITY[a.status] ?? 0
-    const sb = SEVERITY[b.status] ?? 0
-    if (sa === 0 && sb === 0) return 'pass'
-    return sa >= sb ? a.status : b.status
-  }
-
-  const paths = useMemo(() => {
-    const out: { d: string; head: string; color: string; width: number; cls: string }[] = []
+  /* ── edges + buses ── */
+  const svg = useMemo(() => {
+    const edges: { d: string; head: string; color: string; width: number; cls: string }[] = []
     for (const [from, tos] of Object.entries(edgeMap)) {
       for (const to of tos) {
         const a = byId[from]
         const b = byId[to]
         if (!a || !b) continue
-        const st = edgeState(a, b)
-        const ai = chain.indexOf(a.id)
-        const bi = chain.indexOf(b.id)
-        const isProp = ai > -1 && bi === ai + 1
+        const st = edgeState(a.status, b.status)
+        const ai = prop.indexOf(a.id)
+        const isProp = ai > -1 && prop[ai + 1] === b.id
         const sx = a.x + W
-        const sy = a.y + NODE_H / 2
+        const sy = a.y + hOf(a.id) / 2
         const ex = b.x
-        const ey = b.y + NODE_H / 2
-        const dx = Math.max(36, Math.abs(ex - sx) * 0.5)
-        out.push({
-          d: `M${sx},${sy} C${sx + dx},${sy} ${ex - dx},${ey} ${ex},${ey}`,
+        const ey = b.y + hOf(b.id) / 2
+        /* A loop back to an earlier column swings under both nodes. */
+        const back = ex <= sx
+        const dx = back ? 90 : Math.max(36, Math.abs(ex - sx) * 0.5)
+        const dy = back ? Math.max(hOf(a.id), hOf(b.id)) + 50 : 0
+        edges.push({
+          d: `M${sx},${sy} C${sx + dx},${sy + dy} ${ex - dx},${ey + dy} ${ex},${ey}`,
           head: `M${ex - 6},${ey - 3.6} L${ex},${ey} L${ex - 6},${ey + 3.6} Z`,
-          color: EDGE_COLOR[st],
-          width: st === 'pass' || st === 'skipped' ? 1.2 : 1.9,
+          color: isProp && st === 'pass' ? 'var(--tool)' : EDGE_COLOR[st],
+          width: st === 'pass' && !isProp ? 1.2 : st === 'skipped' ? 1.2 : 1.9,
           cls: st === 'running' ? 'e-live' : isProp ? 'e-prop' : '',
         })
       }
     }
-    return out
-  }, [byId, edgeMap, chain])
+
+    const buses: { d: string; color: string; width: number; dash?: string }[] = []
+    if (showTools) {
+      for (const n of nodes) {
+        const centers = geo.centers[n.id]
+        if (!n.pills.length || !centers?.length) continue
+        const top = n.y + hOf(n.id)
+        const busY = top + BUS_Y
+        const rowY = top + TOOL_GAP_Y
+        const err = n.pills.some((p) => p.tone === 'error')
+        const color = err ? 'var(--tool)' : 'var(--edge-pass)'
+        const dash = err ? undefined : '3 3'
+        const width = err ? 1.5 : 1
+        const mid = n.x + W / 2
+        const xs = centers.map((c) => n.x + c)
+        buses.push({ d: `M${mid},${top} L${mid},${busY}`, color, width, dash })
+        buses.push({ d: `M${Math.min(mid, ...xs)},${busY} L${Math.max(mid, ...xs)},${busY}`, color, width, dash })
+        xs.forEach((x, i) => {
+          const pe = n.pills[i]?.tone === 'error'
+          buses.push({ d: `M${x},${busY} L${x},${rowY}`, color: pe ? 'var(--tool)' : color, width, dash: pe ? undefined : dash })
+        })
+      }
+    }
+    return { edges, buses }
+  }, [edgeMap, byId, nodes, prop, hOf, geo, showTools])
 
   const extent = useMemo(() => ({
-    w: Math.max(900, ...nodes.map((n) => n.x + W + 80)),
-    h: Math.max(470, ...nodes.map((n) => n.y + NODE_H + TOOL_GAP_Y + 90)),
-  }), [nodes])
-  const flushNatural = useMemo(() => {
-    const anyTools = initial.some((n) => n.tools.length > 0)
-    const bottom = Math.max(0, ...initial.map((n) => n.y + NODE_H + (n.tools.length ? TOOL_GAP_Y + 26 : 0)))
-    const right = Math.max(0, ...initial.map((n) => n.x + W)) + PAD
-    return { h: Math.max(190, bottom + (anyTools ? 28 : 40)), w: right }
-  }, [initial])
+    w: Math.max(0, ...nodes.map((n) => n.x + Math.max(W, geo.rowW[n.id] ?? 0) + 120)),
+    h: Math.max(0, ...nodes.map((n) => n.y + hOf(n.id) + TOOL_GAP_Y + 160)),
+  }), [nodes, geo, hOf])
 
-  /* Flush graphs fit the workspace width: wide pipelines scale down rather
-     than run off the right edge, and the canvas height follows the scale. */
-  const [fit, setFit] = useState(1)
-  useEffect(() => {
-    if (!flush) return
-    const el = canvasRef.current
-    if (!el) return
-    const measure = () => {
-      const avail = el.clientWidth
-      if (!avail) return
-      const s = Math.min(1, Math.max(0.45, avail / flushNatural.w))
-      setFit(s)
-      setScale(s)
-      setPan({ x: Math.max(0, (avail - flushNatural.w * s) / 2), y: 0 })
-    }
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [flush, flushNatural])
-  const flushH = Math.max(150, Math.round(flushNatural.h * fit))
+  const present = useMemo(() => {
+    const s = new Set<GStatus>(['pass'])
+    nodes.forEach((n) => s.add(n.status))
+    return (['pass', 'crashed', 'fail', 'semantic', 'degraded', 'running', 'skipped'] as GStatus[]).filter((x) => s.has(x))
+  }, [nodes])
+  const tones = useMemo(() => new Set(nodes.flatMap((n) => n.pills.map((p) => p.tone))), [nodes])
+  const signalCount = nodes.reduce((k, n) => k + n.pills.filter((p) => p.tone !== 'more').length, 0)
 
-  const sel = selected ? byId[selected] : null
+  return (
+    <div className="gwrap">
+      <div className="gbar">
+        <span className="gbar-title">Execution graph</span>
+        <span className="chip chip-idle gbar-count">{nodes.length} nodes</span>
+        <span className="gbar-sp" />
+        {signalCount > 0 && (
+          <label className="gbar-tgl">
+            <span
+              className={`switch${showTools ? ' on' : ''}`}
+              role="switch"
+              aria-checked={showTools}
+              tabIndex={0}
+              onClick={() => setShowTools((v) => !v)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setShowTools((v) => !v) } }}
+            />
+            Signals
+          </label>
+        )}
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => { touched.current = false; setNodes(initial); setSel(null) }}
+        >
+          <RotateCcw />Re-layout
+        </button>
+        <div className="gzoom">
+          <button type="button" aria-label="Zoom out" onClick={() => { const el = canvasRef.current; if (el) zoomAt(el.clientWidth / 2, el.clientHeight / 2, (s) => s / 1.18) }}>−</button>
+          <span className="gzoom-val">{Math.round(scale * 100)}%</span>
+          <button type="button" aria-label="Zoom in" onClick={() => { const el = canvasRef.current; if (el) zoomAt(el.clientWidth / 2, el.clientHeight / 2, (s) => s * 1.18) }}>+</button>
+          <button type="button" aria-label="Fit to view" className="gzoom-fit" onClick={() => { touched.current = false; frame() }}>FIT</button>
+        </div>
+        {onViewFull && <button type="button" className="btn btn-sm btn-ghost" onClick={onViewFull}>Full view</button>}
+      </div>
 
-  const canvas = (
       <div
         ref={canvasRef}
-        className={`gcanvas${panning ? ' panning' : ''}${flush ? ' flush' : ''}`}
+        className={`gcanvas${panning ? ' panning' : ''}`}
+        /* The inspector needs room; a short embedded canvas grows while it is open. */
+        style={{ height: selNode ? Math.max(height, 420) : height }}
         onPointerDown={onCanvasDown}
-        style={flush ? { height: flushH } : undefined}
       >
-        {!flush && (<><span className="gtick tl" /><span className="gtick tr" />
-        <span className="gtick bl" /><span className="gtick br" /></>)}
+        <span className="gtick tl" /><span className="gtick tr" /><span className="gtick bl" /><span className="gtick br" />
 
-        <div
-          style={{
-            position: 'absolute', top: 0, left: 0, transformOrigin: '0 0',
-            transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${scale})`,
-            willChange: 'transform',
-          }}
-        >
-          <svg
-            width={extent.w}
-            height={extent.h}
-            style={{ position: 'absolute', top: 0, left: 0, overflow: 'visible', pointerEvents: 'none' }}
-          >
-            {paths.map((p, i) => (
+        <div className="gworld" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${scale})` }}>
+          <svg width={extent.w} height={extent.h} className="gedges">
+            {svg.edges.map((p, i) => (
               <g key={i}>
                 <path d={p.d} fill="none" stroke={p.color} strokeWidth={p.width} className={p.cls} />
                 <path d={p.head} fill={p.color} />
               </g>
+            ))}
+            {svg.buses.map((b, i) => (
+              <path key={`b${i}`} d={b.d} fill="none" stroke={b.color} strokeWidth={b.width} strokeDasharray={b.dash} />
             ))}
           </svg>
 
           {nodes.map((n) => {
             const m = STATUS_META[n.status]
             const Icon = KIND_ICON[n.kind]
-            const Badge = m.badge
+            const Badge = BADGE[n.status]
+            const dim = keep ? !keep.has(n.id) : false
             return (
               <div key={n.id}>
                 <div
-                  className={`gnode ${m.cls}${n.isRoot ? ' rootcause' : ''}`}
+                  ref={(el) => { if (el) nodeEls.current.set(n.id, el); else nodeEls.current.delete(n.id) }}
+                  className={`gnode ${m.cls}${n.isRoot ? ' rootcause' : ''}${sel?.node === n.id ? ' selected' : ''}${dim ? ' dimmed' : ''}`}
                   style={{ transform: `translate3d(${n.x}px, ${n.y}px, 0)` }}
                   tabIndex={0}
                   role="button"
                   aria-label={`${n.id}, ${m.label}${n.ms != null ? `, ${n.ms} milliseconds` : ''}${n.isRoot ? ', root cause' : ''}`}
                   onPointerDown={(e) => onNodeDown(e, n.id)}
-                  onClick={() => { setSelected(n.id); onSelectNode?.(n.id) }}
-                  onKeyDown={(e) => nudge(e, n.id)}
+                  onKeyDown={(e) => onNodeKey(e, n.id)}
                 >
                   {n.isRoot && <span className="gnode-tab">ROOT CAUSE</span>}
                   <div className="gnode-top">
@@ -422,31 +380,38 @@ export default function ExecutionGraph({
                         <span style={{ color: m.color }}>●</span>
                         {n.status === 'skipped' ? 'not reached'
                           : n.status === 'crashed' ? 'raised'
+                          : n.status === 'running' ? 'paused'
                           : `${(n.ms ?? 0).toLocaleString()} ms`}
-                        {n.tools.length > 0 && ` · ${n.tools.length}T`}
+                        {n.pills.length > 0 && <span className="gnode-sig">· {n.pills.reduce((k, p) => k + p.signals.length, 0)} sig</span>}
                       </div>
                     </div>
                   </div>
-                  {Badge && (
-                    <span className="gnode-badge" style={{ background: m.color }}>
-                      <Badge style={{ width: 9, height: 9 }} />
-                    </span>
-                  )}
+                  {Badge && <span className="gnode-badge" style={{ background: m.color }}><Badge /></span>}
                 </div>
 
-                {n.tools.length > 0 && (
+                {showTools && n.pills.length > 0 && (
                   <div
-                    className="gtools"
-                    style={{ transform: `translate3d(${n.x}px, ${n.y + NODE_H + TOOL_GAP_Y}px, 0)` }}
+                    ref={(el) => { if (el) rowEls.current.set(n.id, el); else rowEls.current.delete(n.id) }}
+                    className={`gtools${dim ? ' dimmed' : ''}`}
+                    style={{ transform: `translate3d(${n.x}px, ${n.y + hOf(n.id) + TOOL_GAP_Y}px, 0)` }}
                   >
-                    {n.tools.map((t, i) => {
-                      const tm = TOOL_META[t.status]
-                      const TIcon = tm.icon
+                    {n.pills.map((p, i) => {
+                      const PIcon = PILL_ICON[p.tone]
                       return (
-                        <span key={i} className={`gtool ${tm.cls}`} title={`${t.id} — ${t.tag}`}>
-                          <TIcon className="gtool-ico" />
-                          {t.id}
-                          <span className="gtool-kind">·{t.tag}</span>
+                        <span
+                          key={i}
+                          className={`gtool t-${p.tone}${sel?.node === n.id && sel.pill === i ? ' selected' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          title={p.field || undefined}
+                          aria-label={`${p.field || p.id}, ${p.tag}`}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); setSel({ node: n.id, pill: i }) }}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSel({ node: n.id, pill: i }) } }}
+                        >
+                          <PIcon className="gtool-ico" />
+                          {p.id}
+                          {p.tone !== 'more' && <span className="gtool-kind">·{p.tag}</span>}
                         </span>
                       )
                     })}
@@ -457,68 +422,28 @@ export default function ExecutionGraph({
           })}
         </div>
 
-        {sel && !flush && (
-          <div className="ginsp">
-            <div className="ginsp-h">
-              <span className="gnode-name">{sel.id}</span>
-              <span style={{ color: STATUS_META[sel.status].color, fontSize: 11 }}>
-                {STATUS_META[sel.status].label}
-              </span>
-              <button type="button" className="ginsp-x" aria-label="Close inspector" onClick={() => setSelected(null)}>×</button>
-            </div>
-            <div className="ginsp-b">
-              <div className="ginsp-sec">
-                <div className="kv-row"><span className="kv-k">kind</span><span className="kv-v">{sel.kind}</span></div>
-                <div className="kv-row"><span className="kv-k">duration</span><span className="kv-v">{sel.ms ?? '—'} ms</span></div>
-                <div className="kv-row"><span className="kv-k">root cause</span><span className="kv-v">{sel.isRoot ? 'yes' : 'no'}</span></div>
-                <div className="kv-row"><span className="kv-k">signals</span><span className="kv-v">{sel.tools.length}</span></div>
-              </div>
-              {sel.tools.map((t, i) => (
-                <div key={i} className="ginsp-sec">
-                  <div className="kv-row"><span className="kv-k">{t.id}</span><span className="kv-v">{t.tag}</span></div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-  )
-
-  if (flush) return <div className="flushcanvas graph">{canvas}</div>
-
-  return (
-    <div className="gwrap">
-      <div className="gbar">
-        <h2 className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>Execution Graph</h2>
-        <span className="chip chip-idle !h-[20px] !px-[7px] font-mono !text-[11px]">{nodes.length} nodes</span>
-        <span className="gbar-sp" />
-        <div className="glegend">
-          {(['pass', 'crashed', 'fail', 'semantic', 'degraded', 'skipped'] as S[]).map((s) => (
-            <span key={s} className="glegend-i">
-              <i style={{ background: STATUS_META[s].color }} />
-              {STATUS_META[s].label}
-            </span>
-          ))}
-        </div>
-        <div className="gzoom">
-          <button type="button" aria-label="Zoom out" onClick={() => setScale((s) => Math.max(0.35, s - 0.15))}>−</button>
-          <span className="gzoom-val">{Math.round(scale * 100)}%</span>
-          <button type="button" aria-label="Zoom in" onClick={() => setScale((s) => Math.min(2, s + 0.15))}>+</button>
-        </div>
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm btn-icon"
-          aria-label="Reset view"
-          onClick={() => { setScale(1); setPan({ x: 0, y: 0 }); setNodes(initial) }}
-        >
-          <Maximize2 />
-        </button>
-        {onViewFull && (
-          <button type="button" className="btn btn-sm btn-ghost" onClick={onViewFull}>Full view</button>
+        {selNode && (
+          <GraphInspector
+            run={run}
+            node={selNode}
+            pill={selPill}
+            prop={prop}
+            onClose={() => setSel(null)}
+            onOpenDetails={onSelectNode ? () => onSelectNode(selNode.id) : undefined}
+          />
         )}
       </div>
 
-      {canvas}
+      <div className="glegend">
+        {present.map((s) => (
+          <span key={s} className="glegend-i"><span className={`lg-key lg-${s}`} />{STATUS_META[s].label}</span>
+        ))}
+        {tones.has('error') && <span className="glegend-i"><span className="lg-pill lg-t-error" />signal · critical</span>}
+        {tones.has('sem') && <span className="glegend-i"><span className="lg-pill lg-t-sem" />signal · semantic</span>}
+        {tones.has('slow') && <span className="glegend-i"><span className="lg-pill lg-t-slow" />signal · warning</span>}
+        {tones.has('empty') && <span className="glegend-i"><span className="lg-pill lg-t-empty" />signal · coherence</span>}
+        <span className="glegend-hint" title={`Drag nodes · drag canvas to pan · ${flush ? '⌘ + scroll' : 'scroll'} to zoom`}>{flush ? '⌘ + scroll to zoom' : 'Scroll to zoom'}</span>
+      </div>
     </div>
   )
 }

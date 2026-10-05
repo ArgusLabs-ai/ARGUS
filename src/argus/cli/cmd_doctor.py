@@ -226,6 +226,17 @@ def _check_configured_keys() -> tuple[bool, str]:
     )
 
 
+def _check_suppressions() -> tuple[bool, str]:
+    from argus.suppressions import config_path, load_suppressions  # noqa: PLC0415
+
+    items = load_suppressions()
+    if not items:
+        return True, "none  [dim](argus ignore <SIG-ID> to silence a noisy signature)[/dim]"
+    shown = ", ".join(s.label for s in items[:4])
+    more = f" +{len(items) - 4} more" if len(items) > 4 else ""
+    return True, f"{len(items)} active: {shown}{more}  [dim]{config_path()}[/dim]"
+
+
 def _check_llm_mode() -> tuple[bool, str]:
     """Report which LLM path is active: BYOK / hosted / heuristic-only."""
     import os
@@ -271,6 +282,7 @@ def doctor() -> None:
         ("storage", _check_storage),
         ("keys", _check_configured_keys),
         ("llm", _check_llm_mode),
+        ("suppressions", _check_suppressions),
         ("replay", _check_replay_readiness),
     ]
 

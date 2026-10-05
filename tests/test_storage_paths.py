@@ -209,9 +209,8 @@ def test_doctor_storage_reports_disk_usage(tmp_path, monkeypatch):
 
 @pytest.mark.unit
 def test_doctor_configured_keys_none(monkeypatch):
-    import argus.user_config as uc
-
     import argus.cli.cmd_doctor as d
+    import argus.user_config as uc
 
     monkeypatch.setattr(uc, "configured_providers", lambda: [])
     ok, msg = d._check_configured_keys()
@@ -222,9 +221,8 @@ def test_doctor_configured_keys_none(monkeypatch):
 
 @pytest.mark.unit
 def test_doctor_configured_keys_lists_providers(monkeypatch):
-    import argus.user_config as uc
-
     import argus.cli.cmd_doctor as d
+    import argus.user_config as uc
 
     monkeypatch.setattr(uc, "configured_providers", lambda: ["openai", "anthropic"])
     ok, msg = d._check_configured_keys()

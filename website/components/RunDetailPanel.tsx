@@ -5,9 +5,10 @@
    flush, none of them boxed. */
 
 import { useState, useEffect } from 'react'
+import { Flag, Download, RotateCcw, Wand2 } from 'lucide-react'
 import type { RunSummary } from '@/lib/types'
 import { useRunDetail } from '@/lib/hooks'
-import { useWorkspace, toneFor, statusWord, formatDuration, shortRunId } from '@/lib/workspace'
+import { useWorkspace, statusWord, shortRunId } from '@/lib/workspace'
 import { fmtClock } from '@/lib/run-detail'
 import { pipelineLabel } from '@/lib/run-filters'
 import SendReportDialog from './SendReportDialog'
@@ -20,6 +21,11 @@ import CliLogViewer from './CliLogViewer'
 import { useFixPrompt } from './run-detail/FixPrompt'
 
 const TABS = ['Overview', 'Pipeline', 'AI Analysis', 'Correlations', 'State', 'Logs'] as const
+
+const RUN_CHIP: Record<string, string> = {
+  clean: 'chip-ok', crashed: 'chip-tool', silent_failure: 'chip-quality',
+  semantic_fail: 'chip-semantic', interrupted: 'chip-run',
+}
 type Tab = typeof TABS[number]
 
 function LogsTab({ runId }: { runId: string }) {
@@ -69,24 +75,32 @@ export default function RunDetailPanel({
   const { openRun, serving } = useWorkspace()
   const [activeTab, setActiveTab] = useState<Tab>('Overview')
   const [showReport, setShowReport] = useState(false)
+  /* One-shot request for the Pipeline tab to start a rerun; cleared once it
+     has been handed off so revisiting the tab does not rerun again. */
+  const [replayFrom, setReplayFrom] = useState<string | null>(null)
   /* `GET /api/runs/<id>/fix` 400s unless the run has a root cause or a first
      failure — the same inputs the server resolves its target node from. Status
      alone is not enough: an interrupted run with no failure is not `clean`. */
   const canFix = !!run && ((run.root_cause_chain?.length ?? 0) > 0 || !!run.first_failure_step)
   const fix = useFixPrompt(runId ?? '', undefined, { autoload: canFix })
 
-  useEffect(() => { setActiveTab('Overview') }, [runId])
+  useEffect(() => { setActiveTab('Overview'); setReplayFrom(null) }, [runId])
 
   if (!runId) return <Centered>Select a run.</Centered>
   if (loading && !run) return <Centered>Loading run…</Centered>
   if (error || !run) return <Centered><span style={{ color: 'var(--tool)' }}>{error ?? 'Run not found'}</span></Centered>
 
   const steps = run.steps ?? []
-  const reached = steps.filter((s) => s.status !== 'skipped').length
   const summary = allRuns.find((r) => r.run_id === run.run_id)
   const pipeline = summary ? pipelineLabel(summary) : null
   const alias = summary?.alias
   const findings = (run.findings ?? []).filter((f) => !f.suppressed).length
+  /* Replay starts where the trouble starts: the blamed origin, else the
+     first step that did not pass. A clean run just opens the Pipeline tab. */
+  const replayOrigin = run.root_cause_chain?.[0]
+    ?? run.first_failure_step
+    ?? steps.find((s) => s.status !== 'pass' && s.status !== 'skipped')?.node_name
+    ?? null
 
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(run, null, 2)], { type: 'application/json' })
@@ -108,32 +122,34 @@ export default function RunDetailPanel({
       <div className="ws-head">
         <div className="ws-head-row">
           <span className="ws-title">{alias ?? run.run_id}</span>
-          <span className={`stat ${toneFor(run.overall_status)}`}><i />{statusWord(run.overall_status)}</span>
-          {run.dry_run && <span className="stat mute"><i />dry run</span>}
+          <span className={`chip ${RUN_CHIP[run.overall_status] ?? 'chip-idle'}`}><span className="dot" />{statusWord(run.overall_status)}</span>
+          {run.dry_run && <span className="chip chip-idle">dry run</span>}
           <span style={{ flex: 1 }} />
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowReport(true)}>Report issue</button>
-          <button type="button" className="btn btn-sm btn-ghost" onClick={exportJson}>Export</button>
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setActiveTab('Pipeline')}>Replay</button>
-          {canFix && (
+          <div className="ws-acts">
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowReport(true)}><Flag />Report issue</button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={exportJson}><Download />Export</button>
             <button
               type="button"
-              className="btn btn-sm"
-              onClick={() => { setActiveTab('Overview'); void fix.copy() }}
+              className="btn btn-sm btn-ghost"
+              title={replayOrigin ? `Rerun from ${replayOrigin}, the first failing step` : 'Open the Pipeline tab to rerun a step'}
+              onClick={() => { setActiveTab('Pipeline'); setReplayFrom(replayOrigin) }}
             >
-              {fix.label}
+              <RotateCcw />Replay
             </button>
-          )}
+            {canFix && (
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                onClick={() => { setActiveTab('Overview'); void fix.copy() }}
+              >
+                <Wand2 />{fix.label}
+              </button>
+            )}
+          </div>
         </div>
         <div className="ws-sub">
-          {alias && <span className="m">{run.run_id}</span>}
-          {alias && <span>·</span>}
-          <span>Argus v{run.argus_version}</span>
-          {pipeline && <><span>·</span><span>{pipeline}</span></>}
-          <span>·</span>
-          <span>{reached} of {steps.length} steps</span>
-          <span>·</span>
-          <span className="m">{formatDuration(run.duration_ms)}</span>
-          <span>·</span>
+          {alias && <><span className="m">{run.run_id}</span><span>·</span></>}
+          {pipeline && <><span>{pipeline}</span><span>·</span></>}
           <span className="m">{fmtClock(run.started_at)}</span>
           {run.parent_run_id && (
             <>
@@ -153,6 +169,8 @@ export default function RunDetailPanel({
             </>
           )}
           {serving?.project_root && <><span>·</span><span className="m" title={serving.runs_dir}>{serving.project_root.split('/').pop()}</span></>}
+          <span>·</span>
+          <span>v{run.argus_version}</span>
         </div>
         <div className="tabs" role="tablist" aria-label="Run detail sections">
           {TABS.map((tab) => (
@@ -164,14 +182,14 @@ export default function RunDetailPanel({
               onClick={() => setActiveTab(tab)}
             >
               {tab}
-              {counts[tab] != null && <span className="n">{counts[tab]}</span>}
+              {counts[tab] != null && <span className="tab-count">{counts[tab]}</span>}
             </button>
           ))}
         </div>
       </div>
 
       {activeTab === 'Overview' && <OverviewTab run={run} allRuns={allRuns} onSwitchTab={setActiveTab} fix={fix} />}
-      {activeTab === 'Pipeline' && <PipelineTab run={run} />}
+      {activeTab === 'Pipeline' && <PipelineTab run={run} replayFrom={replayFrom} onReplayStarted={() => setReplayFrom(null)} />}
       {activeTab === 'AI Analysis' && <div className="wc" style={{ paddingTop: 22 }}><AIAnalysisPanel run={run} /></div>}
       {activeTab === 'Correlations' && <div className="wc" style={{ paddingTop: 22 }}><CorrelationPanel run={run} /></div>}
       {activeTab === 'State' && <StateTab run={run} />}

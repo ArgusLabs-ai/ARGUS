@@ -124,16 +124,22 @@ def test_upstream_nodes_are_not_re_executed():
 def test_delete_op_reproduces_a_dropped_field_crash():
     """Deleting a field on demand reproduces the exact downstream failure.
 
-    A node crash during replay propagates to the caller (pre-existing
-    ReplayEngine behaviour — session.finalize() is not reached), so the
-    reproduction surfaces as the original exception rather than a record.
+    A node that raises during replay is the replay's result, not a failed
+    replay: the crash is recorded as the new run and its id is returned, so
+    the UI can open it instead of reporting a bare "'docs'".
     """
     run_id, _ = _record_run()
 
-    with pytest.raises(KeyError, match="docs"):
-        ReplayEngine().replay(run_id, "transform", patch={"delete": ["docs"]})
+    new_id = ReplayEngine().replay(run_id, "transform", patch={"delete": ["docs"]})
 
     assert sys.modules[_MODULE_NAME].CALLS == ["transform"]
+    rerun = load_run(new_id)
+    assert rerun.overall_status == "crashed"
+    assert rerun.parent_run_id == run_id
+    assert rerun.replay_from_step == "transform"
+    crashed = [s for s in rerun.steps if s.status == "crashed"]
+    assert [s.node_name for s in crashed] == ["transform"]
+    assert "KeyError" in (crashed[0].exception or "")
 
 
 # ── provenance ────────────────────────────────────────────────────────────────

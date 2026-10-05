@@ -28,6 +28,7 @@ def _is_empty_element(v: Any) -> bool:
         return len(v) == 0
     return False
 
+
 # ── Truncation detection helpers ─────────────────────────────────────────────
 
 _TRUNCATION_RE = re.compile(r"\w$")
@@ -135,11 +136,31 @@ _STATUS_KEYS = {"status_code", "status", "http_status", "code", "response_code"}
 # Boolean fields whose False/True value indicates an error condition
 _SUCCESS_KEYS = {"success", "ok", "succeeded", "is_valid", "is_ok"}
 _FAILURE_KEYS = {"failed", "is_error", "has_error", "errored", "is_failed"}
-_RESULT_NAME_RE = re.compile(
-    r"(results?|items?|documents?|records?|rows?|hits?|entries?|matches?"
-    r"|findings?|output|content|data|response|answer|text|body|payload)$",
-    re.IGNORECASE,
+# A node reporting *findings about something else* — a linter, a validator, a
+# compliance check, a critic. Plural and list-valued on purpose: `errors: [...]`
+# is a report, `error: "timeout"` is the node's own failure (E9).
+_FINDINGS_KEYS = {"errors", "issues", "violations", "warnings", "findings", "failures"}
+# Nouns that mean "this field holds what the tool found". Matched against the
+# *last word* of the key, not its trailing characters: a bare suffix test makes
+# `response_metadata` end in "data", and since every LangChain message carries
+# an empty `response_metadata` that made "empty result" fire on every healthy
+# tool call in a react agent.
+_RESULT_NOUNS = frozenset(
+    """result results item items document documents doc docs source sources
+    record records row rows hit hits entry entries match matches finding findings
+    output content data response answer text body payload series""".split()
 )
+# Split on separators and at camelCase humps, so `responseData` and
+# `response_data` both end on the word `data` while `metadata` does not.
+_WORD_SPLIT_RE = re.compile(r"[^a-zA-Z0-9]+|(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _is_result_name(key: str) -> bool:
+    """Does `key` name a field that holds a tool's results?"""
+    words = [w for w in _WORD_SPLIT_RE.split(key) if w]
+    return bool(words) and words[-1].lower() in _RESULT_NOUNS
+
+
 _RATE_LIMIT_RE = re.compile(
     r"rate.?limit|quota.?exceed|too.?many.?requests?|429",
     re.IGNORECASE,
@@ -156,12 +177,58 @@ _SEVERITY_RANK = {"critical": 2, "warning": 1}
 _MAX_TOOL_SCAN_DEPTH = 5
 
 # Empty lists on these keys are failed retrievals, not optional blanks.
+# `entry` is a FHIR Bundle's matches, `series` a metrics query's (S1 / S2).
 _RETRIEVAL_LIST_KEYS = frozenset(
-    {"documents", "docs", "results", "hits", "sources", "items"}
+    {"documents", "docs", "results", "hits", "sources", "items", "entry", "series"}
 )
 
 # Main LLM text fields — truncated output here is a node failure.
-_MAIN_LLM_OUTPUT_KEYS = frozenset({"answer", "draft", "summary", "reply", "content"})
+# The field a node's *deliverable* lives in. Drives whole-value placeholder
+# promotion and truncation severity. Was five names; `{"memo": "TBD"}` and
+# `{"report": "TODO"}` graded clean while `{"answer": "TODO"}` failed, so the
+# verdict depended on what the author called the field. `text` / `message` are
+# deliberately absent: they hold the *user's* words as often as the model's,
+# and a customer ticket reading "I cannot reset my password" is not a refusal.
+_MAIN_LLM_OUTPUT_KEYS = frozenset(
+    {
+        "answer",
+        "draft",
+        "summary",
+        "reply",
+        "content",
+        "memo",
+        "report",
+        "response",
+        "result",
+        "final",
+        "final_answer",
+        "output",
+        "completion",
+    }
+)
+
+# A failure *word* in a status-like field. HTTP codes and `error` keys were
+# vocabulary; `{"status": "declined"}` from a payment provider was not, so goods
+# shipped on a declined card. `cancelled` is left out on purpose — it is a
+# legitimate business state, not a tool failure. `voided` is in (S6): a
+# DocuSign envelope voided on a bounced email was never sent for signature.
+_STATUS_WORD_KEYS = frozenset({"status", "state", "outcome", "result_status", "payment_status"})
+_FAILURE_STATUS_WORDS = frozenset(
+    {
+        "declined",
+        "failed",
+        "failure",
+        "rejected",
+        "error",
+        "errored",
+        "timeout",
+        "timed_out",
+        "denied",
+        "unauthorized",
+        "unavailable",
+        "voided",
+    }
+)
 
 # Intermediate fields whose copy into a differently named output is a handoff,
 # not "the model echoed the user prompt."
@@ -214,18 +281,110 @@ def _coerce_http_status(value: Any) -> int | None:
     return None
 
 
+_NO_VALUE = object()
+
+# A template instruction left in finished output (S3). Upper-case only: the
+# softer forms (`[Your Name]`, `[TOPIC]`, `[EXTERNAL EMAIL]`) stay PH-015 warnings.
+_INSTRUCTION_SLOT_RE = re.compile(r"\[(?:INSERT|ENTER|YOUR|ADD)\b[^\]]*\](?!\()")
+
+
 def _leaf_key(field_path: str) -> str:
     """Last path component, without list-index suffixes."""
     leaf = field_path.rsplit(".", 1)[-1]
     return re.sub(r"\[\d+\]$", "", leaf)
 
 
+def _signature_is_builtin(sig_id: str) -> bool:
+    """Is this signature one ARGUS ships, as opposed to learned or shared?
+
+    Unknown ids (a test double, a signature removed since the run) count as
+    builtin so the promotion path keeps its historical behaviour for them.
+    """
+    try:
+        from argus.registry import get_registry  # noqa: PLC0415
+
+        for sig in get_registry():
+            if sig.get("id") == sig_id:
+                return sig.get("source", "builtin") == "builtin"
+    except Exception:
+        return True
+    return True
+
+
+def _value_at(output_dict: dict[str, Any] | None, field_path: str) -> Any:
+    """The value at a signal's dotted path, or ``_NO_VALUE`` if it does not resolve."""
+    value: Any = output_dict
+    for part in field_path.split("."):
+        # `messages.[0].content` — list hops are path segments too. Without
+        # them this walk gave up at the first list, which meant the promotion
+        # never applied to `MessagesState`: every agent's refusal-as-the-whole
+        # -answer stayed a warning and graded clean.
+        index = re.fullmatch(r"\[(\d+)\]", part)
+        if index is not None:
+            if not isinstance(value, list):
+                return _NO_VALUE
+            position = int(index.group(1))
+            if position >= len(value):
+                return _NO_VALUE
+            value = value[position]
+            continue
+        if not isinstance(value, dict) or part not in value:
+            return _NO_VALUE
+        value = value[part]
+    return value
+
+
+def _is_the_whole_answer(output_dict: dict[str, Any] | None, field_path: str) -> bool:
+    """Is `field_path` a main output field whose entire value is a short token?
+
+    Distinguishes ``{"answer": "N/A"}`` — the node produced nothing and said so
+    — from a paragraph that happens to contain "n/a" somewhere inside it. Only
+    the first is a silent failure.
+    """
+    if not output_dict or _leaf_key(field_path).lower() not in _MAIN_LLM_OUTPUT_KEYS:
+        return False
+    value = _value_at(output_dict, field_path)
+    # ponytail: length is the proxy for "this is the whole answer, not a mention
+    # inside one". A real answer that fits in 40 characters is not one.
+    return isinstance(value, str) and len(value.strip()) <= 40
+
+
+def _is_instruction_slot(
+    output_dict: dict[str, Any] | None,
+    field_path: str,
+    input_state: dict[str, Any] | None,
+) -> bool:
+    """Did this node write a template instruction — ``[INSERT …]``, ``[ENTER …]``,
+    ``[YOUR …]``, ``[ADD …]`` — outside a template / prompt field? (S3)
+
+    Only a slot the node *authored*: one already in its input was forwarded,
+    and the node that wrote it first is the one to blame.
+    """
+    leaf = _leaf_key(field_path).lower()
+    if "template" in leaf or "prompt" in leaf:
+        return False
+    value = _value_at(output_dict, field_path)
+    if not isinstance(value, str):
+        return False
+    inherited = json.dumps(input_state, default=str) if input_state else ""
+    return any(m.group(0) not in inherited for m in _INSTRUCTION_SLOT_RE.finditer(value))
+
+
 def _is_retrieval_list_key(field_path: str) -> bool:
     return _leaf_key(field_path).lower() in _RETRIEVAL_LIST_KEYS
 
 
-def _empty_result_severity(field_path: str, value: Any) -> str:
-    """Empty retrieval lists fail the node; other empty result-like fields warn."""
+def _empty_result_severity(
+    field_path: str, value: Any, *, allow_empty: bool = False
+) -> str:
+    """Empty retrieval lists fail the node; other empty result-like fields warn.
+
+    ``allow_empty``: the node wrote a consumer field declared presence-only
+    (#129). Empty ``hits`` / ``docs`` / … is then the good path (sanctions
+    screen, vuln scan), so severity drops to warning — visible, not a gate.
+    """
+    if allow_empty:
+        return "warning"
     if _is_retrieval_list_key(field_path) and isinstance(value, list):
         return "critical"
     if _is_retrieval_list_key(field_path) and value is None:
@@ -260,16 +419,66 @@ def _add_http_status_failure(
         )
 
 
+def _is_findings_list(key: str, value: Any) -> bool:
+    """`errors: ["syntax error at or near SELEC"]` — findings, not a failure."""
+    return key.lower() in _FINDINGS_KEYS and isinstance(value, (list, tuple))
+
+
+def _is_report_object(parent: Any) -> bool:
+    """Does this dict report findings about something else?
+
+    `{"ok": False, "errors": [...]}` is a linter's verdict — the `False` is its
+    answer, not its own breakage. `{"success": False, "message": "Auth failed"}`
+    carries no findings and stays a failure (E9).
+    """
+    return isinstance(parent, dict) and any(_is_findings_list(k, v) for k, v in parent.items())
+
+
 def _apply_tool_shape_rules(
     key: str,
     value: Any,
     field_path: str,
     depth: int,
     add: Any,
+    own_output: bool = False,
+    parent: Any = None,
+    allow_empty: bool = False,
 ) -> None:
-    """Apply error / HTTP / empty-result / partial-failure rules at one field."""
+    """Apply error / HTTP / empty-result / partial-failure rules at one field.
+
+    ``own_output`` says this dict is a node's own state update rather than a
+    tool's response (E1 / E9), which changes what two shapes mean:
+
+    * a **status word** — `{"decision": {"status": "denied"}}` is the node's
+      answer, not a failed call. Always soft here; on a tool payload
+      `{"status": "declined"}` still means the payment did not go through.
+    * a **verdict about something else** — `errors: [...]`, and a
+      `ok: False` / `failed: True` sitting beside such a list. A linter
+      reporting what it found is doing its job.
+
+    A node's own `error` (singular, truthy) is untouched: that is the node
+    saying *it* broke, which is exactly the swallowed failure ARGUS exists for.
+    Numeric HTTP status is untouched too — no business decision is "500".
+
+    Soft means warning: visible in `argus show`, not a gate, and the flag the
+    ambiguous tier (#130) will review. The tool's own response is graded
+    separately by `inspect_tool_calls`, so nothing that crossed a real boundary
+    is lost.
+
+    ``allow_empty`` softens empty retrieval lists (``hits`` / ``docs`` / …)
+    from critical to warning when the node wrote a presence-only consumer
+    field (#129). Error keys, HTTP 4xx/5xx, and raised tools stay critical.
+    """
     nested = depth > 0
     key_l = key.lower()
+    # A status word on a node's own update is its answer, not a failed call.
+    status_sev = "warning" if own_output else "critical"
+    # A verdict about something else — only when findings are actually present.
+    verdict_sev = (
+        "warning"
+        if own_output and (_is_findings_list(key, value) or _is_report_object(parent))
+        else "critical"
+    )
 
     # Rule 1 — error key with truthy value
     if key in _ERROR_KEYS:
@@ -282,8 +491,7 @@ def _apply_tool_shape_rules(
                         field_name=field_path,
                         severity="warning",
                         evidence=(
-                            f"{'nested ' if nested else ''}"
-                            f"rate limit detected: {as_str[:120]!r}"
+                            f"{'nested ' if nested else ''}rate limit detected: {as_str[:120]!r}"
                         ),
                     )
                 )
@@ -292,7 +500,7 @@ def _apply_tool_shape_rules(
                     ToolFailure(
                         failure_type="error_response",
                         field_name=field_path,
-                        severity="critical",
+                        severity=verdict_sev,
                         evidence=(
                             f"{'nested error field' if nested else 'error field set'}: "
                             f"{as_str[:120]!r}"
@@ -308,16 +516,30 @@ def _apply_tool_shape_rules(
             _add_http_status_failure(add, field_path, status, nested)
             return
 
+    # Rule 2d — a failure word in a status-like field (`status: "declined"`)
+    if (
+        key_l in _STATUS_WORD_KEYS
+        and isinstance(value, str)
+        and value.strip().lower().replace(" ", "_") in _FAILURE_STATUS_WORDS
+    ):
+        add(
+            ToolFailure(
+                failure_type="error_response",
+                field_name=field_path,
+                severity=status_sev,
+                evidence=(f"{'nested ' if nested else ''}status field '{key}' is {value!r}"),
+            )
+        )
+        return
+
     # Rule 2b — boolean success field set to False
     if key_l in _SUCCESS_KEYS and isinstance(value, bool) and not value:
         add(
             ToolFailure(
                 failure_type="error_response",
                 field_name=field_path,
-                severity="critical",
-                evidence=(
-                    f"{'nested ' if nested else ''}success indicator '{key}' is False"
-                ),
+                severity=verdict_sev,
+                evidence=(f"{'nested ' if nested else ''}success indicator '{key}' is False"),
             )
         )
         return
@@ -328,22 +550,22 @@ def _apply_tool_shape_rules(
             ToolFailure(
                 failure_type="error_response",
                 field_name=field_path,
-                severity="critical",
-                evidence=(
-                    f"{'nested ' if nested else ''}failure indicator '{key}' is True"
-                ),
+                severity=verdict_sev,
+                evidence=(f"{'nested ' if nested else ''}failure indicator '{key}' is True"),
             )
         )
         return
 
     # Rule 3 — empty result field with results-like name
-    if _RESULT_NAME_RE.search(key):
+    if _is_result_name(key):
         if value is None or value == [] or value == {} or value == "":
             add(
                 ToolFailure(
                     failure_type="empty_result",
                     field_name=field_path,
-                    severity=_empty_result_severity(field_path, value),
+                    severity=_empty_result_severity(
+                        field_path, value, allow_empty=allow_empty
+                    ),
                     evidence="tool returned no results",
                 )
             )
@@ -356,7 +578,9 @@ def _apply_tool_shape_rules(
                         failure_type="empty_result",
                         field_name=field_path,
                         severity=_empty_result_severity(
-                            field_path, [] if isinstance(value, list) else value
+                            field_path,
+                            [] if isinstance(value, list) else value,
+                            allow_empty=allow_empty,
                         ),
                         evidence=f"tool returned {len(items)} items but all are empty/null",
                     )
@@ -389,39 +613,108 @@ def _apply_tool_shape_rules(
             )
 
 
+def _as_json_payload(value: str) -> Any | None:
+    """`value` decoded, when it is a JSON object or array. Otherwise None."""
+    stripped = value.lstrip()
+    if not stripped.startswith(("{", "[")):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None
+
+
 def _scan_payload_for_tool_failures(
     obj: Any,
     prefix: str,
     depth: int,
     add: Any,
+    own_output: bool = False,
+    allow_empty: bool = False,
 ) -> None:
-    """Recursively scan dict/list payloads for tool-failure shapes (max depth 5)."""
+    """Recursively scan dict/list payloads for tool-failure shapes (max depth 5).
+
+    ``own_output`` / ``allow_empty`` are passed down unchanged — see
+    `_apply_tool_shape_rules`.
+    """
     if depth > _MAX_TOOL_SCAN_DEPTH:
         return
     if isinstance(obj, dict):
+        carries_tool_call = bool(obj.get("tool_calls"))
         for key, value in obj.items():
             field_path = f"{prefix}.{key}" if prefix else str(key)
-            _apply_tool_shape_rules(key, value, field_path, depth, add)
+            if key == "content" and carries_tool_call and _is_empty(value):
+                # A tool-calling turn puts its payload in `tool_calls` and
+                # leaves `content` empty — that is the normal shape of every
+                # model that calls a tool, not a tool returning nothing. Left
+                # in, it raised a warning on every agent turn, and the judge
+                # then read that warning as evidence and failed the node: a
+                # working `create_react_agent` could not pass the gate.
+                continue
+            if (
+                key == "content"
+                and _is_empty(value)
+                and not carries_tool_call
+                and obj.get("type") == "ai"
+            ):
+                # E7 / #134: the agent's final turn — empty content, no tool
+                # calls — is a blank reply to the customer. Rule 3 alone only
+                # warns (`content` is not a retrieval list), so the run graded
+                # clean. Critical here; the tool-call exemption above still
+                # covers intermediate turns.
+                add(
+                    ToolFailure(
+                        failure_type="empty_result",
+                        field_name=field_path,
+                        severity="critical",
+                        evidence="final AI message has empty content and no tool calls",
+                    )
+                )
+                continue
+            _apply_tool_shape_rules(
+                key, value, field_path, depth, add, own_output, obj, allow_empty
+            )
             if isinstance(value, dict):
-                _scan_payload_for_tool_failures(value, field_path, depth + 1, add)
+                _scan_payload_for_tool_failures(
+                    value, field_path, depth + 1, add, own_output, allow_empty
+                )
             elif isinstance(value, list):
-                _scan_payload_for_tool_failures(value, field_path, depth + 1, add)
+                _scan_payload_for_tool_failures(
+                    value, field_path, depth + 1, add, own_output, allow_empty
+                )
+            elif isinstance(value, str):
+                # A tool result that arrived as encoded JSON is still a tool
+                # result. LangChain stringifies every structured tool return
+                # into `ToolMessage.content`, so without this an HTTP 500 inside
+                # a `create_react_agent` — the flagship swallowed failure — is
+                # invisible to every rule above. Parsing costs one json.loads on
+                # strings that already look like JSON.
+                nested = _as_json_payload(value)
+                if nested is not None:
+                    _scan_payload_for_tool_failures(
+                        nested, field_path, depth + 1, add, own_output, allow_empty
+                    )
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
             if isinstance(item, (dict, list)):
                 item_path = f"{prefix}[{i}]"
-                _scan_payload_for_tool_failures(item, item_path, depth + 1, add)
+                _scan_payload_for_tool_failures(
+                    item, item_path, depth + 1, add, own_output, allow_empty
+                )
 
 
-_JSON_EXPECTED_KEYS = frozenset({
-    "raw_response",
-    "log",
-    "logs",
-    "raw",
-    "history",
-    "raw_output",
-    "payload",
-})
+_JSON_EXPECTED_KEYS = frozenset(
+    {
+        "raw_response",
+        "log",
+        "logs",
+        "raw",
+        "history",
+        "raw_output",
+        "payload",
+    }
+)
 
 
 def _scan_double_encoded(
@@ -434,8 +727,15 @@ def _scan_double_encoded(
     if depth > 5:
         return
     if isinstance(obj, dict):
+        # A `ToolMessage` must carry a string, so LangChain json-encodes every
+        # structured tool return into its `content`. That is the framework's
+        # doing, not a node returning double-encoded JSON, and flagging it put
+        # a warning on every healthy tool call in every agent.
+        tool_message = obj.get("type") == "tool"
         for key, value in obj.items():
             if str(key).lower() in _JSON_EXPECTED_KEYS:
+                continue
+            if tool_message and key == "content":
                 continue
             field_path = f"{prefix}.{key}" if prefix else str(key)
             if isinstance(value, str):
@@ -502,6 +802,8 @@ def inspect_tool_outputs(
     _precomputed_signals: list[SemanticSignal] | None = None,
     input_state: dict[str, Any] | None = None,
     reducer_fields: dict[str, Any] | None = None,
+    own_output: bool = False,
+    allow_empty: bool = False,
 ) -> InspectionResult:
     """Scan a node's output dict for tool call failure patterns.
 
@@ -515,6 +817,14 @@ def inspect_tool_outputs(
     _precomputed_signals: if provided, reuse these SemanticSignals for Rule 7
         instead of re-scanning. Avoids double-scan when called from
         inspect_transition which already ran the heuristic scan.
+    own_output: this dict is a node's own state update, not a tool's response.
+        Verdict-shaped signals (`error` keys, `success: False`, a status word
+        like "denied") then warn instead of failing — see
+        `_apply_tool_shape_rules`. Defaults off, so a direct caller keeps the
+        stricter reading it has today.
+    allow_empty: the node wrote a consumer field declared presence-only (#129).
+        Empty retrieval lists (``hits`` / ``docs`` / …) then warn instead of
+        failing CI. Error / HTTP / raised-tool rules are unchanged.
     """
     # field_name → best ToolFailure so far (highest severity)
     by_field: dict[str, ToolFailure] = {}
@@ -526,7 +836,7 @@ def inspect_tool_outputs(
 
     # Rules 1–6 — recursive tool-failure shapes (error keys, HTTP status,
     # success/failure booleans, empty retrieval, nested dict/list payloads)
-    _scan_payload_for_tool_failures(output_dict, "", 0, _add)
+    _scan_payload_for_tool_failures(output_dict, "", 0, _add, own_output, allow_empty)
 
     # Rule 17 — Double-Encoded JSON Detection
     _scan_double_encoded(output_dict, "", 0, _add)
@@ -545,6 +855,31 @@ def inspect_tool_outputs(
         severity = signal.severity
         if signal.confidence < 0.7:
             severity = "warning"  # ambiguous — force warning regardless of sig severity
+        if (
+            severity == "warning"
+            and _signature_is_builtin(signal.sig_id)
+            and _is_the_whole_answer(output_dict, signal.dotted_path)
+        ):
+            # "TODO" / "N/A" *as the entire value of the answer field* is not a
+            # suspicious phrase inside real prose — it is the node having
+            # produced nothing, which is a silent failure and must gate CI.
+            # Most placeholder signatures are warning-severity because they
+            # usually match inside a longer body; that calibration is right
+            # there and wrong here. Bundled signatures only: a learned or
+            # community one keeps the severity its author gave it — `^\d+$`
+            # ("numeric instead of JSON", warning) from the shared cache was
+            # promoted the same way and failed every pipeline whose answer
+            # was a number.
+            severity = "critical"
+        if (
+            severity == "warning"
+            and own_output
+            and signal.sig_id == "PH-015"
+            and _is_instruction_slot(output_dict, signal.dotted_path, input_state)
+        ):
+            # `[INSERT CAP AMOUNT]` in a redline is an unfinished deliverable,
+            # not a suspicious phrase. Own output only: a tool may return a template.
+            severity = "critical"
         _add(
             ToolFailure(
                 failure_type=_CATEGORY_TO_FAILURE.get(signal.category, "semantic_degradation"),
@@ -584,7 +919,7 @@ def inspect_tool_outputs(
     for key, value in output_dict.items():
         if key.lower() in _SUCCESS_FIELD_NAMES:
             success_fields[key] = value
-        if _RESULT_NAME_RE.search(key):
+        if _is_result_name(key):
             result_fields[key] = value
 
     for s_key, s_val in success_fields.items():
@@ -756,15 +1091,17 @@ def inspect_tool_outputs(
                 for in_key, in_val in input_str_fields:
                     # Legitimate pipeline handoff: closer copies draft→reply
                     # (or similar) rather than repeating the user prompt.
-                    if (
-                        in_key.lower() in _HANDOFF_SOURCE_KEYS
-                        and key.lower() != in_key.lower()
-                    ):
+                    if in_key.lower() in _HANDOFF_SOURCE_KEYS and key.lower() != in_key.lower():
                         continue
                     if max(len(value), len(in_val)) > 5000:
-                        ratio = 1.0 if value == in_val else (
-                            1.0 - abs(len(value) - len(in_val)) / max(len(value), len(in_val))
-                            if value[:500] == in_val[:500] else 0.0
+                        ratio = (
+                            1.0
+                            if value == in_val
+                            else (
+                                1.0 - abs(len(value) - len(in_val)) / max(len(value), len(in_val))
+                                if value[:500] == in_val[:500]
+                                else 0.0
+                            )
                         )
                     else:
                         ratio = SequenceMatcher(None, value, in_val, autojunk=False).ratio()
@@ -844,6 +1181,7 @@ def inspect_tool_outputs(
 
     tool_failures = list(by_field.values())
     has_tool_failure = any(tf.severity == "critical" for tf in tool_failures)
+    has_tool_warnings = any(tf.severity == "warning" for tf in tool_failures)
     semantic_signals_list: list[SemanticSignal] = list(signals)
     return InspectionResult(
         is_silent_failure=False,
@@ -854,8 +1192,71 @@ def inspect_tool_outputs(
         message=_build_tool_failure_message(tool_failures) or "No tool failures detected",
         tool_failures=tool_failures,
         has_tool_failure=has_tool_failure,
+        has_tool_warnings=has_tool_warnings,
         semantic_signals=semantic_signals_list,
     )
+
+
+def inspect_tool_calls(
+    tool_calls: list[dict[str, Any]] | None,
+    strict: bool = False,
+    allow_empty: bool = False,
+) -> list[ToolFailure]:
+    """Grade the tool I/O recorded for one step (`NodeEvent.tool_calls`).
+
+    The fat trace records what each tool actually did; until this ran, nothing
+    read it, so a tool that raised and was swallowed graded clean (#86). Two
+    shapes, both blamed on the node that made the call:
+
+    * the tool raised — critical, full stop. A caught exception the node did not
+      surface is the silent failure ARGUS exists for.
+    * the tool returned a payload — run it through the same `inspect_tool_outputs`
+      scan the node's own output gets, so a 404 body or an empty result set is
+      caught by the rules that already exist.
+
+    A plain-string tool result is left alone: it lands in the node's output if
+    the node used it, and scanning prose for error words is how false positives
+    get made.
+
+    ``allow_empty``: the node wrote a presence-only consumer field (#129). Empty
+    retrieval lists in the tool payload then warn instead of failing CI; a
+    raised tool or an error / 4xx / 5xx body still fails hard.
+    """
+    out: list[ToolFailure] = []
+    for call in tool_calls or []:
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("name") or "tool")
+        error = call.get("error")
+        if error:
+            out.append(
+                ToolFailure(
+                    failure_type="tool_error",
+                    field_name=name,
+                    severity="critical",
+                    evidence=f"tool `{name}` raised {error}",
+                )
+            )
+            continue
+        payload = call.get("output")
+        if isinstance(payload, str):
+            payload = _as_json_payload(payload)
+        if isinstance(payload, list):
+            payload = {"results": payload}
+        if not isinstance(payload, dict):
+            continue
+        for tf in inspect_tool_outputs(
+            payload, strict=strict, allow_empty=allow_empty
+        ).tool_failures:
+            out.append(
+                ToolFailure(
+                    failure_type=tf.failure_type,
+                    field_name=f"{name}.{tf.field_name}" if tf.field_name else name,
+                    severity=tf.severity,
+                    evidence=f"tool `{name}`: {tf.evidence}",
+                )
+            )
+    return out
 
 
 def inspect_transition(
@@ -867,6 +1268,8 @@ def inspect_transition(
     input_state: dict[str, Any] | None = None,
     current_node_fn: Any = None,
     reducer_fields: dict[str, Any] | None = None,
+    has_successors: bool | None = None,
+    allow_empty: bool = False,
 ) -> InspectionResult:
     """Check if the output of current_node will cause a silent failure in any successor.
 
@@ -878,7 +1281,16 @@ def inspect_transition(
         output_dict: the dict returned by the node (may be None on crash)
         merged_state: the full state after merging the output (what successor sees)
         successor_fns: list of callable node functions that may run next
+        has_successors: whether *anything* runs after this node. Defaults to
+            ``bool(successor_fns)``. These come apart on a router: a conditional
+            source is handed no successor_fns on purpose (validating against
+            every branch's annotations when only one branch runs is a false
+            positive factory) but plenty still runs after it.
+        allow_empty: node wrote a presence-only consumer field (#129) — empty
+            retrieval lists in this update warn instead of failing CI.
     """
+    if has_successors is None:
+        has_successors = bool(successor_fns)
     # Scan heuristic signals ONCE, then pass to both tool failure conversion
     # and semantic_signals storage. Previously _scan_execution_output was
     # called twice (once inside inspect_tool_outputs Rule 7, once here),
@@ -893,6 +1305,9 @@ def inspect_transition(
             _precomputed_signals=semantic_signals,
             input_state=input_state,
             reducer_fields=reducer_fields,
+            # This is what the node returned, not what a tool answered (E1/E9).
+            own_output=True,
+            allow_empty=allow_empty,
         )
         if output_dict
         else None
@@ -906,9 +1321,16 @@ def inspect_transition(
     # drop is invisible and blame falls on the downstream crash site instead.
     # Only literal {} is flagged here: a dict WITH keys (even empty-valued ones,
     # e.g. {"vulnerabilities": []}) is a real state contribution and is judged
-    # by the per-field rules above. Conditional/router nodes reach here with
-    # successor_fns=[] (see ArgusSession._get_successor_fns) and are exempt.
-    if successor_fns and output_dict is not None and not output_dict:
+    # by the per-field rules above.
+    #
+    # Gated on `has_successors`, NOT on `successor_fns`: a conditional source is
+    # handed an empty successor_fns list because its branches' annotations
+    # cannot all be required at once, but a worker that also owns the loop edge
+    # — the standard supervisor / ReAct shape — still has nodes waiting on it.
+    # Keying the rule off the annotation list let such a node return {} on every
+    # round and grade clean. This rule never reads a successor's type hints; it
+    # only needs to know somebody runs next.
+    if has_successors and output_dict is not None and not output_dict:
         tool_failures = [
             *tool_failures,
             ToolFailure(
@@ -920,6 +1342,7 @@ def inspect_transition(
         ]
 
     has_tool_failure = any(tf.severity == "critical" for tf in tool_failures)
+    has_tool_warnings = any(tf.severity == "warning" for tf in tool_failures)
 
     if output_dict is None:
         return InspectionResult(
@@ -931,6 +1354,7 @@ def inspect_transition(
             message="Node crashed — no output to inspect",
             tool_failures=[],
             has_tool_failure=False,
+            has_tool_warnings=False,
         )
 
     if not successor_fns:
@@ -947,6 +1371,7 @@ def inspect_transition(
             message=message,
             tool_failures=tool_failures,
             has_tool_failure=has_tool_failure,
+            has_tool_warnings=has_tool_warnings,
             semantic_signals=semantic_signals,
         )
 
@@ -964,6 +1389,15 @@ def inspect_transition(
 
     for fn in successor_fns:
         fn_name = _get_fn_name(fn)
+        if getattr(fn, "__argus_trace_placeholder__", False):
+            # A recorded trace carries state, not code, so the recorder stands
+            # every successor up as an unannotated placeholder. Reporting that
+            # as "add type hints to X" is both wrong (the user's node may be
+            # fully annotated) and unactionable (no annotation they add will
+            # ever reach this check) — and it fired on every node of every
+            # clean run, which reads as "ARGUS is half-working". The contract
+            # on this path is declared with `consumers=`; see argus.contextual.
+            continue
         state_type = get_node_state_type(fn)
         if state_type is None:
             unannotated.append(fn_name)
@@ -1105,6 +1539,7 @@ def inspect_transition(
         suspicious_empty_keys=suspicious_empty,
         tool_failures=tool_failures,
         has_tool_failure=has_tool_failure,
+        has_tool_warnings=has_tool_warnings,
         semantic_signals=semantic_signals,
     )
 
@@ -1321,6 +1756,18 @@ def _extract_missing_key_from_exception(exc_str: str) -> str | None:
     return None
 
 
+def _is_own_router_crash(exc_str: str) -> bool:
+    """True when the KeyError came from LangGraph's conditional-edge router.
+
+    The branch runs as a child under the node's task (``graph/_branch.py`` /
+    ``_route``). A crash inside the node function itself has no such frame, so
+    the traceback distinguishes a router miss from an upstream omission (#135).
+    """
+    if not exc_str:
+        return False
+    return "graph/_branch.py" in exc_str.replace("\\", "/")
+
+
 def _build_predecessor_map(
     edge_map: dict[str, list[str]],
 ) -> dict[str, set[str]]:
@@ -1344,6 +1791,176 @@ def _build_predecessor_map(
             queue.extend(parents.get(nxt, set()))
         result[node] = visited
     return result
+
+
+def _nested_container_origin(
+    steps_so_far: list[Any],
+    crashed: Any,
+    missing_key: str,
+    state_keys: list[str] | None = None,
+) -> Any | None:
+    """Who wrote the dict that was missing `missing_key`, if that is the story.
+
+    Only applies when `missing_key` is not a state field in its own right — if
+    it is, the normal top-level walk owns the crash. Among the crashed node's
+    input fields, a dict that lacks the key is a candidate container; an empty
+    one is the classic (`{"policy": {}}` from a cache miss) and wins. Blame goes
+    to the last step that *wrote* that field before the crash.
+
+    "Not a state field" cannot be read off the crashed node's input alone: a
+    top-level field nobody ever wrote is absent from that input too, and state
+    almost always holds *some* dict (`account`, `metadata`, `config`), so the
+    container story used to fire on ``state["reply"]`` and blame whoever wrote
+    ``account``. The graph schema (``state_keys``) settles it when known; when
+    it is not, an upstream literal ``{}`` update is the canonical silent no-op
+    and owns a never-written key ahead of any container guess.
+
+    Returns None when nothing fits — no blame beats blaming a bystander.
+    """
+    if state_keys and missing_key in state_keys:
+        return None  # a real state field; the top-level walk handles it
+    state = crashed.input_state or {}
+    if missing_key in state:
+        return None  # a real state field; the top-level walk handles it
+    if any(
+        prev.output_dict == {}
+        and prev.step_index < crashed.step_index
+        and prev.status not in ("crashed", "skipped")
+        for prev in steps_so_far
+    ):
+        return None  # a no-op upstream is the likelier story; the walk blames it
+
+    candidates = [
+        field
+        for field, value in state.items()
+        if isinstance(value, dict) and missing_key not in value
+    ]
+    # ponytail: empty container first, then whichever field was written latest.
+    # Several non-empty dicts all lacking the key is genuinely ambiguous; the
+    # tie-break is "most recently written", not a guess dressed up as analysis.
+    candidates.sort(key=lambda f: (bool(state[f]), f))
+    for field in candidates:
+        writer = next(
+            (
+                prev
+                for prev in reversed(steps_so_far)
+                if prev.step_index < crashed.step_index
+                and prev.status != "crashed"
+                and isinstance(prev.output_dict, dict)
+                and field in prev.output_dict
+            ),
+            None,
+        )
+        if writer is not None:
+            return writer
+    return None
+
+
+def crash_origins(
+    steps_so_far: list[Any],
+    edge_map: dict[str, list[str]] | None = None,
+    state_keys: list[str] | None = None,
+) -> list[tuple[Any, str, Any]]:
+    """Who is answerable for each crash: ``[(origin_event, key, crashed_event)]``.
+
+    A ``KeyError`` names the field the crashed node wanted. That is a contract
+    the run states out loud, so origin blame here needs no declared consumer
+    map — unlike :mod:`argus.contextual`, which exists for the fields nobody
+    crashes on.
+
+    Skips self-contained crashes (the key *was* available and the node fell over
+    anyway) and pure passthrough nodes, so a retrieve → rerank → synthesize drop
+    blames retrieve rather than whoever merely forwarded state.
+    """
+    predecessor_map = _build_predecessor_map(edge_map) if edge_map else {}
+    found: list[tuple[Any, str, Any]] = []
+
+    for event in reversed(steps_so_far):
+        if event.status != "crashed" or not event.exception:
+            continue
+        missing_key = _extract_missing_key_from_exception(event.exception)
+        if not missing_key:
+            continue
+
+        # If a non-empty value was already provided by ANY node that ran
+        # before the crash, the crashed node had it available — this is a
+        # self-contained crash, not an upstream omission.
+        key_was_available = any(
+            prev.output_dict is not None
+            and missing_key in prev.output_dict
+            and not _is_empty(prev.output_dict.get(missing_key))
+            and prev.step_index < event.step_index
+            and prev.status != "crashed"
+            for prev in steps_so_far
+        )
+        if key_was_available:
+            continue
+
+        # Own-router miss (E8 / #135): the node returned without the key its
+        # *own* conditional edge then read. LangGraph attributes the KeyError
+        # to that node; walking upstream used to blame whoever wrote an
+        # unrelated field just before. When the update we recorded does not
+        # contain the key (or the step crashed before any update was filed),
+        # the node that owns the router is the origin — not a bystander.
+        out = event.output_dict
+        own_update_missed = out is None or missing_key not in out or _is_empty(
+            out.get(missing_key)
+        )
+        if _is_own_router_crash(event.exception) and own_update_missed:
+            found.append((event, missing_key, event))
+            continue
+
+        # `state["policy"]["number"]` raises KeyError 'number', and `number` is
+        # not a state field at all — it is a key of a dict some node wrote. The
+        # top-level walk below cannot find it anywhere, so it falls through to
+        # "whoever ran last and wasn't a passthrough" and blames a bystander.
+        # Blame the node that wrote the container instead.
+        nested = _nested_container_origin(steps_so_far, event, missing_key, state_keys)
+        if nested is not None:
+            found.append((nested, missing_key, event))
+            continue
+
+        # Determine actual graph predecessors of the crashed node
+        upstream = predecessor_map.get(event.node_name, set())
+
+        # Walk backward. Skip pure passthrough nodes that never had the key
+        # so a retrieve→rerank→synthesize drop blames retrieve, not rerank.
+        origin = None
+        for prev in reversed(steps_so_far):
+            if prev.step_index >= event.step_index:
+                continue
+            if prev.status == "crashed":
+                continue
+            if upstream and prev.node_name not in upstream:
+                continue
+            if prev.output_dict is None:
+                continue
+            out = prev.output_dict
+            inp = prev.input_state or {}
+            if missing_key in out and not _is_empty(out.get(missing_key)):
+                break
+            if out == {}:
+                # A literal empty update while a later node waits on a field
+                # nobody wrote: the no-op is the origin, not the last node that
+                # happened to add some unrelated key.
+                origin = prev
+                break
+            dropped = (
+                missing_key in inp
+                and not _is_empty(inp.get(missing_key))
+                and (missing_key not in out or _is_empty(out.get(missing_key)))
+            )
+            novel_keys = set(out.keys()) - set(inp.keys())
+            is_passthrough = bool(inp) and set(out.keys()) <= set(inp.keys())
+            if dropped or novel_keys or not is_passthrough:
+                origin = prev
+                break
+            if origin is None:
+                origin = prev
+
+        if origin is not None:
+            found.append((origin, missing_key, event))
+    return found
 
 
 def build_root_cause_chain(
@@ -1377,9 +1994,6 @@ def build_root_cause_chain(
         if event.output_dict:
             all_provided.update(event.output_dict.keys())
 
-    # Build predecessor map for topology-aware crash tracing
-    predecessor_map = _build_predecessor_map(edge_map) if edge_map else {}
-
     # Index: which fields each node produced (for crash-trace)
     fields_by_node: dict[str, set[str]] = {}
     for event in steps_so_far:
@@ -1397,64 +2011,11 @@ def build_root_cause_chain(
 
     # Phase 1: trace crash exceptions back to the upstream node that omitted
     # the required field.
-    for event in reversed(steps_so_far):
-        if event.status != "crashed" or not event.exception:
-            continue
-        missing_key = _extract_missing_key_from_exception(event.exception)
-        if not missing_key:
-            continue
-
-        # If a non-empty value was already provided by ANY node that ran
-        # before the crash, the crashed node had it available — this is a
-        # self-contained crash, not an upstream omission.
-        key_was_available = any(
-            prev.output_dict is not None
-            and missing_key in prev.output_dict
-            and not _is_empty(prev.output_dict.get(missing_key))
-            and prev.step_index < event.step_index
-            and prev.status != "crashed"
-            for prev in steps_so_far
-        )
-        if key_was_available:
-            continue
-
-        # Determine actual graph predecessors of the crashed node
-        upstream = predecessor_map.get(event.node_name, set())
-
-        # Walk backward. Skip pure passthrough nodes that never had the key
-        # so a retrieve→rerank→synthesize drop blames retrieve, not rerank.
-        origin = None
-        for prev in reversed(steps_so_far):
-            if prev.step_index >= event.step_index:
-                continue
-            if prev.status == "crashed":
-                continue
-            if upstream and prev.node_name not in upstream:
-                continue
-            if prev.output_dict is None:
-                continue
-            out = prev.output_dict
-            inp = prev.input_state or {}
-            if missing_key in out and not _is_empty(out.get(missing_key)):
-                break
-            dropped = (
-                missing_key in inp
-                and not _is_empty(inp.get(missing_key))
-                and (missing_key not in out or _is_empty(out.get(missing_key)))
-            )
-            novel_keys = set(out.keys()) - set(inp.keys())
-            is_passthrough = bool(inp) and set(out.keys()) <= set(inp.keys())
-            if dropped or novel_keys or not is_passthrough:
-                origin = prev
-                break
-            if origin is None:
-                origin = prev
-
-        if origin is not None:
-            prev_key = (origin.node_name, origin.attempt_index)
-            if prev_key not in seen_nodes:
-                chain.append(origin.node_name)
-                seen_nodes.add(prev_key)
+    for origin, _missing_key, _crashed in crash_origins(steps_so_far, edge_map):
+        prev_key = (origin.node_name, origin.attempt_index)
+        if prev_key not in seen_nodes:
+            chain.append(origin.node_name)
+            seen_nodes.add(prev_key)
 
     # Phase 2: inspection-based chain (silent failures, missing fields,
     # semantic degradation, tool failures, etc.)
@@ -1466,6 +2027,13 @@ def build_root_cause_chain(
             continue
 
         insp = event.inspection
+
+        # A node that *passed* is not an origin. Warning-level tool findings
+        # (`shallow_context`, `rate_limit`, `empty_result` on a scanner that
+        # found nothing) used to qualify here, so the headline named a healthy
+        # `retrieve` while the failing node was `rerank`.
+        if event.status == "pass" and not (insp is not None and insp.severity == "critical"):
+            continue
 
         # Check for LLM semantic checker failure (semantic_check.passed == False)
         has_semantic_check_failure = (

@@ -1,0 +1,1204 @@
+"""Fat-trace recorder — ingest, without wrapping the graph engine.
+
+The pivot's layer 1 (``docs/ARGUS-PIVOT-CONTRIBUTORS.pdf`` §4). ARGUS's old
+capture path mutates ``graph.nodes`` before compile and rebinds the compiled
+app's ``invoke`` / ``stream`` / ``batch`` (``patcher.py``, ``watcher.py``). This
+one does none of that: it rides LangGraph's own callback stream, which already
+reports each node by name with the state going in and **the dict the node
+returned** — the update, before the framework merges it. That update is the
+whole point. A node that searches, discards the result and returns ``{}`` leaves
+a full-looking merged state behind; only the update shows the silent no-op, and
+only then can blame land on the origin instead of whoever crashes three steps
+later.
+
+Usage is the entire public API::
+
+    app = ArgusRecorder().attach(app)
+    app.invoke({"query": "..."})
+
+Grading is unchanged: rows go to :mod:`argus.ledger`, then contextual
+(:mod:`argus.contextual` — pass ``consumers={"field": ["reader"]}``), then the
+existing structure / tool / semantic checks and the LLM judge last, inside
+``ArgusSession``. The verdict is ``argus check``.
+
+The run reviewer (:mod:`argus.review`) settles the rules' heuristic calls. It
+runs when node purposes are given (``purposes=`` or the ``purposes`` block of an
+``argus baseline --purposes`` file) and a key is configured; force it with
+``review=True|False``. Without it, the per-step LLM judge is on by default when
+a key is configured (``argus key set`` or ``argus login``) and off otherwise.
+Force it either way with ``ArgusRecorder(semantic_judge=True|False)``. When the
+reviewer runs, the per-step judge does not: it can only drop a warning, and the
+reviewer needs that warning to decide.
+
+``ArgusWatcher`` still works and is untouched.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import inspect
+import logging
+import sys
+import threading
+import time
+from collections import Counter
+from typing import Any, Callable
+from uuid import UUID
+
+from argus.contextual import ConsumerMap
+from argus.grading import IncompleteTraceError, finish, new_session
+from argus.llm_tracker import call_from_llm_outputs, usage_from_calls
+from argus.models import LLMCallInfo, ToolFailure
+from argus.review import Reviewer
+from argus.session import ArgusSession
+
+# Metadata an attached recorder puts on its runs, so `pytest --argus` (#78) does
+# not record them a second time.
+ATTACHED_MARK = "argus_recorder"
+
+# Before 3.11 asyncio cannot hand langchain's callback context to a child task,
+# so a tool awaited inside an `async def` node without `config` fires no
+# callback and its I/O never reaches the trace (S8).
+_CONTEXT_PROPAGATES = sys.version_info >= (3, 11)
+
+try:  # pragma: no cover - exercised only when langchain-core is absent
+    from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.load import dumpd
+    from langchain_core.runnables.base import RunnableBinding
+
+    _HAS_LANGCHAIN = True
+except ImportError:  # pragma: no cover
+    BaseCallbackHandler = object  # type: ignore[assignment,misc]
+    dumpd = None  # type: ignore[assignment]
+    RunnableBinding = None  # type: ignore[assignment,misc]
+    _HAS_LANGCHAIN = False
+
+try:  # pragma: no cover - exercised only when langgraph is absent
+    from langgraph.types import Command
+except ImportError:  # pragma: no cover
+    Command = None  # type: ignore[assignment,misc]
+
+__all__ = ["ArgusRecorder", "IncompleteTraceError", "report_tool_call"]
+
+# LangGraph's graph sentinels — not nodes anyone wrote.
+_SENTINELS = ("__start__", "__end__")
+
+# ── current-recorder registry (report_tool_call resolution) ────────────────
+# One entry per recorder with at least one live run, counting runs so a
+# `.batch()` item finishing never unregisters a recorder whose other item is
+# still mid-flight. The recorder is held strongly so id() can never be reused
+# while an entry exists.
+_recorder_registry_lock = threading.Lock()
+_active_recorders: dict[int, list[Any]] = {}
+
+
+def _register_run_start(recorder: ArgusRecorder) -> None:
+    with _recorder_registry_lock:
+        entry = _active_recorders.get(id(recorder))
+        if entry is None:
+            _active_recorders[id(recorder)] = [recorder, 1]
+        else:
+            entry[1] += 1
+
+
+def _register_run_end(recorder: ArgusRecorder) -> None:
+    with _recorder_registry_lock:
+        entry = _active_recorders.get(id(recorder))
+        if entry is None:
+            return
+        entry[1] -= 1
+        if entry[1] <= 0:
+            del _active_recorders[id(recorder)]
+
+
+def _current_recorder() -> ArgusRecorder | None:
+    """The most recently registered recorder still serving a live run."""
+    with _recorder_registry_lock:
+        for _key, (recorder, _runs) in reversed(list(_active_recorders.items())):
+            return recorder
+    return None
+
+
+def _ambient_runnable_config() -> dict[str, Any] | None:
+    """The ambient langchain runnable config, or None if langchain is absent.
+
+    Lazy on purpose: importing langchain here must stay optional at argus
+    import time. Newer langchain-core exposes ``get_config``; older ones only
+    have ``ensure_config``, which reads the same context var.
+    """
+    try:
+        from langchain_core.runnables import config as _lc_config
+    except ImportError:  # pragma: no cover - langchain-core is a hard dep in practice
+        return None
+    get_config = getattr(_lc_config, "get_config", None)
+    if callable(get_config):
+        try:
+            return get_config()
+        except Exception:
+            return None
+    ensure_config = getattr(_lc_config, "ensure_config", None)
+    if callable(ensure_config):
+        try:
+            return ensure_config({})
+        except Exception:
+            return None
+    return None
+
+
+def _superstep(metadata: dict[str, Any] | None) -> str | None:
+    """Which Pregel superstep a node task ran in: ``"<parent ns>#<step>"``.
+
+    Parallel ``Send`` workers share a step; loop iterations do not (E4). The
+    step counter restarts inside every subgraph invocation, so it is qualified
+    by the *parent* checkpoint namespace — the task's own namespace minus its
+    last ``node:task_id`` segment, which is unique per sibling.
+    """
+    m = metadata or {}
+    step = m.get("langgraph_step")
+    if step is None:
+        return None
+    parent_ns = str(m.get("langgraph_checkpoint_ns") or "").rpartition("|")[0]
+    return f"{parent_ns}#{step}"
+
+
+def _state_input(inputs: Any) -> Any:
+    """A chain's input, if it is graph state: a dict, or a dataclass / pydantic state.
+
+    A graph with a dataclass or pydantic schema hands each node the schema
+    object, not a dict. Dropping every non-dict recorded ``{}`` as the input of
+    every step, so the ledger was empty and a rerun had nothing to replay.
+    Anything else (a bare string through a chain) is not state.
+    """
+    if isinstance(inputs, dict) or hasattr(inputs, "model_dump") or hasattr(inputs, "__fields__"):
+        return inputs
+    if dataclasses.is_dataclass(inputs) and not isinstance(inputs, type):
+        return inputs
+    return {}
+
+
+def _node_update(outputs: Any) -> Any:
+    """What the node actually wrote, unwrapping a ``Command`` handoff (#88).
+
+    ``Command(goto=..., update={...})`` is the modern handoff idiom — every
+    supervisor and multi-agent example emits it — and it is not a dict, so it
+    used to fall into the "unreadable shape" branch below and lose the update
+    entirely. The step reached the ledger with no update, ``empty_output``
+    could not fire, and a declared consumer blamed whoever ran next.
+
+    ``update=None`` (``Command(goto="next")``, routing and nothing else) stays
+    ``None``: the node claimed no update, which is not the same as claiming an
+    empty one, and flagging it would fail every working supervisor.
+
+    LangGraph also accepts the update as a sequence of key/value pairs. That is
+    the same real update wearing a different shape, so it is folded into a dict
+    rather than lost the way the ``Command`` itself was. Anything that will not
+    fold is returned untouched and lands in the unreadable branch — never an
+    exception, because a recorder that raises takes the user's graph down with
+    it.
+    """
+    if Command is None or not isinstance(outputs, Command):
+        return outputs
+    update = outputs.update
+    if update is None or isinstance(update, dict):
+        return update
+    try:
+        return dict(update)
+    except (TypeError, ValueError):
+        return update
+
+
+def _command_goto(outputs: Any) -> list[str]:
+    """Node names a ``Command`` actually routed to — the edge `get_graph` misses (#110).
+
+    The destination annotation (``-> Command[Literal["write"]]``) is optional in
+    LangGraph, and without it the graph reports the node as going straight to
+    ``__end__``. A node that looks terminal is exempt from ``empty_output``, so
+    the rule stopped firing on exactly the handoff shape #88 was about. The
+    route taken is right there on the ``Command``, so it is observed rather
+    than inferred.
+
+    ``Send`` carries its target on ``.node``. Sentinels are not filtered here —
+    ``_observe_route`` keeps only nodes the graph declares, and ``__end__`` is
+    not one, so ``goto=END`` adds no successor and a terminal node stays exempt
+    from ``empty_output``. One filter, in the place that has the node list.
+    """
+    if Command is None or not isinstance(outputs, Command):
+        return []
+    goto = outputs.goto
+    if goto is None:
+        return []
+    targets = goto if isinstance(goto, (list, tuple)) else [goto]
+    names = [getattr(target, "node", target) for target in targets]
+    return [name for name in names if isinstance(name, str)]
+
+
+def _branch_route(outputs: Any) -> list[str]:
+    """Where a conditional edge's path function sent the run: ``"x"``, a
+    ``Send``, or a list of either. Anything else is not a route."""
+    targets = outputs if isinstance(outputs, (list, tuple)) else [outputs]
+    names = [getattr(target, "node", target) for target in targets]
+    return [name for name in names if isinstance(name, str)]
+
+
+def _unmapped_branch_sources(app: Any) -> set[str]:
+    """Nodes with a conditional edge added without a path map (bare names).
+
+    ``add_conditional_edges("worker", route)`` gives ``get_graph()`` nothing to
+    draw, so ``worker`` shows up as going straight to ``__end__`` and is exempt
+    from ``empty_output`` — a silent no-op there blamed its victim downstream.
+    Subgraphs are walked too. Best-effort: anything unreadable is left out.
+    """
+    out: set[str] = set()
+    builder = getattr(app, "builder", None)
+    for source, branches in (getattr(builder, "branches", None) or {}).items():
+        if any(getattr(b, "ends", None) is None for b in branches.values()):
+            out.add(source)
+    for node in (getattr(app, "nodes", None) or {}).values():
+        bound = getattr(node, "bound", None)
+        if bound is not app and getattr(bound, "builder", None) is not None:
+            out |= _unmapped_branch_sources(bound)
+    return out
+
+
+def _reducer_fields(app: Any) -> dict[str, Any]:
+    """Reducers declared on the state schema, e.g. ``Annotated[list, operator.add]``.
+
+    Without these, a fan-in field looks overwritten instead of accumulated and
+    the state successors are graded against is wrong. `app.builder` is public;
+    reading it is not patching it. Best-effort — an app without one still
+    records, it just grades fan-in with a plain overlay.
+    """
+    builder = getattr(app, "builder", None)
+    if builder is None:
+        return {}
+    try:
+        from argus.utils.type_introspection import extract_reducer_fields
+
+        return extract_reducer_fields(builder)
+    except Exception:
+        return {}
+
+
+def _subgraph_shape(
+    app: Any, ambiguous: set[str]
+) -> tuple[dict[str, list[str]], set[str], set[str]]:
+    """``{subgraph: [its inner nodes]}``, the ones with a successor, outer keys.
+
+    Needed for the one question no inner step can answer on its own: did the
+    subgraph contribute anything to the **parent** graph's state? An inner node
+    writing an inner-only key returns a perfectly non-empty update, so
+    ``empty_output`` stays quiet, while the parent state gains nothing and the
+    node after the subgraph reads ``None`` (#89). Keys the outer graph has are
+    ``builder.channels`` — the same public ``builder`` :func:`_reducer_fields`
+    already reads.
+
+    Best-effort: an app that exposes none of this yields empty sets, which only
+    switches the check off.
+    """
+    try:
+        xray = app.get_graph(xray=True)
+    except Exception:  # pragma: no cover - older/patched LangGraph
+        return {}, set(), set()
+
+    inner: dict[str, list[str]] = {}
+    for node_id in xray.nodes:
+        if ":" not in node_id:
+            continue
+        parent, _, _ = node_id.partition(":")
+        if _bare(node_id) not in _SENTINELS:
+            inner.setdefault(parent, []).append(_key(node_id, ambiguous))
+
+    with_successors = {
+        edge.source
+        for edge in app.get_graph().edges
+        if edge.source in inner and _bare(edge.target) not in _SENTINELS
+    }
+    outer_keys = set(getattr(getattr(app, "builder", None), "channels", None) or {})
+    return inner, with_successors, outer_keys
+
+
+def _inner_state_keys(app: Any, inner: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Each subgraph node's own state keys: a subgraph node writes its subgraph's
+    schema, not the parent's. Best-effort; an unreadable subgraph is left out."""
+    out: dict[str, list[str]] = {}
+    for parent, names in inner.items():
+        node = (getattr(app, "nodes", None) or {}).get(parent)
+        keys = getattr(getattr(getattr(node, "bound", None), "builder", None), "channels", None)
+        if keys:
+            out.update({name: sorted(keys) for name in names})
+    return out
+
+
+def _bare(node_id: str) -> str:
+    """``child:retrieve`` → ``retrieve``.
+
+    ``get_graph(xray=True)`` qualifies a subgraph's nodes with their parent, but
+    the callback stream reports ``langgraph_node`` as the bare name. The bare
+    name is the key unless two nodes share it — see :func:`_key`.
+    """
+    return node_id.rsplit(":", 1)[-1]
+
+
+def _ambiguous(app: Any) -> set[str]:
+    """Bare names more than one node shares (#95).
+
+    Two copies of one sub-agent both hold a ``retrieve``; keyed bare, their
+    edges, rows and blame merge and a write in one satisfies a read in the
+    other. Only these names are qualified, so every other graph keeps the bare
+    names its consumer map and tests are written against.
+    """
+    try:
+        ids = app.get_graph(xray=True).nodes
+    except Exception:  # pragma: no cover - older/patched LangGraph
+        return set()
+    # Parents count too, once per path: xray lists `a:a` but not the subgraph
+    # `a` it lives in.
+    parents = {node_id[:i] for node_id in ids for i, c in enumerate(node_id) if c == ":"}
+    counts = Counter(_bare(n) for n in [*ids, *parents] if _bare(n) not in _SENTINELS)
+    return {name for name, count in counts.items() if count > 1}
+
+
+def _key(node_id: str, ambiguous: set[str]) -> str:
+    """An xray node id as the recorder names it: bare, or qualified if shared."""
+    return node_id if _bare(node_id) in ambiguous else _bare(node_id)
+
+
+def _trace_key(metadata: dict[str, Any] | None, ambiguous: set[str]) -> str | None:
+    """The callback's node, qualified the way :func:`_key` qualifies the topology.
+
+    ``langgraph_checkpoint_ns`` is ``a:<task>|retrieve:<task>``; dropping the
+    task ids gives ``a:retrieve``, the node's xray id. No namespace (an older
+    LangGraph) leaves the bare name — the pre-#95 behaviour, not a crash.
+    """
+    m = metadata or {}
+    node = m.get("langgraph_node")
+    if node not in ambiguous:
+        return node
+    ns = str(m.get("langgraph_checkpoint_ns") or "")
+    return ":".join(seg.split(":", 1)[0] for seg in ns.split("|")) or node
+
+
+def _topology(
+    app: Any, ambiguous: set[str] | None = None
+) -> tuple[list[str], dict[str, list[str]], set[str], set[str]]:
+    """Node names, ``{node: [successors]}``, conditional sources, subgraph parents.
+
+    Read with ``xray=True`` so nodes *inside* a subgraph are known too. Without
+    it a subgraph is one opaque ``child`` node, its inner nodes are absent from
+    ``node_fn_registry``, and every one of them looks like it has no successors
+    — which silently exempts them from the ``empty_output`` rule. A silent
+    no-op nested one level down then graded clean.
+
+    A subgraph's *parent* (``documents`` in ``documents:ocr``) is reported by the
+    callbacks as a node in its own right, but its "update" is the subgraph's whole
+    merged state — a dozen keys other nodes wrote. That is the skinny-trace-posing-
+    as-fat shape (#82), produced by our own recorder: it double-reports every
+    inner finding on the parent, blames it for fields it never wrote, and makes
+    ``contextual._wrote()`` true for it on every field, which can hide a real
+    drop. So the parents come back as their own set — the recorder records the
+    inner nodes and skips the parent row. Their edges stay in the map: the node
+    before the subgraph still has a successor waiting on it.
+    """
+    try:
+        graph = app.get_graph(xray=True)
+    except Exception:  # pragma: no cover - older/patched LangGraph
+        graph = app.get_graph()
+
+    parents = {n.split(":", 1)[0] for n in graph.nodes if ":" in n}
+    ambiguous = _ambiguous(app) if ambiguous is None else ambiguous
+    keys = [_key(n, ambiguous) for n in graph.nodes]
+    names = [k for k in keys if k not in _SENTINELS and k not in parents]
+    for outer in app.get_graph().nodes:
+        if outer not in _SENTINELS and outer not in names and outer not in parents:
+            names.append(outer)
+
+    edge_map: dict[str, list[str]] = {}
+    conditional_sources: set[str] = set()
+    for edge in graph.edges:
+        source, target = _key(edge.source, ambiguous), _key(edge.target, ambiguous)
+        if source in _SENTINELS or target in _SENTINELS:
+            continue
+        edge_map.setdefault(source, []).append(target)
+        if getattr(edge, "conditional", False):
+            conditional_sources.add(source)
+    return names, edge_map, conditional_sources, parents
+
+
+class ArgusRecorder(BaseCallbackHandler):
+    """Records a fat trace of one LangGraph run and grades it."""
+
+    # Surface our own bugs instead of letting langchain swallow them.
+    raise_error = True
+
+    def __init__(
+        self,
+        *,
+        validators: dict[str, Callable[[dict[str, Any]], tuple[bool, str]]] | None = None,
+        strict: bool = False,
+        semantic_judge: bool | None = None,
+        max_field_size: int = 50_000,
+        consumers: ConsumerMap | None = None,
+        baseline: dict[str, Any] | None = None,
+        purposes: dict[str, str] | None = None,
+        review: bool | None = None,
+    ) -> None:
+        if not _HAS_LANGCHAIN:
+            raise ImportError(
+                "ArgusRecorder needs langchain-core. Install it with: pip install langchain-core"
+            )
+        self._validators = validators or {}
+        self._strict = strict
+        # None = auto: on when a key/login is available, off otherwise (resolved
+        # at attach). True/False force it either way regardless of key state.
+        self._semantic_judge = semantic_judge
+        self._max_field_size = max_field_size
+        # Declared `field -> [reader nodes]`; a trace cannot tell us who reads what.
+        self._consumers = consumers
+        # Healthy-run shape from `argus baseline` (argus.trace_rules D5/D6/D16).
+        self._baseline = baseline
+        # One sentence per node; the run reviewer cannot run without them.
+        self._purposes = dict(purposes or (baseline or {}).get("purposes") or {})
+        if review is True and not self._purposes:
+            raise ValueError(
+                "review=True needs node purposes: pass purposes={node: 'what it does'} or a "
+                "baseline written with `argus baseline <healthy runs> --purposes --write FILE`"
+            )
+        self._review = review
+        self._reviewer: Reviewer | None = None
+
+        # The most recently started run's session. One attach can serve many
+        # runs (a served app, a loop, `.batch()`), so the recorder keeps one
+        # session *per run* and this is only the latest — read `run_ids` when
+        # several runs came out of one attach.
+        self.session: ArgusSession | None = None
+        self.run_ids: list[str] = []
+        self._lock = threading.Lock()
+        # run_id -> (node name, input snapshot, start time, superstep)
+        self._pending: dict[UUID, tuple[str, dict[str, Any], float, str | None]] = {}
+        # node chain run_id -> tool records recorded under it
+        self._tools: dict[UUID, list[dict[str, Any]]] = {}
+        # tool run_id -> that tool's own record, so concurrent tools don't cross
+        self._tool_owner: dict[UUID, dict[str, Any]] = {}
+        self._tool_root: dict[UUID, UUID] = {}  # tool run → graph run, for _forget
+        # node chain run_id -> model calls made anywhere beneath it
+        self._llm: dict[UUID, list[LLMCallInfo]] = {}
+        # chain run_id -> its parent, so a model call inside `prompt | llm`
+        # still finds the node step it ran under
+        self._parent_of: dict[UUID, UUID] = {}
+        # One session per graph run, keyed by that run's root callback id, plus
+        # every callback id's route back to its root. `.batch()` runs its items
+        # on separate threads with interleaved callbacks; without this they fold
+        # into one notebook and the running state is a merge of two different
+        # inputs, which is worse than no verdict.
+        self._roots: dict[UUID, ArgusSession] = {}
+        self._root_of: dict[UUID, UUID] = {}
+        # Every chain run_id -> the node name it belongs to, so a step's inner
+        # runnables are recognised however deeply they nest.
+        self._node_of: dict[UUID, str] = {}
+        self._attached = False
+        # Set at attach; every per-run session is built from them.
+        self._topology: tuple[list[str], dict[str, list[str]], set[str]] = ([], {}, set())
+        self._subgraphs: set[str] = set()
+        self._ambiguous: set[str] = set()
+        # Nodes whose conditional edge has no path map, and the routes their
+        # path function returned for each open step — see _branch_route.
+        self._unmapped: set[str] = set()
+        self._routes: dict[UUID, list[str]] = {}
+        # {subgraph: [inner nodes]}, those with a node waiting after them, and
+        # the keys the outer graph actually has — see _blame_barren_subgraphs.
+        self._subgraph_nodes: dict[str, list[str]] = {}
+        self._subgraphs_with_successors: set[str] = set()
+        self._outer_keys: set[str] = set()
+        # inner node -> its own subgraph's state keys (trace_rules D1)
+        self._inner_keys: dict[str, list[str]] = {}
+        self._reducers: dict[str, Any] = {}
+        self._judge = False
+
+    # ── attach ──────────────────────────────────────────────────────────────
+
+    def attach(self, app: Any) -> Any:
+        """Bind the recorder to a compiled graph. Returns the app to invoke.
+
+        Reads topology through the public ``get_graph(xray=True)`` (see
+        :func:`_topology`, so subgraph nodes are graded too) and returns
+        ``app.with_config(callbacks=[self])``. Nothing is patched or mutated.
+
+        The returned app is reusable: every ``invoke`` / ``stream`` / ``batch``
+        item gets its own session, its own run file and its own verdict.
+        """
+        self.bind(app)
+        # A binding, not `app.with_config(callbacks=[self])` (#87). LangGraph's
+        # own `ensure_config` overwrites the callbacks key instead of merging
+        # it, so a Pregel's bound callbacks are dropped the moment a caller
+        # passes its own — which composition always does. `prompt | app`, a
+        # graph used as a tool, a LangServe route: the handler was silently
+        # discarded and ARGUS recorded nothing and said nothing.
+        # `RunnableBinding` merges through langchain's `merge_configs`, which
+        # handles list-plus-manager correctly, and proxies the graph API
+        # (`nodes`, `get_graph`, `stream`, `batch`) so the returned object is
+        # still the graph as far as callers are concerned. The metadata mark
+        # tells `pytest --argus` this run already has a recorder (#78).
+        return RunnableBinding(
+            bound=app, config={"callbacks": [self], "metadata": {ATTACHED_MARK: True}}
+        )
+
+    def bind(self, app: Any) -> None:
+        """Read a compiled graph's shape — ``attach`` without the binding.
+
+        For a caller that already routes the graph's callbacks here, as the
+        ``pytest --argus`` hook does (:mod:`argus.pytest_instrument`).
+        """
+        self._ambiguous = _ambiguous(app)
+        names, edges, conditionals, self._subgraphs = _topology(app, self._ambiguous)
+        self._topology = (names, edges, conditionals)
+        (
+            self._subgraph_nodes,
+            self._subgraphs_with_successors,
+            self._outer_keys,
+        ) = _subgraph_shape(app, self._ambiguous)
+        self._inner_keys = _inner_state_keys(app, self._subgraph_nodes)
+        self._reducers = _reducer_fields(app)
+        self._unmapped = _unmapped_branch_sources(app)
+        self._reviewer = self._resolve_reviewer()
+        self._judge = False if self._reviewer is not None else self._resolve_judge()
+        self._attached = True
+        if not _CONTEXT_PROPAGATES:
+            _warn_async_nodes(app)
+
+    def _new_session(self) -> ArgusSession:
+        """A session for one graph run — the state the old ``attach`` set up."""
+        node_names, edge_map, conditional_sources = self._topology
+        return new_session(
+            node_names,
+            edge_map,
+            conditional_sources,
+            self._reducers,
+            judge=self._judge,
+            validators=self._validators,
+            strict=self._strict,
+            max_field_size=self._max_field_size,
+            state_keys=sorted(self._outer_keys),
+            consumers=self._consumers,
+            node_state_keys=self._inner_keys,
+            baseline=self._baseline,
+            reviewer=self._reviewer,
+        )
+
+    def _resolve_reviewer(self) -> Reviewer | None:
+        """The run reviewer for this attach, or None.
+
+        Explicit ``review=False`` wins. Otherwise it needs purposes, and an LLM
+        path (a key or a login): ``review=True`` without one logs why it is off
+        rather than failing the user's graph.
+        """
+        if self._review is False or not self._purposes:
+            return None
+        from argus.llm_proxy import is_available
+
+        if not is_available():
+            if self._review:
+                logging.getLogger("argus").warning(
+                    "argus: review=True but no LLM key or login; grading by rules only"
+                )
+            return None
+        return Reviewer(purposes=self._purposes)
+
+    def _resolve_judge(self) -> bool:
+        """Decide whether the LLM judge runs for this attach.
+
+        Explicit ``True``/``False`` wins. Left unset (``None``), the judge turns
+        on when an LLM path is usable — a BYOK key (``argus key set``) or a login
+        (``argus login``) — and stays off otherwise. Setting a key is intent
+        enough; a second opt-in flag is friction. With no key the judge would
+        only skip anyway, so defaulting it on there would just report a check
+        that never ran.
+        """
+        if self._semantic_judge is not None:
+            return self._semantic_judge
+        from argus.llm_proxy import is_available
+
+        return is_available()
+
+    # ── chain callbacks ─────────────────────────────────────────────────────
+
+    def on_chain_start(
+        self,
+        serialized: dict[str, Any] | None,
+        inputs: dict[str, Any],
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._require_attached()
+        node = _trace_key(metadata, self._ambiguous)
+
+        # Route this callback to the run it belongs to. A parentless chain *is*
+        # a run boundary; everything else inherits its parent's root.
+        if node is not None and parent_run_id is None:
+            # A node span with no enclosing graph run — the inverse of the
+            # skinny trace the matrix covers, with the boundary sampled away
+            # instead of the nodes. Making it its own root files a run per node;
+            # dropping it is how #87 recorded nothing and said nothing. Neither
+            # is a pass, so refuse.
+            raise IncompleteTraceError(
+                f"node `{node}` reported with no enclosing graph run, so there is "
+                "nothing to attribute it to. An incomplete recording is not a pass."
+            )
+        root = run_id if parent_run_id is None else self._root_of.get(parent_run_id)
+        if root is None:
+            root = self._adopt_graph_run(node, parent_run_id, inputs)
+        if root is None:
+            return  # an outer chain that is not ours — someone else's callback
+        with self._lock:
+            self._root_of[run_id] = root
+            if parent_run_id is not None:
+                self._parent_of[run_id] = parent_run_id
+
+        if node is None:
+            # The graph run itself (no node name, no parent) — the run boundary.
+            if run_id == root:
+                started = self._new_session()
+                with self._lock:
+                    self._roots[root] = started
+                self.session = started
+                _register_run_start(self)
+                started.capture_state(_state_input(inputs))
+            return
+
+        session = self._roots.get(root)
+        if session is None:
+            return
+
+        with self._lock:
+            # Which node, if any, the enclosing chain already belongs to —
+            # tracked for *every* chain, recorded or not. Matching only against
+            # open `_pending` steps meant a suppressed inner chain vanished from
+            # the lineage and its own children looked like fresh visits: a
+            # `create_react_agent` filed four `agent` rows for two turns, two of
+            # them with no update at all, and the phantoms pushed the real rows
+            # into `retried` — a status `argus check` skips. Verified against
+            # langgraph 0.6.11 / prebuilt react.
+            enclosing = self._node_of.get(parent_run_id) if parent_run_id else None
+            self._node_of[run_id] = node
+        if node in self._subgraphs:
+            # The subgraph's own parent chain — its "update" is the merged state
+            # of everything inside it (see _subgraph_parents). Its nodes are
+            # recorded individually; this row would only double-count them.
+            return
+        if enclosing == node:
+            # A chain nested inside the step we are already recording, carrying
+            # that same node's name: LangGraph's own inner runnable, not a
+            # second visit. Matching on the name rather than the `seq:step:N`
+            # tag keeps a real subgraph's inner nodes (different names)
+            # recorded.
+            return
+
+        input_snap = session.capture_state(_state_input(inputs))
+        with self._lock:
+            self._pending[run_id] = (node, input_snap, time.perf_counter(), _superstep(metadata))
+        session.on_node_start(node, input_snap)
+
+    def _adopt_graph_run(
+        self, node: str | None, parent_run_id: UUID | None, inputs: Any
+    ) -> UUID | None:
+        """Start a run for a graph chain we were never told the start of (#87).
+
+        ``attach`` binds this handler to the graph, but the moment that graph is
+        one step of something larger — ``prompt | app``, a graph used as a tool,
+        a LangServe route — its chain arrives carrying a parent we never saw.
+        Treating "parentless" as the run boundary dropped that chain and then
+        every node callback under it: no session, no run file, no verdict, and
+        no error either, because ``_finish`` was never reached. A silent pass is
+        the one outcome the brief bans, and this one arrived through the front
+        door — `argus check` had nothing to grade and said so by saying nothing.
+
+        The enclosing chain of a ``langgraph_node`` callback *is* the graph run,
+        whatever ran above it. Adopting it needs no name matching (``LangGraph``
+        is not load-bearing and a user can rename it with ``with_config``) and
+        no guess about the outer framework.
+
+        Returns the adopted root, or ``None`` for a chain that is not ours —
+        the outer sequence in the example above has no node name and belongs to
+        whoever built it.
+        """
+        if node is None or parent_run_id is None:
+            return None
+        started = self._new_session()
+        with self._lock:
+            self._root_of[parent_run_id] = parent_run_id
+            self._roots[parent_run_id] = started
+        self.session = started
+        _register_run_start(self)
+        # The first node's input is the graph's state on entry; `capture_state`
+        # latches the initial state off the first non-empty snapshot.
+        started.capture_state(_state_input(inputs))
+        return parent_run_id
+
+    def on_chain_end(
+        self,
+        outputs: Any,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._end(run_id, outputs, exc=None)
+
+    def on_chain_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._end(run_id, None, exc=error)
+
+    def _end(self, run_id: UUID, outputs: Any, exc: BaseException | None) -> None:
+        """Close whatever ``run_id`` was: a node step, a run, or neither."""
+        with self._lock:
+            root = self._root_of.pop(run_id, None)
+            self._node_of.pop(run_id, None)
+            parent = self._parent_of.pop(run_id, None)
+            step = self._pending.get(parent) if parent is not None else None
+            if step is not None and _bare(step[0]) in self._unmapped:
+                # A child of an open step on an unmapped branch: the path
+                # function, which ends before the node's step does. Its return
+                # is the route `get_graph()` could not draw.
+                self._routes.setdefault(parent, []).extend(_branch_route(outputs))
+        if root is None:
+            return
+        session = self._roots.get(root)
+        if session is None:
+            return
+        if self._close_step(session, run_id, outputs, exc=exc):
+            return
+        if run_id == root:
+            with self._lock:
+                self._roots.pop(root, None)
+            self._finish(session, root)
+
+    def _close_step(
+        self, session: ArgusSession, run_id: UUID, outputs: Any, exc: BaseException | None
+    ) -> bool:
+        """Record one node step. Returns True if ``run_id`` was a node."""
+        # Held across on_node_end so the step index we file tools under is the
+        # one this step actually gets. Parallel fan-out runs these callbacks on
+        # separate threads and the session assigns indices under its own lock.
+        with self._lock:
+            entry = self._pending.pop(run_id, None)
+            tools = self._tools.pop(run_id, [])
+            llm_calls = self._llm.pop(run_id, [])
+            routes = self._routes.pop(run_id, [])
+            if entry is None:
+                return False
+
+            node, input_snap, started, superstep = entry
+            duration_ms = (time.perf_counter() - started) * 1000
+
+            # `{}` must only ever mean "the node really returned an empty update"
+            # — that is the signal. Anything that is not a dict is not an update
+            # we can read, so it becomes None (the crash/unknown shape) rather
+            # than a fake empty one. A `Command` is unwrapped to the update it
+            # carries first, so a handoff is read, not discarded (#88).
+            update = _node_update(outputs)
+            output_snap = session.capture_output(update) if isinstance(update, dict) else None
+
+            # Before the step is graded, not after: `empty_output` reads the
+            # edge map inside `on_node_end` (#110).
+            goto = _command_goto(outputs)
+            self._observe_route(session, node, goto + routes)
+
+            # Tools go in with the step, not onto the event afterwards: the
+            # graders run inside on_node_end, so tools attached later were
+            # recorded and never read (#86).
+            session.on_node_end(
+                node,
+                input_snap,
+                output_snap,
+                duration_ms,
+                exc=exc if isinstance(exc, Exception) else None,
+                llm_usage=usage_from_calls(llm_calls),
+                tool_calls=tools,
+                goto=goto,
+                superstep=superstep,
+            )
+        return True
+
+    def _observe_route(self, session: ArgusSession, node: str, targets: list[str]) -> None:
+        """Merge a route the graph actually took into the edge map (#110).
+
+        Only nodes this graph declares are added, so a ``goto`` can extend the
+        topology but never invent it. Subgraph *parents* count: ``_topology``
+        returns them apart from ``names`` because their rows are not recorded,
+        but they are real destinations, and filtering on ``names`` alone drops
+        ``supervise -> docs`` and hands #110 back for every graph that hands off
+        into a subgraph.
+
+        One observed route is not the full set of branches — an untaken one
+        stays unknown — but "reaches something" beats "terminal", and it is the
+        same bargain the trace-file path already makes when it guesses edges
+        from step order.
+        """
+        known = set(self._topology[0]) | self._subgraphs
+        edge_map = session.graph_edge_map or {}
+        fresh = [t for t in targets if t in known and t not in edge_map.get(node, [])]
+        if not fresh:
+            return
+        merged = {source: list(dests) for source, dests in edge_map.items()}
+        merged[node] = merged.get(node, []) + fresh
+        session.set_edges(merged)
+
+    # ── tool callbacks ──────────────────────────────────────────────────────
+
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any] | None,
+        input_str: str,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if parent_run_id is None:
+            return
+        record = {
+            "name": (serialized or {}).get("name", "tool"),
+            "input": input_str,
+            "output": None,
+            "error": None,
+        }
+        with self._lock:
+            self._tool_owner[run_id] = record
+            # Its run, so `_forget` can drop a tool whose end never arrives
+            # (#92). Not `_root_of`: a chain started inside a tool would then
+            # route through it and be recorded as a second step of the node.
+            if parent_run_id in self._root_of:
+                self._tool_root[run_id] = self._root_of[parent_run_id]
+            # F-29: file under the nearest PENDING node step, mirroring the
+            # llm re-parent below — a tool invoked inside an inner chain
+            # parents to the chain's run id, not the node's, and the exact-key
+            # pop at _close_step orphaned those calls. No pending ancestor
+            # (tool at graph level): keep the raw parent key.
+            owner = parent_run_id
+            while owner is not None and owner not in self._pending:
+                owner = self._parent_of.get(owner)
+            if owner is None:
+                owner = parent_run_id
+            self._tools.setdefault(owner, []).append(record)
+
+    def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
+        self._close_tool(run_id, output=output, error=None)
+
+    def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
+        self._close_tool(run_id, output=None, error=repr(error))
+
+    def _close_tool(self, run_id: UUID, output: Any, error: str | None) -> None:
+        # Closed by the tool's own run_id, not "the last one started under this
+        # node" — a node may have several tools in flight at once.
+        with self._lock:
+            self._tool_root.pop(run_id, None)
+            record = self._tool_owner.pop(run_id, None)
+            if record is None:
+                return
+            record["output"] = output
+            record["error"] = error
+
+    # ── LLM callbacks ───────────────────────────────────────────────────────
+
+    def on_llm_end(
+        self,
+        response: Any,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """File one model call's usage and finish reason under its node step.
+
+        The node's own output rarely carries usage, so reading it there records
+        zero tokens and never sees a truncation. The call is rebuilt in the shape
+        LangChain's tracer exports, so ingest and this path share one parser.
+        """
+        outputs = response.model_dump()
+        for i, batch in enumerate(response.generations):
+            for j, generation in enumerate(batch):
+                message = getattr(generation, "message", None)
+                if message is not None:
+                    outputs["generations"][i][j]["message"] = dumpd(message)
+        call = call_from_llm_outputs(outputs, kwargs.get("name") or "")
+        if call is None:
+            return
+        with self._lock:
+            step = parent_run_id
+            while step is not None and step not in self._pending:
+                step = self._parent_of.get(step)
+            if step is not None:
+                self._llm.setdefault(step, []).append(call)
+
+    # ── report_tool_call seam (F-29 second half) ────────────────────────────
+
+    def _resolve_seam_step(self, cfg: dict[str, Any] | None) -> UUID | None:
+        """Map an ambient runnable config to an open node step.
+
+        Mirrors the re-parent walk in :meth:`on_llm_end`: a ``run_id`` in the
+        config is walked up ``_parent_of`` to the nearest key in ``_pending``.
+        Inside a node function the config carries no ``run_id`` (measured under
+        langgraph 1.2 / langchain-core 1.6), so the fallback matches
+        ``metadata.langgraph_node`` against open ``_pending`` entries and takes
+        the most recently started — the innermost active visit of that node.
+        """
+        cfg = cfg if isinstance(cfg, dict) else {}
+        with self._lock:
+            run_id = cfg.get("run_id")
+            if run_id is not None:
+                step = run_id
+                while step is not None and step not in self._pending:
+                    step = self._parent_of.get(step)
+                if step is not None:
+                    return step
+            node = _trace_key(cfg.get("metadata"), self._ambiguous)
+            if not node:
+                return None
+            best: UUID | None = None
+            best_t0 = -1.0
+            for rid, (pending_node, _snap, t0, _) in self._pending.items():
+                if pending_node == node and t0 > best_t0:
+                    best, best_t0 = rid, t0
+            return best
+
+    def _file_seam_tool(self, step: UUID, record: dict[str, Any]) -> bool:
+        """File one seam-reported tool call under ``step``, dedup included.
+
+        Same dict shape the callback path files (:meth:`on_tool_start`), so
+        ``_close_step`` attaches it to the step record identically. Dedup
+        against the callback path: a record with the same name and input that
+        is still unresolved (on_tool_start fired, on_tool_end not yet) gets
+        this call's output/error filled in instead of appending a duplicate;
+        an already-resolved match is treated as the same logical call and the
+        seam record is dropped. on_tool_start itself is untouched, so the
+        reverse order (report before the invoke that fires the callback) can
+        still double-file — for the F-29 case the callback never fires, and
+        for a live callback the realistic order is invoke-then-report.
+        """
+        with self._lock:
+            bucket = self._tools.setdefault(step, [])
+            for existing in bucket:
+                if existing.get("name") == record["name"] and existing.get(
+                    "input"
+                ) == record["input"]:
+                    if (
+                        existing.get("output") is None
+                        and existing.get("error") is None
+                        and (record["output"] is not None or record["error"] is not None)
+                    ):
+                        existing["output"] = record["output"]
+                        existing["error"] = record["error"]
+                    return True
+            bucket.append(record)
+            return True
+
+    # ── the layer chain ─────────────────────────────────────────────────────
+
+    def _finish(self, session: ArgusSession, root: UUID) -> None:
+        """Grade one finished run (:func:`argus.grading.finish`)."""
+        try:
+            with self._lock:
+                # Only this run's steps. Another `.batch()` item may still be mid
+                # flight on another thread; its open steps are not this run's gap.
+                unfinished = sorted(
+                    node
+                    for rid, (node, _, _, _) in self._pending.items()
+                    if self._root_of.get(rid) == root
+                )
+            self._blame_barren_subgraphs(session)
+            finish(session, self._consumers, unfinished)
+            self.run_ids.append(session.run_id)
+        finally:
+            # Exception-safe: a crashed grade must not leak this recorder into
+            # report_tool_call's resolution after the run is over.
+            self._forget(root)
+            _register_run_end(self)
+
+    def _forget(self, root: UUID) -> None:
+        """Drop everything routed to ``root``, however the run ended (#92).
+
+        Entries are otherwise removed only by their own end callback, so a step
+        or tool whose end never arrives — the very trace ``finish`` refuses —
+        kept its input snapshot alive for the life of a served app.
+        """
+        with self._lock:
+            dead = {root} | {
+                rid
+                for table in (self._root_of, self._tool_root)
+                for rid, owner in table.items()
+                if owner == root
+            }
+            for table in (
+                self._root_of, self._node_of, self._parent_of, self._pending, self._tools,
+                self._tool_owner, self._tool_root, self._llm, self._routes, self._roots,
+            ):
+                for rid in dead & table.keys():
+                    del table[rid]
+
+    def _blame_barren_subgraphs(self, session: ArgusSession) -> None:
+        """Fail a subgraph that ran and left the parent state untouched (#89).
+
+        Every inner node can return a non-empty update and the subgraph still
+        contribute nothing outward, because an inner-only key never reaches the
+        parent graph. ``empty_output`` asks "was this update empty?", which is
+        the wrong question one level down; this asks "did any of it survive into
+        the outer state?".
+
+        Subgraph-level on purpose. Blaming each inner node would fire on the
+        normal shape where an early node writes a scratch key purely to feed a
+        later one — real work that legitimately contributes nothing outward. The
+        finding lands on the last inner step that ran (the exit node), and is
+        skipped when that step is flagged already so one no-op is not reported
+        twice.
+        """
+        if not self._outer_keys:
+            return
+
+        for parent in self._subgraphs_with_successors:
+            inner = set(self._subgraph_nodes.get(parent, []))
+            # Every visit, not the first one each: a subgraph on a loop edge can
+            # come up dry on pass one and contribute on pass two, and flagging
+            # that would be a false positive.
+            steps = [event for event in session._events if event.node_name in inner]
+            if not steps:
+                continue
+            if any(set(step.output_dict or {}) & self._outer_keys for step in steps):
+                continue
+            # The last inner step that ran: the exit node on the path taken,
+            # whose writes are what the subgraph hands back (S5). An earlier
+            # node writing only scratch is the normal shape. It is also a final
+            # visit — `retried` is assigned later, in finalize, and demotes every
+            # visit but the last, so blame on an earlier visit of a subgraph on a
+            # loop edge would be dropped by `check.evaluate_run` and the run
+            # would go out clean.
+            origin = steps[-1]
+            if origin.inspection is None or origin.inspection.has_tool_failure:
+                continue
+            origin.inspection.tool_failures.append(
+                ToolFailure(
+                    failure_type="subgraph_no_contribution",
+                    field_name="_output",
+                    severity="critical",
+                    evidence=(
+                        f"subgraph `{parent}` ran and wrote nothing the parent graph can "
+                        f"see — every field it produced is internal to it, so the node "
+                        f"after it reads the state unchanged"
+                    ),
+                )
+            )
+            origin.inspection.has_tool_failure = True
+            origin.inspection.is_silent_failure = True
+            origin.inspection.severity = "critical"
+            origin.status = "fail"
+
+    def _require_attached(self) -> None:
+        if not self._attached:
+            raise RuntimeError("ArgusRecorder.attach(app) must be called before invoking the app")
+
+
+def _async_node_names(app: Any) -> list[str]:
+    """Nodes defined as ``async def``. Read-only; unknown shapes are skipped."""
+    names = []
+    for name, node in (getattr(app, "nodes", None) or {}).items():
+        bound = getattr(node, "bound", None)
+        if getattr(bound, "func", True) is None and inspect.iscoroutinefunction(
+            getattr(bound, "afunc", None)
+        ):
+            names.append(name)
+    return names
+
+
+def _warn_async_nodes(app: Any) -> None:
+    try:
+        names = _async_node_names(app)
+    except Exception:  # a warning must never break attach
+        return
+    if names:
+        logging.getLogger("argus").warning(
+            "argus: async nodes %s on Python %d.%d — tool calls inside them are only "
+            "recorded if the node passes its `config` on (`await tool.ainvoke(args, config)`) "
+            "or calls argus.report_tool_call. Python 3.11+ records them automatically. "
+            "A tool error swallowed there will not be graded.",
+            ", ".join(names),
+            *sys.version_info[:2],
+        )
+
+
+def report_tool_call(
+    name: str,
+    input: Any = None,
+    output: Any = None,
+    error: Any = None,
+    *,
+    config: dict[str, Any] | None = None,
+    recorder: ArgusRecorder | None = None,
+) -> bool:
+    """File a tool call the callback path cannot see, onto the current node step.
+
+    Public seam for register finding F-29: under LangGraph 1.x, code running
+    inside a node function can hold an empty ``CallbackManager``, so a tool the
+    node invokes directly (``tool.invoke(args, config=config)``) never fires
+    the recorder's ``on_tool_start`` and would otherwise vanish from
+    ``StepRecord.tool_calls``. Calling this from node code files the call in
+    the exact shape the callback path uses, so ``_close_step`` attaches it to
+    the step record — and the graders read it — exactly like a callback-filed
+    call. The LangSmith ingest path is untouched.
+
+    Resolution: ``recorder=`` wins; else the module-level current-recorder
+    registry (set when the watcher attaches a run, cleared at run end, even on
+    a crash); else there is no recorder. ``config=`` wins for the step; else
+    the ambient langchain config is read (lazy import — argus itself does not
+    hard-require langchain at import time). The step is the config's ``run_id``
+    walked up ``recorder._parent_of`` to the nearest open step, or — inside a
+    node function, where the config carries no ``run_id`` — the open step
+    whose ``langgraph_node`` matches, most recently started first.
+
+    Returns True when the call is filed (or recognised as already filed);
+    False when dropped. Dropping never raises into user code: each failure
+    emits one warning on the ``argus`` logger naming the reason.
+    """
+    log = logging.getLogger("argus")
+    rec = recorder if recorder is not None else _current_recorder()
+    if rec is None:
+        log.warning(
+            "argus.report_tool_call(%r) dropped: no active ArgusRecorder — call it "
+            "inside a run watched by ArgusRecorder().attach(...) or pass recorder= explicitly",
+            name,
+        )
+        return False
+    if not isinstance(rec, ArgusRecorder):
+        log.warning(
+            "argus.report_tool_call(%r) dropped: recorder= is not an ArgusRecorder",
+            name,
+        )
+        return False
+    cfg = config if config is not None else _ambient_runnable_config()
+    step = rec._resolve_seam_step(cfg)
+    if step is None:
+        log.warning(
+            "argus.report_tool_call(%r) dropped: no open node step could be resolved "
+            "from the current config — the call is outside a watched node step",
+            name,
+        )
+        return False
+    if error is not None and not isinstance(error, str):
+        error = repr(error)
+    record = {
+        "name": str(name),
+        # The callback path files the string form of the tool input
+        # (on_tool_start's input_str) — keep the seam byte-compatible so
+        # _close_step and the graders see one shape.
+        "input": input if input is None or isinstance(input, str) else str(input),
+        "output": output,
+        "error": error,
+    }
+    return rec._file_seam_tool(step, record)
