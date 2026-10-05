@@ -619,6 +619,18 @@ pytest --argus
 
 ARGUS records every LangGraph run in the test session through LangChain's public callback hook — nothing in LangGraph is patched or wrapped — and grades it exactly as `ArgusRecorder().attach(graph)` would. A graph you attached yourself is not recorded twice. A clean pipeline stays a passing test; missing fields, tool failures, crashes, and semantic degradation fail that test. Each test is graded against the run IDs saved during that test, so parallel `pytest -n` workers cannot grade one another's runs. Tests that never invoke a graph are unchanged. After a standalone CI run, pass its exact id with `argus check <id>` or `ARGUS_RUN_ID=<id> argus check`; `argus check last` only means the newest file and can select a stale or unrelated run in a shared workspace.
 
+### GitHub Action
+
+Add the gate to any workflow, after your dependencies are installed:
+
+```yaml
+      - uses: ArgusLabs-ai/ARGUS/.github/actions/argus-gate@v0.12.0
+        with:
+          pytest-args: tests/          # runs: pytest --argus tests/
+```
+
+The job fails when a run was not clean. To grade one saved run instead of your tests, pass `run-id:` (or set `ARGUS_RUN_ID`); it runs `argus check <id>`, never `last`. Other inputs: `strict: warn_as_fail`, `version: "==0.12.0"`, `install: "false"` when your requirements already install `argus-agents`, `working-directory`.
+
 ---
 
 ## Web Dashboard
