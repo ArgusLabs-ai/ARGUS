@@ -157,9 +157,10 @@ An attached `ArgusWatcher` reuses one `ArgusSession` across calls (its node wrap
 
 ### Website / UI
 
-`website/` contains a Next.js dashboard served by `argus ui`. Key components:
-- `app/compare/DiffView.tsx`: Side-by-side run diff view
-- `components/CliRunView.tsx`: Single-run detail view
+`website/` contains a Next.js dashboard served by `argus ui` from the committed static build in `src/argus/ui_dist/` (`bash scripts/build_ui.sh`; CI fails a PR that changes `website/` without rebuilding it). Key components:
+- `components/run-detail/OverviewTab.tsx`: run verdict, execution graph, findings; selecting a node opens `StepInspector.tsx` (signals, run reviewer verdicts, the step's tool calls, input / output)
+- `components/run-detail/ReplayControls.tsx` + `cli/cmd_open_ui.py` `/api/replay`: rerun from the dashboard. Same rules as `argus replay` (#79): a trace's code comes from the app factory (`replay_live` for one node), never from `source_locator`
+- `lib/failure-labels.ts`: a label per `failure_type`; `tests/test_ui_parity.py` fails when a Python rule (including `trace_rules.py` / `review.py`) emits a type with no label
 
 ### Testing
 

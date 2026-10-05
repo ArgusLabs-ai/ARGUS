@@ -44,6 +44,9 @@ def _node_from_app(app: Any, node_name: str) -> Callable[[Any], Any]:
     ponytail: `.bound` is LangGraph's own runnable for the node — swap this for
     a public accessor if one ever lands.
     """
+    if not hasattr(app, "invoke") and hasattr(app, "compile"):
+        # A factory that returns the builder, as the --app docs once said to.
+        app = app.compile()
     node = (getattr(app, "nodes", None) or {}).get(node_name)
     bound = getattr(node, "bound", None)
     if bound is None or not hasattr(bound, "invoke"):

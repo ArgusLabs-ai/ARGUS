@@ -7,6 +7,7 @@ silently renders a grey "Unknown" chip. These tests fail instead.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -28,6 +29,34 @@ def _python_failure_types() -> set[str]:
     block = re.search(r"_CATEGORY_TO_FAILURE.*?\n}", inspector, re.S)
     assert block, "_CATEGORY_TO_FAILURE not found in inspector.py"
     found |= set(re.findall(r':\s*"([a-z_]+)"', block.group(0)))
+    found |= _trace_rule_types()
+    # The run reviewer names its two by assignment, not as a keyword argument.
+    review = (REPO / "src" / "argus" / "review.py").read_text()
+    reviewer = set(re.findall(r'failure_type, field_name = "([a-z_]+)"', review))
+    assert reviewer, "no failure types parsed out of review.py"
+    return found | reviewer
+
+
+def _trace_rule_types() -> set[str]:
+    """Failure types the whole-trace rules emit (trace_rules.py).
+
+    A rule yields ``(failure_type, field, evidence)`` and the runner wraps it in
+    ``Hit(event, ...)``; D15 builds its ``Hit`` directly. Neither is a
+    ``failure_type="..."`` literal, so the regex above never saw them and every
+    D-rule hit rendered as a grey 'Unknown' chip.
+    """
+    tree = ast.parse((REPO / "src" / "argus" / "trace_rules.py").read_text())
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Tuple) and len(node.elts) == 3:
+            first = node.elts[0]
+        elif isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Hit":
+            first = node.args[1] if len(node.args) > 1 else None
+        else:
+            continue
+        if isinstance(first, ast.Constant) and re.fullmatch(r"[a-z]+(_[a-z]+)+", str(first.value)):
+            found.add(first.value)
+    assert found, "no failure types parsed out of trace_rules.py"
     return found
 
 

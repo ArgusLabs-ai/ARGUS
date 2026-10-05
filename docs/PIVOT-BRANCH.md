@@ -1,7 +1,7 @@
 # Pivot branch — contributor update
 
-Branch: **`pivot/fat-traces`**  
-Last updated: 3 Oct 2026 (the run reviewer; see **Where things stand** below).
+Branch: **`pivot/fat-traces`**, merged into `master` with the dashboard on 5 Oct 2026  
+Last updated: 5 Oct 2026 (the launch merge; see **Where things stand** below).
 
 Same product: silent failures, origin blame, CI gate (`argus check`).  
 Different capture: fat traces → ledger (notebook) → rules, with an LLM reviewer that has to agree before a judgement call fails CI. No wrapping the graph engine.
@@ -13,6 +13,34 @@ Different capture: fat traces → ledger (notebook) → rules, with an LLM revie
 ## Where things stand (3 Oct 2026)
 
 Read this first; the sections below are the detail, in the order things landed.
+
+**5 Oct: into `master`, with the dashboard.** `master` now carries this branch (the
+run reviewer, #158, included), `dev`'s dashboard redesign (#71, #155, #156) and the
+`master` work the branch had never seen (`argus ignore` #62, `argus check --strict
+warn_as_fail` #77, the batch/abatch plugin tests #76). Additive, as planned:
+`ArgusWatcher` and the wrap path are still there (#83). `dev` was merged against
+`master`@#67, the commit the #71 redesign was cut from: #71 was squashed onto `dev`
+with `master`'s #43–#67 inside it, so git's own base (0.10.5) reported ~50 conflicting
+files where only `ci.yml` and `.gitignore` really conflicted. The dashboard was then
+wired to the fat trace:
+
+- **Every failure type has a label.** The parity guard (`tests/test_ui_parity.py`) only
+  read `failure_type="..."` literals, so the D1–D17 trace rules, the reviewer's
+  `review_confirmed` / `review_verified`, `missing_field_guess`,
+  `subgraph_no_contribution` and `tool_error` — 19 types — all rendered as a grey
+  "Unknown" chip. It now parses `trace_rules.py` and `review.py` as well.
+- **Step detail shows the trace.** Each step lists its tool calls (input, output, the
+  error a tool raised) and what the run reviewer verified, by role.
+- **Rerun follows #79.** The dashboard used to scan the project with an LLM to guess a
+  trace's node functions and save the guess into the run file before a rerun — the
+  path #79 removed from `argus replay`. Now *Rerun node* on a trace takes the node off
+  the app factory (`replay_live`), *Rerun from here* uses it as before, and with no
+  factory the dashboard asks for one. Retrying after entering it keeps the mode you
+  clicked. The factory may return the builder or `graph.compile()` in both modes.
+- **The empty dashboard** pointed new users at `ArgusWatcher(graph)` and an `argus demo`
+  command that does not exist; it now shows `ArgusRecorder().attach(graph)`.
+
+Suite: 1,391 tests pass (5 skipped, 2 xfailed).
 
 **New since 2 Oct: the run reviewer (#149).** A blind probe showed the rules failing
 about half of the healthy runs they had never seen, and the per-step judge having no
@@ -410,6 +438,10 @@ pivot wants; the issue's version of it also deleted `derive_node_fn_refs`, which
 
 Tests: `tests/test_replay_semantics.py`, one per branch, including a guard that replay
 never reaches for `source_locator` again.
+
+The dashboard follows the same table (5 Oct): a trace's *Rerun node* takes the node off
+the app factory, and with no factory it asks for one instead of guessing
+(`tests/test_ui_api.py`).
 
 ### 1. Replay does not continue the graph after the fixed node
 

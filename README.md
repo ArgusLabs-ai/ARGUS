@@ -633,6 +633,8 @@ If the table is empty, the UI is serving a different `.argus` than the project t
 
 - **Distinct failure colors** — crashed (red), silent failure (amber), semantic fail (purple), degraded input (orange), skipped (gray)
 - **Evidence audit trail** — see exactly which signals the LLM judge considered and which it overrode
+- **Fat-trace step detail** — every tool call a step made (input, output, and the error a tool raised even when the node swallowed it), plus what the run reviewer verified on that step
+- **Rerun from the dashboard** — *Rerun node* / *Rerun from here* on a recorder run need the function that builds your graph (`argus ui --app module:build_graph`, or enter it when asked). A trace holds state, not code, and the dashboard never guesses where your code lives.
 - **Side-by-side diff** — compare any two runs node-by-node
 
 ---
