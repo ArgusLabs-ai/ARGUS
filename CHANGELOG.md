@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.1 — 2026-10-06
+
+- README: the quickstart says how to turn on the run reviewer (a key plus node purposes); image links point at ArgusLabs-ai/ARGUS; the validators example uses `ArgusRecorder`. No code changes
+
 ## 0.12.0 — 2026-10-05
 
 - `ArgusRecorder().attach(graph)` — fat-trace capture through LangChain callbacks; nothing in LangGraph is patched. Keeps each node's update, its tool calls and model calls. `ArgusWatcher` still ships as the legacy wrap path
