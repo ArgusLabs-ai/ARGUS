@@ -70,9 +70,11 @@ Empty dashboard → wrong directory or no run yet. Check project root or `$ARGUS
 
 **Optional** — `argus key set` for the LLM judge. Skip it and you still get heuristics.
 
+**Optional** — `argus key set` + one-line node purposes (`ArgusRecorder(purposes={...})`, or draft them with `argus baseline --purposes`) turns on the [run reviewer](#run-reviewer): an LLM pass over the whole pipeline that confirms rule hits and catches hallucinated values and contradictions no rule can see.
+
 ## Bring Your Own Key (BYOK)
 
-AI-powered detection (the semantic judge, LLM investigator, learned trends) uses **your own** key from the provider of your choice — **OpenAI**, **Anthropic** (Claude), or **Google** (Gemini). Set it once and it's saved locally for every future session:
+AI-powered detection (the run reviewer, the semantic judge, LLM investigator, learned trends) uses **your own** key from the provider of your choice — **OpenAI**, **Anthropic** (Claude), or **Google** (Gemini). Set it once and it's saved locally for every future session:
 
 ```bash
 argus key set                          # OpenAI by default — prompts, hidden input
