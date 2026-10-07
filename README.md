@@ -644,7 +644,7 @@ Add the gate to any workflow, after your dependencies are installed:
           pytest-args: tests/          # runs: pytest --argus tests/
 ```
 
-The job fails when a run was not clean. To grade one saved run instead of your tests, pass `run-id:` (or set `ARGUS_RUN_ID`); it runs `argus check <id>`, never `last`. Other inputs: `strict: warn_as_fail`, `version: "==0.12.0"`, `install: "false"` when your requirements already install `argus-agents`, `working-directory`.
+The job fails when a run was not clean. The job summary on the PR names the root-cause node for each failed run and carries its `argus fix` prompt (sanitized: recorded values stay off the page). The failed runs are uploaded as an `argus-runs-*` artifact; unzip it into your project and run `argus ui`, `argus fix <run-id>` or `argus replay <run-id> <node>`. If your tests never invoked a graph, the summary says the gate checked nothing instead of showing a quiet pass. To grade one saved run instead of your tests, pass `run-id:` (or set `ARGUS_RUN_ID`); it runs `argus check <id>`, never `last`. Other inputs: `strict: warn_as_fail`, `version: "==0.12.0"`, `install: "false"` when your requirements already install `argus-agents`, `working-directory`.
 
 ---
 

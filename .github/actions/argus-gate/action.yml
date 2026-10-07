@@ -54,6 +54,7 @@ runs:
       run: python -m pip install --quiet "$ARGUS_SPEC"
 
     - name: ARGUS gate
+      id: gate
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -61,11 +62,48 @@ runs:
         INPUT_PYTEST_ARGS: ${{ inputs.pytest-args }}
         INPUT_STRICT: ${{ inputs.strict }}
       run: |
-        set -euo pipefail
+        set -uo pipefail
+        marker="$RUNNER_TEMP/argus-marker-$$"
+        touch "$marker"
         run_id="${INPUT_RUN_ID:-${ARGUS_RUN_ID:-}}"
+        rc=0
         if [ -n "$run_id" ]; then
-          argus check "$run_id" --strict "$INPUT_STRICT"
+          argus check "$run_id" --strict "$INPUT_STRICT" || rc=$?
+          run_ids="$run_id"
         else
           # Unquoted on purpose: pytest-args is a list of arguments.
-          python -m pytest --argus $INPUT_PYTEST_ARGS
+          python -m pytest --argus $INPUT_PYTEST_ARGS || rc=$?
+          # The runs this step recorded, not a leftover from an earlier step.
+          run_ids=$(find .argus/runs -name '*.json' -newer "$marker" 2>/dev/null \
+            | xargs -r -n1 basename | sed 's/\.json$//' | sort)
         fi
+
+        # The verdict on the PR page; never changes the gate's outcome.
+        python "$GITHUB_ACTION_PATH/summary.py" $run_ids || true
+
+        # Keep the evidence: the runner's .argus/ is gone when the job ends.
+        bundle="$RUNNER_TEMP/argus-runs-$$"
+        mkdir -p "$bundle/.argus/runs"
+        for id in $run_ids; do
+          cp ".argus/runs/$id.json" "$bundle/.argus/runs/" 2>/dev/null || true
+        done
+        {
+          echo "rc=$rc"
+          echo "bundle=$bundle"
+          echo "artifact=argus-runs-$GITHUB_JOB-$GITHUB_RUN_ATTEMPT-$$"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Upload ARGUS runs
+      if: steps.gate.outputs.rc != '0'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.gate.outputs.artifact }}
+        path: ${{ steps.gate.outputs.bundle }}
+        include-hidden-files: true
+        if-no-files-found: ignore
+        retention-days: 14
+
+    - name: Fail if ARGUS failed
+      if: steps.gate.outputs.rc != '0'
+      shell: bash
+      run: exit ${{ steps.gate.outputs.rc }}
