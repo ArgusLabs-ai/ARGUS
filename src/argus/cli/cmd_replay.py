@@ -135,7 +135,7 @@ def replay_run(
         record = load_run(run_id)
     except FileNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")
-        return
+        raise typer.Exit(1)
 
     available = [e.node_name for e in record.steps]
     if from_step not in available:
@@ -149,7 +149,7 @@ def replay_run(
                 f"module:function — did you mean [bold]--app {from_step}[/bold]?"
             )
         console.print(msg)
-        return
+        raise typer.Exit(1)
 
     # If run has stored node_fn_refs, no factory needed at all
     has_node_refs = bool(record.node_fn_refs)
@@ -187,7 +187,7 @@ def replay_run(
             raise typer.Exit(1)
         factory = _import_factory(effective_app)
         if factory is None:
-            return
+            raise typer.Exit(1)
 
     # ── Header ────────────────────────────────────────────────────────────
     mode_label = "single node" if only else "from"
@@ -222,7 +222,7 @@ def replay_run(
     # ── State patch preview ───────────────────────────────────────────────
     if patch is not None:
         if not _print_patch_preview(record, from_step, patch, create_missing):
-            return
+            raise typer.Exit(1)
         if dry_run:
             console.print("  [dim]dry run — nothing was executed[/dim]")
             console.print()
@@ -274,11 +274,11 @@ def replay_run(
             )
     except Exception as e:
         console.print(f"[red]Replay failed:[/red] {e}")
-        return
+        raise typer.Exit(1) from e
 
     if not new_run_id:
         console.print("[yellow]Warning:[/yellow] Could not locate the new replay run.")
-        return
+        raise typer.Exit(1)
     new_record = load_run(new_run_id)
     name_col = max(len(s.node_name) for s in new_record.steps) + 2
 

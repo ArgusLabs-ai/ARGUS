@@ -1336,3 +1336,37 @@ def test_api_fix_returns_the_argus_fix_prompt(project: Path) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_empty_output_is_not_described_as_an_external_call(project: Path) -> None:
+    """`return {}` makes no external call; saying one failed sends the reader
+    hunting for an API that was never there."""
+    record = _record(
+        overall_status="silent_failure",
+        first_failure_step="merge",
+        root_cause_chain=["merge"],
+        steps=[
+            _event(
+                0,
+                "merge",
+                "fail",
+                output_dict={},
+                inspection=_inspection(
+                    is_silent_failure=True,
+                    tool_failures=[
+                        ToolFailure(
+                            failure_type="empty_output",
+                            field_name="_output",
+                            severity="critical",
+                            evidence="node returned an empty state update — no fields produced",
+                        )
+                    ],
+                    message="m",
+                ),
+            )
+        ],
+    )
+    prompt = build_fix_prompt_for_record(record).prompt
+    assert "external call" not in prompt
+    assert "as if the call had succeeded" not in prompt
+    assert "empty state update" in prompt

@@ -63,11 +63,31 @@ _TOOL_FAILURE_PLAIN = {
     "empty_result": "the external call returned an empty result",
     "error_in_data": "the data that came back contained an error payload",
     "partial_failure": "the external call only partly succeeded",
+    "tool_error": "a tool it called raised an error",
+    "empty_output": "no field reached the next node",
     "json_in_string": (
         "the output contained a double-encoded stringified JSON object/array "
         "instead of a parsed structure"
     ),
 }
+
+# Failure types that describe an external call. Anything else (`{}`, a subgraph
+# that wrote nothing outward, …) involved no call, so the prompt must not claim one.
+_EXTERNAL_CALL_TYPES = frozenset(
+    {
+        "error_response",
+        "rate_limit",
+        "empty_result",
+        "error_in_data",
+        "partial_failure",
+        "tool_error",
+    }
+)
+
+
+def _failure_plain(failure_type: str) -> str:
+    return _TOOL_FAILURE_PLAIN.get(failure_type, f"a `{failure_type}` failure was detected")
+
 
 # Present tense, for the "Done when" conditions — the past-tense phrasings above
 # read wrong in a forward-looking success criterion.
@@ -77,6 +97,7 @@ _TOOL_FAILURE_CONDITION = {
     "empty_result": "the external call returns an empty result",
     "error_in_data": "the data that comes back contains an error payload",
     "partial_failure": "the external call only partly succeeds",
+    "tool_error": "a tool it calls raises",
     "json_in_string": (
         "the output contains a double-encoded stringified JSON object/array "
         "instead of a parsed structure"
@@ -632,8 +653,9 @@ def _headline(record: RunRecord, target: str, event: NodeEvent, *, sanitized: bo
         critical_tools = [tf for tf in insp.tool_failures if tf.severity == "critical"]
         if critical_tools:
             tf = critical_tools[0]
-            plain = _TOOL_FAILURE_PLAIN.get(tf.failure_type, "the external call failed")
-            return f"`{target}` returns a result even though {plain}"
+            if tf.failure_type == "empty_output":
+                return f"`{target}` returns an empty state update (`{{}}`)"
+            return f"`{target}` returns a result even though {_failure_plain(tf.failure_type)}"
         if insp.missing_fields:
             succ = _successors(record, target)
             field = _inline(insp.missing_fields[0], 80)
@@ -741,11 +763,15 @@ def _what_went_wrong(
         return paras
 
     for tf in insp.tool_failures:
-        plain = _TOOL_FAILURE_PLAIN.get(tf.failure_type, "the external call failed")
         detail = "" if sanitized else (f" ({_inline(tf.evidence)})" if tf.evidence else "")
+        passed_on = (
+            "The result was kept and passed on as if the call had succeeded."
+            if tf.failure_type in _EXTERNAL_CALL_TYPES
+            else "The result was passed on to the next node as if it were complete."
+        )
         paras.append(
-            f"While producing `{_inline(tf.field_name, 80)}`, {plain}{detail}. The "
-            "result was kept and passed on as if the call had succeeded."
+            f"While producing `{_inline(tf.field_name, 80)}`, "
+            f"{_failure_plain(tf.failure_type)}{detail}. {passed_on}"
         )
 
     if insp.missing_fields:
@@ -826,7 +852,16 @@ def _done_when(
 
     if insp is not None:
         for tf in insp.tool_failures:
-            plain = _TOOL_FAILURE_CONDITION.get(tf.failure_type, "the external call fails")
+            if tf.failure_type == "empty_output":
+                conds.append(f"`{target}` returns at least one field — never an empty `{{}}`.")
+                continue
+            if tf.failure_type not in _TOOL_FAILURE_CONDITION:
+                conds.append(
+                    f"`{target}` no longer produces a `{tf.failure_type}` failure "
+                    f"on `{_inline(tf.field_name, 80)}`."
+                )
+                continue
+            plain = _TOOL_FAILURE_CONDITION[tf.failure_type]
             conds.append(
                 f"When {plain}, `{target}` either raises or retries — it never "
                 f"returns `{_inline(tf.field_name, 80)}` as a successful empty result."
