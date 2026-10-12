@@ -94,11 +94,11 @@ argus key show           # list configured providers (masked); * marks the activ
 argus doctor             # reports BYOK provider / hosted / heuristic-only mode
 ```
 
-You pick the **provider**; ARGUS picks a sensible balanced model for each internal call (a cheap model for the frequent per-node checks, a stronger one for root-cause reasoning). Per-provider resolution order: env var (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) → saved key → (hosted proxy, if you're on the cloud tier) → heuristic-only.
+You pick the **provider**; ARGUS picks a sensible balanced model for each internal call (a cheap model for the frequent per-node checks, a stronger one for root-cause reasoning). Per-provider resolution order: env var (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) → saved key → (hosted proxy, only with `ARGUS_HOSTED_LLM=1`: the prompts carry your pipeline's real values and pass through ARGUS servers) → heuristic-only.
 
 No key? ARGUS still works — it falls back to heuristic-only detection, no crashes.
 
-Hosted cloud sync (`argus login`) is optional and only applies if a hosted backend is configured.
+Hosted cloud sync is opt-in. `argus login` alone uploads nothing; full runs (every node input and output) go up only with `ARGUS_CLOUD_SYNC=1`. To keep a field out of the run file entirely, `ArgusRecorder(redact_keys={"ssn", "api_key"})`.
 
 ---
 
