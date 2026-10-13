@@ -99,6 +99,10 @@ as $$
   select role from admin_users where user_id = auth.uid()
 $$;
 
+-- RLS policies and the admin panel call it as a signed-in user; anon never needs it.
+revoke all on function public.admin_role() from public, anon;
+grant execute on function public.admin_role() to authenticated;
+
 -- ── Row level security ───────────────────────────────────────
 alter table public.tele_cards  enable row level security;
 alter table public.tele_rate   enable row level security;

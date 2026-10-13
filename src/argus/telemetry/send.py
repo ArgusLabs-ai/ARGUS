@@ -28,8 +28,9 @@ from argus.storage import argus_dir
 from argus.telemetry.card import build_card
 
 SETTINGS_FILE = Path.home() / ".argus" / "telemetry.json"
-# ponytail: None until the intake function is deployed (phase 4); inert until then.
-ENDPOINT: str | None = os.environ.get("ARGUS_TELEMETRY_URL") or None
+# The telemetry-intake edge function (supabase/telemetry/). Override for testing.
+INTAKE_URL = "https://hpzvhxodoqlsvbodpxcr.supabase.co/functions/v1/telemetry-intake"
+ENDPOINT: str | None = os.environ.get("ARGUS_TELEMETRY_URL") or INTAKE_URL
 DAILY_CAP = 200
 OUTBOX_KEEP = 500
 TIMEOUT_S = 2.0
