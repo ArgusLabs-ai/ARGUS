@@ -18,6 +18,7 @@ except ImportError:
     raise SystemExit(1)
 
 from argus.cli.cmd_baseline import baseline_for_runs
+from argus.cli.cmd_behavior import behavior_judge, behavior_list, behavior_show, behavior_validate
 from argus.cli.cmd_check import check_run
 from argus.cli.cmd_consumers import propose_for_run
 from argus.cli.cmd_diff import diff_runs
@@ -35,7 +36,7 @@ from argus.cli.cmd_replay import inspect_step, replay_run
 from argus.cli.cmd_show import show_last, show_list, show_run
 from argus.cli.cmd_stats import stats
 from argus.cli.cmd_update import check_for_update
-from argus.storage import list_runs, load_run_text
+from argus.storage import last_run_id, list_runs, load_run_text
 
 app = typer.Typer(
     name="argus",
@@ -58,6 +59,12 @@ ingest_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(ingest_app, name="ingest")
+
+behavior_app = typer.Typer(
+    help="Declarative behavior contracts: validate specs and judge runs against them.",
+    no_args_is_help=True,
+)
+app.add_typer(behavior_app, name="behavior")
 
 
 @ingest_app.command("langsmith")
@@ -139,6 +146,61 @@ def cmd_consumers(
         _console.print("[red]Error:[/red] No runs found in .argus/runs/.")
         raise typer.Exit(1)
     propose_for_run(target, write)
+
+
+@behavior_app.command("validate")
+def cmd_behavior_validate(
+    path: Optional[Path] = typer.Argument(
+        None,
+        help="Spec directory or a single spec file (default: .argus/behaviors).",
+    ),
+) -> None:
+    """Validate behavior spec files: exit 0 when clean, 2 on any problem."""
+    raise typer.Exit(behavior_validate(path))
+
+
+@behavior_app.command("list")
+def cmd_behavior_list() -> None:
+    """List all behavior specs with clause counts."""
+    behavior_list()
+
+
+@behavior_app.command("show")
+def cmd_behavior_show(
+    name: str = typer.Argument(help="Behavior spec name (kebab-case)."),
+) -> None:
+    """Pretty-print one behavior spec and its clauses."""
+    raise typer.Exit(behavior_show(name))
+
+
+@behavior_app.command("judge")
+def cmd_behavior_judge(
+    run_id: str = typer.Argument(help="Run ID, 8-char prefix, or 'last'."),
+    behavior: Optional[str] = typer.Option(
+        None,
+        "--behavior",
+        "-b",
+        help="Judge only this behavior spec (default: all specs).",
+    ),
+    model: str = typer.Option(
+        "gpt-4o-mini",
+        "--model",
+        "-m",
+        help="Judge model.",
+    ),
+) -> None:
+    """Judge a run against the behavior contracts and save the verdicts to the run.
+
+    The judge is a reviewer, not a gate: the exit code reflects command
+    success, never a failed behavior.
+    """
+    if run_id in ("last", "run"):
+        resolved = last_run_id()
+        if resolved is None:
+            _console.print("[red]Error:[/red] No runs found.")
+            raise typer.Exit(1)
+        run_id = resolved
+    raise typer.Exit(behavior_judge(run_id, behavior, model))
 
 
 @app.command("edges")
@@ -224,6 +286,9 @@ _COMMANDS = [
     ("diff <id-a> <id-b>", "diff any two runs side-by-side"),
     ("fix <id>", "print a fix prompt for the root cause, ready to paste"),
     ("ingest langsmith <file>", "grade a LangSmith JSONL export with no live app"),
+    ("behavior validate", "check behavior spec files (exit 2 on problems)"),
+    ("behavior list", "list behavior contracts and clause counts"),
+    ("behavior judge <id>", "judge a run against the contracts, save verdicts"),
     ("edges mod:fn", "write a graph's edges for ingest --edges"),
     ("login", "(optional) hosted cloud sync — only if a hosted backend is configured"),
     ("logout", "clear stored credentials"),

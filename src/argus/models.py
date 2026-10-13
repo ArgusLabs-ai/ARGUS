@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Literal
 
 # Closed status vocabularies. Documented in docs/STATUS.md — change both together.
@@ -89,6 +90,113 @@ class SemanticCheckResult:
 # Kept so older records and tests can name the kinds. None of them gate CI.
 JUDGE_STANDALONE_FAILURE_KINDS = frozenset({"unrelated", "contradiction"})
 JUDGE_STANDALONE_MIN_CONFIDENCE = 0.9
+
+
+# ── Behavior-contract verdict algebra ─────────────────────────────────────────
+#
+# Three-valued on purpose. A boolean judge forces "the run never showed this
+# conduct" into either pass (wrong — absent evidence is not compliance) or
+# fail (wrong — the run may have been cut short before the conduct was due).
+# NA carries *why* it is not a verdict, because "this contract does not apply
+# to this run" and "the trace is too thin to tell" must not be scored the
+# same way. The fold is deterministic Python: the judge never aggregates its
+# own clauses — aggregation is code, so it can be audited and unit-tested.
+
+
+class BehaviorVerdict(str, Enum):
+    """Per-clause judgment from the behavior judge."""
+
+    TRUE = "true"  # the agent did what the clause requires
+    FALSE = "false"  # the agent violated the clause (requires citations)
+    NA = "na"  # no verdict: partial run or genuinely unjudgeable clause
+
+
+# Why a judgment is NA. "not_applicable" is a property of the contract ("this
+# clause only binds runs that take the refund path"), the other two are
+# properties of the evidence (partial run, or conduct that cannot be observed
+# in a recorded trace at all). NA without one of these reasons is invalid.
+NAReason = Literal["not_applicable", "insufficient_evidence", "behavior_not_judgeable"]
+NA_REASONS = frozenset({"not_applicable", "insufficient_evidence", "behavior_not_judgeable"})
+
+# Why a run ended — drives the complete-run absence rule in the behavior
+# judge. None on a clean record that predates the field; a crashed or
+# interrupted one gets the matching reason on load (storage._run_completeness).
+EndReason = Literal["finished", "exception", "interrupted", "cancelled"]
+
+_TRUE_STRINGS = frozenset({"true", "yes", "1", "pass", "passed"})
+_FALSE_STRINGS = frozenset({"false", "no", "0", "fail", "failed", "violation", "violated"})
+_NA_STRINGS = frozenset({"na", "n/a", "not_applicable", "not-applicable", "none", "unknown"})
+
+
+def coerce_behavior_verdict(value: Any) -> BehaviorVerdict | None:
+    """Read a judge's three-valued verdict, or None if it isn't one.
+
+    Mirrors ``semantic_checker._coerce_verdict``'s robustness (real booleans,
+    the string forms models emit under JSON mode, the 0/1 integers they
+    substitute for booleans) extended to NA. ``bool()`` is the wrong tool for
+    the same reason as the two-valued version: bool("false") is True. A
+    missing, null, or confidence-shaped value means the judge gave no verdict
+    and the caller must skip rather than invent one.
+    """
+    if isinstance(value, BehaviorVerdict):
+        return value
+    if isinstance(value, bool):
+        return BehaviorVerdict.TRUE if value else BehaviorVerdict.FALSE
+    if isinstance(value, int) and value in (0, 1):
+        return BehaviorVerdict.TRUE if value else BehaviorVerdict.FALSE
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in _TRUE_STRINGS:
+            return BehaviorVerdict.TRUE
+        if s in _FALSE_STRINGS:
+            return BehaviorVerdict.FALSE
+        if s in _NA_STRINGS:
+            return BehaviorVerdict.NA
+    return None
+
+
+@dataclass(frozen=True)
+class BehaviorJudgment:
+    """One judge verdict for one clause of one behavior spec.
+
+    ``evaluated=False`` marks every path where no real judgment happened —
+    judge unavailable, unrepairable payload, an uncited or unquoted FALSE, an
+    insufficient-evidence NA on a complete run. Unevaluated
+    judgments are excluded from the fold and every score/count: fail closed
+    to *unjudged*, never to pass.
+    """
+
+    behavior: str  # the spec's name
+    clause: str  # the clause heading this judgment is for
+    verdict: BehaviorVerdict
+    na_reason: str | None  # required when verdict is NA; must be in NA_REASONS
+    confidence: float  # 0.0–1.0
+    cited_steps: tuple[int, ...]  # step_index values into the run's steps
+    violated_clause: str | None  # the clause text quoted by a FALSE (whitespace collapsed)
+    reason: str  # the judge's one-sentence justification
+    judge_model: str
+    evaluated: bool = True
+
+
+def fold_behavior_verdicts(
+    judgments: list[BehaviorJudgment] | tuple[BehaviorJudgment, ...],
+) -> BehaviorVerdict:
+    """Deterministic fold over one behavior's clause judgments.
+
+    Any FALSE ⇒ FALSE (one violated clause breaks the contract — clauses are
+    individually judgeable so the contract reads as a conjunction). Else, if
+    every evaluated judgment is NA ⇒ NA. Else TRUE. Unevaluated judgments are
+    excluded entirely, and an empty/fully-unevaluated set folds to NA: with
+    no evidence the only honest answer is "not a verdict", never TRUE. The
+    judge never performs this fold — it is pure Python so the aggregation is
+    auditable and testable, not prompt-interpretable.
+    """
+    evaluated = [j for j in judgments if j.evaluated]
+    if any(j.verdict is BehaviorVerdict.FALSE for j in evaluated):
+        return BehaviorVerdict.FALSE
+    if not evaluated or all(j.verdict is BehaviorVerdict.NA for j in evaluated):
+        return BehaviorVerdict.NA
+    return BehaviorVerdict.TRUE
 
 
 @dataclass
@@ -395,6 +503,20 @@ class RunRecord:
     # Keys: "structural", "heuristic", "judge". Empty on old runs / when a layer
     # ran on no nodes. Distinguishes "checked, clean" from "never checked".
     coverage_summary: dict[str, float] = field(default_factory=dict)
+    # Completeness header for the behavior judge's absence rule. complete=False
+    # means the trace does not cover the whole run (exception/interrupt), so
+    # missing observable conduct folds to NA (insufficient_evidence) instead of
+    # FALSE. Absent in the ~4700 pre-field run files: load_run derives it from
+    # overall_status / interrupted (a crashed or interrupted run is not
+    # complete; the rest are, and keep the strict complete-run rule).
+    # schema_version stays "2" — both fields are optional-with-defaults, which
+    # is the compatibility layer.
+    complete: bool = True
+    end_reason: str | None = None  # None | "finished" | "exception" | "interrupted" | "cancelled"
+    # Behavior-contract judgments appended by `argus behavior judge`
+    # (read-modify-write, the same precedent as `argus locate`). Round-trips
+    # through save_run/load_run; excluded from every score and gate.
+    behavior_judgments: list[BehaviorJudgment] = field(default_factory=list)
 
 
 # ── Correlation layer dataclasses ──────────────────────────────────────────────

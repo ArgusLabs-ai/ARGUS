@@ -1878,6 +1878,20 @@ class ArgusSession:
         else:
             overall_status = "clean"
 
+        # Completeness header for the behavior judge's absence rule: only a
+        # run whose graph ran to its natural end gets complete=True. A crash
+        # or interrupt means steps the contract expected may simply never
+        # have run, and missing conduct on such a trace is NA
+        # (insufficient_evidence), never FALSE. "cancelled" exists in the
+        # vocabulary for future callers (trace ingest, UI cancellation) but
+        # no session path writes it today.
+        if has_crash:
+            run_complete, end_reason = False, "exception"
+        elif has_interrupt:
+            run_complete, end_reason = False, "interrupted"
+        else:
+            run_complete, end_reason = True, "finished"
+
         # After overall_status is decided (a crashed run stays `crashed`) but
         # before first_failure — the omitter ran *before* the crash site, so it
         # is the first failing step, and naming the crash site there would put
@@ -1948,6 +1962,8 @@ class ArgusSession:
             behavior_config=self._behavior_config,
             dry_run=self._dry_run,
             coverage_summary=coverage_summary,
+            complete=run_complete,
+            end_reason=end_reason,
         )
 
         # Load parent run once if this is a replay (reused by correlation + comparison)

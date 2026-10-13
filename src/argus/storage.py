@@ -10,6 +10,8 @@ from argus.findings import collect_findings
 from argus.models import (
     AnomalySignal,
     BehaviorConfig,
+    BehaviorJudgment,
+    BehaviorVerdict,
     CorrelationReport,
     DegradationOrigin,
     FieldMismatch,
@@ -33,6 +35,7 @@ from argus.models import (
     ToolChainFinding,
     ToolFailure,
     ValidatorResult,
+    coerce_behavior_verdict,
 )
 from argus.run_context import record_run_id
 
@@ -323,6 +326,24 @@ def build_replay_tree(run_id: str, max_depth: int = 5) -> dict[str, Any]:
     return _build(run_id, 0)
 
 
+def _run_completeness(data: dict[str, Any]) -> tuple[bool, str | None]:
+    """``(complete, end_reason)`` for a run file.
+
+    Files from before the field have no ``complete``. Reading them all as
+    complete would hold a run a crash or interrupt cut short to the strict
+    absence rule, so derive it from how the run ended, with the
+    ``end_reason`` words ``ArgusSession`` writes (a crash outranks an
+    interrupt there, too). A file that carries ``complete`` is taken as written.
+    """
+    if "complete" in data:
+        return data["complete"], data.get("end_reason")
+    if data.get("overall_status") == "crashed":
+        return False, "exception"
+    if data.get("overall_status") == "interrupted" or data.get("interrupted"):
+        return False, "interrupted"
+    return True, data.get("end_reason")
+
+
 def _deserialize_run(data: dict[str, Any]) -> RunRecord:
     steps = [_deserialize_event(s) for s in data.get("steps", [])]
     bc_data = data.get("behavior_config")
@@ -340,6 +361,7 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
     else:
         # Pre-"2" record: derive the list from the per-step data it already carries.
         findings = collect_findings(steps, tool_chain_findings)
+    complete, end_reason = _run_completeness(data)
     return RunRecord(
         run_id=data["run_id"],
         argus_version=data.get("argus_version", "unknown"),
@@ -378,7 +400,49 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         findings=findings,
         dry_run=data.get("dry_run", False),
         coverage_summary=data.get("coverage_summary", {}),
+        complete=complete,
+        end_reason=end_reason,
+        behavior_judgments=_deserialize_behavior_judgments(data.get("behavior_judgments", [])),
     )
+
+
+def _deserialize_behavior_judgments(items: list[dict[str, Any]]) -> list[BehaviorJudgment]:
+    """Judgments written by `argus behavior judge`, tolerant of hand edits.
+
+    The verdict is coerced (not trusted) because a run file is user-editable
+    JSON: a verdict string a human typed slightly wrong loads as whatever it
+    genuinely says, and one that says nothing loads as NA rather than
+    crashing the reader. The same goes for the fields that gate the fold:
+    only a literal ``true`` counts as evaluated, citations are real ints, and
+    a FALSE left with no citation is unevaluated, as the judge would have made it.
+    """
+    out: list[BehaviorJudgment] = []
+    for j in items:
+        verdict = coerce_behavior_verdict(j.get("verdict"))
+        if verdict is None:
+            verdict = BehaviorVerdict.NA
+        raw_cited = j.get("cited_steps")
+        cited = tuple(
+            v
+            for v in (raw_cited if isinstance(raw_cited, list) else [])
+            if isinstance(v, int) and not isinstance(v, bool)
+        )
+        out.append(
+            BehaviorJudgment(
+                behavior=j.get("behavior", ""),
+                clause=j.get("clause", ""),
+                verdict=verdict,
+                na_reason=j.get("na_reason"),
+                confidence=j.get("confidence", 0.0),
+                cited_steps=cited,
+                violated_clause=j.get("violated_clause"),
+                reason=j.get("reason", ""),
+                judge_model=j.get("judge_model", ""),
+                evaluated=j.get("evaluated") is True
+                and not (verdict is BehaviorVerdict.FALSE and not cited),
+            )
+        )
+    return out
 
 
 def _deserialize_correlation(data: dict[str, Any]) -> CorrelationReport:
