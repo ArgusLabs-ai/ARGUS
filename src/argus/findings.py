@@ -240,14 +240,19 @@ def _event_findings(event: NodeEvent) -> list[Finding]:
         for sig in insp.semantic_signals:
             path = sig.dotted_path or None
             where = f" at `{path}`" if path else ""
+            custom = sig.category == "custom_check"
             out.append(
                 _mk(
                     node=name,
                     type_=sig.category,
                     severity=sig.severity,
                     reason=f"Node `{name}` output{where} matched {sig.sig_id}: {sig.description}.",
-                    source="heuristic",
-                    field_path=path,
+                    # A custom check is an LLM verdict, not a pattern match.
+                    source="llm" if custom else "heuristic",
+                    # A custom check has no field; its spec is what tells two
+                    # signals on one node apart, and collect_findings de-dupes
+                    # by id (as it does for validators, keyed by validator name).
+                    field_path=sig.sig_id if custom else path,
                     confidence=sig.confidence,
                 )
             )

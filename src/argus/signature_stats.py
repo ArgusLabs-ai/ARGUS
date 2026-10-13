@@ -216,7 +216,8 @@ def compute_stats(
 
             for signal in inspection.get("semantic_signals", []):
                 sid = signal.get("sig_id", "")
-                if not sid:
+                # A custom check (``check:<name>``) is a user's own question, not a signature
+                if not sid or signal.get("category") == "custom_check":
                     continue
 
                 # Filter by requested sig_ids

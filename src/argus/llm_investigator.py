@@ -76,10 +76,12 @@ def should_investigate(
             reasons.append(f"crash at '{event.node_name}': {exc_summary}")
         elif event.status == "semantic_fail":
             signals = []
-            if event.inspection and event.inspection.semantic_signals:
-                signals = [
-                    f"{s.sig_id} on {s.dotted_path}" for s in event.inspection.semantic_signals[:3]
+            if event.inspection:
+                # advisory custom checks are not why the judge failed the step
+                rule_signals = [
+                    s for s in event.inspection.semantic_signals if s.category != "custom_check"
                 ]
+                signals = [f"{s.sig_id} on {s.dotted_path}" for s in rule_signals[:3]]
             failed_validators = [
                 v.validator_name for v in event.validator_results if not v.is_valid
             ]
@@ -167,7 +169,9 @@ def _compress_node_summary(record: RunRecord) -> list[dict[str, Any]]:
                 signals["missing_fields"] = insp.missing_fields
             if insp.empty_fields:
                 signals["empty_fields"] = insp.empty_fields
-            if insp.semantic_signals:
+            # advisory custom checks must not steer the investigator's answer
+            rule_signals = [s for s in insp.semantic_signals if s.category != "custom_check"]
+            if rule_signals:
                 signals["semantic_signals"] = [
                     {
                         "id": s.sig_id,
@@ -176,7 +180,7 @@ def _compress_node_summary(record: RunRecord) -> list[dict[str, Any]]:
                         "path": s.dotted_path,
                         "evidence": s.evidence[:60],
                     }
-                    for s in insp.semantic_signals
+                    for s in rule_signals
                 ]
             if signals:
                 summary["inspection"] = signals

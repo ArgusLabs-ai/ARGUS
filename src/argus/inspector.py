@@ -2054,7 +2054,7 @@ def build_root_cause_chain(
                     insp.is_silent_failure
                     or insp.has_tool_failure
                     or insp.tool_failures
-                    or insp.semantic_signals
+                    or any(s.category != "custom_check" for s in insp.semantic_signals)
                 )
             )
             or has_semantic_check_failure

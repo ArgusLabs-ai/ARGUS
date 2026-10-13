@@ -275,6 +275,15 @@ def _propagation_nodes(record: RunRecord, target: str) -> list[str]:
     return matching[0]
 
 
+def _rule_signals(insp: Any) -> list[Any]:
+    """The inspection's rule signals, without custom checks.
+
+    A custom check is advisory: the findings list it, but it is not a defect in the
+    node's code, so it neither opens a fix prompt nor appears in one.
+    """
+    return [s for s in insp.semantic_signals if s.category != "custom_check"]
+
+
 def _has_failure_signal(event: NodeEvent) -> bool:
     """Whether this event carries anything worth writing a fix prompt about."""
     if event.status in _FAILING_STATUSES or event.exception:
@@ -293,7 +302,7 @@ def _has_failure_signal(event: NodeEvent) -> bool:
         or insp.empty_fields
         or insp.type_mismatches
         or insp.tool_failures
-        or insp.semantic_signals
+        or _rule_signals(insp)
         or insp.degraded_fields
         or insp.suspicious_empty_keys
     )
@@ -649,8 +658,9 @@ def _headline(record: RunRecord, target: str, event: NodeEvent, *, sanitized: bo
                 f"{_inline(m.actual_type, 60)} instead of "
                 f"{_inline(m.expected_type, 60)}"
             )
-        if insp.semantic_signals:
-            ss = insp.semantic_signals[0]
+        rule_signals = _rule_signals(insp)
+        if rule_signals:
+            ss = rule_signals[0]
             where = _inline(ss.dotted_path, 80) or "its output"
             return f"`{target}` produces unusable content in `{where}`"
         if insp.degraded_fields:
@@ -786,7 +796,7 @@ def _what_went_wrong(
         else:
             paras.append(f"{head} ({_inline(m.actual_value_repr)}).")
 
-    for ss in insp.semantic_signals:
+    for ss in _rule_signals(insp):
         where = _inline(ss.dotted_path, 80) or "the output"
         evidence = (
             "" if sanitized else (f' Example: "{_inline(ss.evidence)}".' if ss.evidence else "")
@@ -837,7 +847,7 @@ def _done_when(
             conds.append(f"`{target}`'s `{_inline(field, 80)}` value is non-empty.")
         for m in insp.type_mismatches:
             conds.append(f"`{_inline(m.field_name, 80)}` is {_inline(m.expected_type, 60)}.")
-        for ss in insp.semantic_signals:
+        for ss in _rule_signals(insp):
             where = _inline(ss.dotted_path, 80) or "the output"
             # ss.description is registry prose; the raw category slug is an
             # internal enum and reads as broken grammar in a success criterion.

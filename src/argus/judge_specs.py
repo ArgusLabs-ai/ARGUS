@@ -11,10 +11,22 @@ a dependency for a config file is not justified — JSON carries the same
 shape with zero new imports.
 
 Reviewer, not cop — the same rule as the coherence judge. A failing custom
-check attaches a ``SemanticSignal`` (at the spec's severity) to the step's
-inspection once the coherence verdict has been applied, so it shows up in the
-report and the judge never sees it; it never sets ``is_silent_failure`` and
-never moves a step's status, so it cannot fail a build on its own.
+check attaches a ``SemanticSignal`` (category ``custom_check``, at the spec's
+severity) to the step's inspection once the coherence verdict has been applied,
+so it shows up in the report (a Finding with source ``llm``) and the judge never
+sees it. It is advisory and nothing more: it never sets ``is_silent_failure``,
+never moves a step's status or the CI gate, never moves the root-cause origin,
+confidence, summary or timeline, and never makes ``argus fix`` write a prompt.
+Every reader of ``semantic_signals`` that decides something skips the
+``custom_check`` category; the readers that only list signals still show it. A
+passing check attaches nothing.
+
+Checks run on their own thread pool, never the coherence judge's, so a slow
+spec cannot queue ahead of a coherence verdict or cost one.
+
+Custom checks send node input/output to the provider, so they run only when the
+judge switch (``semantic_check``) is on; a spec file chooses *which* nodes are
+asked, not whether the judge is allowed to run.
 
 Verdicts travel the same forced tool-call channel as the coherence judge
 (:mod:`argus.semantic_checker`): the model must answer by calling a function
@@ -116,7 +128,7 @@ def _validate_spec(data: Any, path: Path) -> CheckSpec | None:
         logger.warning("argus check spec %s: 'prompt' must be a non-empty string; skipped", where)
         return None
     severity = data.get("severity", "warning")
-    if severity not in _SEVERITIES:
+    if not isinstance(severity, str) or severity not in _SEVERITIES:
         logger.warning(
             "argus check spec %s: 'severity' must be one of %s; skipped",
             where,
@@ -124,7 +136,7 @@ def _validate_spec(data: Any, path: Path) -> CheckSpec | None:
         )
         return None
     when = data.get("when", "any")
-    if when not in _WHEN_VALUES:
+    if not isinstance(when, str) or when not in _WHEN_VALUES:
         logger.warning(
             "argus check spec %s: 'when' must be one of %s; skipped",
             where,
@@ -181,8 +193,9 @@ def load_check_specs(directory: str | Path) -> list[CheckSpec]:
     """Parse every ``*.json`` spec in ``directory``; never raises.
 
     A missing directory is a no-op (custom checks are opt-in). An invalid
-    spec file is logged and skipped — one malformed file must not take down
-    the checks that do parse, and must never crash a graded run.
+    spec file is logged and skipped, whatever is wrong with it — one malformed
+    file must not take down the checks that do parse, and must never crash a
+    graded run.
     """
     specs: list[CheckSpec] = []
     seen: set[str] = set()
@@ -197,10 +210,10 @@ def load_check_specs(directory: str | Path) -> list[CheckSpec]:
     for path in files:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            spec = _validate_spec(data, path)
+        except Exception as exc:  # RecursionError on deep nesting, odd JSON types, ...
             logger.warning("argus check spec %s: unreadable (%s); skipped", path, exc)
             continue
-        spec = _validate_spec(data, path)
         if spec is None:
             continue
         if spec.name in seen:
@@ -220,20 +233,20 @@ def build_check_tool(spec: CheckSpec) -> dict[str, Any]:
     """The forced-tool-call schema for one spec.
 
     Graded specs take a ``verdict`` enum naming one of the spec's choices;
-    pass/fail specs take a boolean. Both always explain themselves in
-    ``reason``. Built through :func:`argus.semantic_checker.build_verdict_tool`
-    so the whole judge surface shares one tool builder.
+    pass/fail specs take a boolean. Both also explain themselves in ``reason``,
+    listed **last**. Property order is a hint to the model, not a guarantee: a
+    model that follows it writes the verdict first, so a call cut short by
+    ``max_tokens`` loses the explanation rather than the ruling. Gemini does not
+    honor JSON-schema property order, so ``providers.call_google`` also sends
+    ``propertyOrdering``. A model that writes ``reason`` first and is cut leaves
+    no ruling; the check is then skipped, never guessed. Built through
+    :func:`argus.semantic_checker.build_verdict_tool` so the whole judge
+    surface shares one tool builder.
     """
     from argus.semantic_checker import build_verdict_tool
 
-    properties: dict[str, Any] = {
-        "reason": {
-            "type": "string",
-            "maxLength": 200,
-            "description": "One sentence citing the output.",
-        }
-    }
-    required = ["reason"]
+    properties: dict[str, Any] = {}
+    required: list[str] = []
     if spec.choices:
         properties["verdict"] = {
             "type": "string",
@@ -251,6 +264,12 @@ def build_check_tool(spec: CheckSpec) -> dict[str, Any]:
             "description": "true only if the check's condition holds.",
         }
         required.append("pass")
+    properties["reason"] = {
+        "type": "string",
+        "maxLength": 200,
+        "description": "One sentence citing the output.",
+    }
+    required.append("reason")
     return build_verdict_tool(
         CHECK_VERDICT_TOOL_NAME,
         f'Record the verdict for the custom check "{spec.name}". Call exactly once.',

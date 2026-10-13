@@ -28,11 +28,13 @@ import asyncio
 import atexit
 import functools
 import json
+import logging
 import threading
 import time
 import traceback
 import warnings
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as _wait_for_futures
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -70,6 +72,19 @@ from argus.storage import save_run
 from argus.utils.cycle_detection import has_cycles
 from argus.utils.ids import generate_run_id
 from argus.utils.serializer import safe_serialize
+
+logger = logging.getLogger("argus")
+
+# How long finalize waits, in total, for every custom check still running (one
+# spec on one node each). Finalize can run inside the last user node's return,
+# so one shared deadline, not one wait per check: a check still running when it
+# passes is dropped. Same order as the 15s wait for each coherence verdict.
+_CUSTOM_CHECK_TIMEOUT_S = 15.0
+
+# How long the interpreter-exit hook waits for another thread that is already
+# finalizing this session. Finalize is serialized, and a daemon thread stuck
+# mid-finalize (a hung provider call) would otherwise hold exit forever.
+_ATEXIT_FINALIZE_WAIT_S = 30.0
 
 
 @dataclass
@@ -466,10 +481,38 @@ class ArgusSession:
         self._judge_pool: ThreadPoolExecutor | None = None
         self._pending_judges: list[_PendingJudge] = []
         self._pending_judges_lock = threading.Lock()
-        # Custom checks run beside the coherence judge, not through it: their
-        # signals wait here and are attached at finalize, after every verdict.
+        # Custom checks run beside the coherence judge, not through it: one
+        # future per (node, spec), attached at finalize after every verdict.
+        # Entries are (inspection, "<spec> on <node>", future). They get their
+        # own workers: on the pool above a slow spec queues ahead of later
+        # nodes' verdicts, and finalize only waits so long for those.
+        self._check_pool: ThreadPoolExecutor | None = None
+        # Guards `_judge_pool`, `_check_pool` and `_pools_closed`, and nothing
+        # else is taken while it is held (no `self._lock`, no submit, no
+        # shutdown). on_node_end builds the pools under `self._lock`, but
+        # finalize runs outside it (possibly on another thread), so reading the
+        # flag + building + storing a pool is one step under this lock, and so
+        # is finalize's close + swap-to-None. Lock order, outermost first:
+        # `_finalize_lock`, `self._lock`, `_pending_judges_lock`, `_pool_lock`;
+        # nothing takes one of these while holding a later one.
+        self._pool_lock = threading.Lock()
+        # Bumped (under `_pending_judges_lock`) by `begin_new_run` and
+        # `reset_for_resume`. A drain reads it with its snapshot and closes the
+        # run (pools, flag, pending lists) only if it is unchanged: a drain
+        # that outlives its run must not close the next one.
+        self._run_generation = 0
+        # One finalize at a time, held across drain + build + save. Without it
+        # a second finalize (a crash on a parallel branch) saw the first's
+        # emptied snapshot, marked the run complete and saved it before the
+        # first had applied a single verdict. Re-entrant, so the exit hook can
+        # take it with a timeout and then call `_finalize`.
+        self._finalize_lock = threading.RLock()
+        # Set when finalize swaps the pools out: a node that ends after that
+        # builds no pool and queues nothing, since nothing would drain it or
+        # shut that pool down. `begin_new_run` / `reset_for_resume` clear it.
+        self._pools_closed = False
         self._pending_custom_checks: list[
-            tuple[InspectionResult, Future[list[SemanticSignal]]]
+            tuple[InspectionResult, str, Future[SemanticSignal | None]]
         ] = []
         # User-defined custom check specs (.argus/checks/*.json); None = not
         # loaded yet. Loaded lazily on first use and cached per session.
@@ -506,10 +549,21 @@ class ArgusSession:
         """Safety net: persist at interpreter exit if invoke() never completed."""
         if self._completed:
             return
+        # Bounded: another thread mid-finalize may never finish (a daemon
+        # thread stuck in a provider call), and exit must not wait on it.
+        if not self._finalize_lock.acquire(timeout=_ATEXIT_FINALIZE_WAIT_S):
+            logger.warning(
+                "argus atexit finalize skipped: another thread is still finalizing, "
+                "gave up after %gs",
+                _ATEXIT_FINALIZE_WAIT_S,
+            )
+            return
         try:
             self._finalize()
         except Exception:
             pass
+        finally:
+            self._finalize_lock.release()
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
@@ -1151,11 +1205,10 @@ class ArgusSession:
 
             # Fire deferred LLM judge in background thread
             if _deferred_judge:
-                if self._judge_pool is None:
-                    self._judge_pool = ThreadPoolExecutor(
-                        max_workers=4, thread_name_prefix="argus-judge"
-                    )
-                future = self._judge_pool.submit(
+                self._submit_background(
+                    "_judge_pool",
+                    "argus-judge",
+                    f"semantic judge for {node_name!r}",
                     self._run_judge_sync,
                     node_name,
                     input_snap,
@@ -1165,9 +1218,7 @@ class ArgusSession:
                     inspection,
                     ambiguous_signals,
                     prior_rows,
-                )
-                with self._pending_judges_lock:
-                    self._pending_judges.append(
+                    register=lambda future: self._pending_judges.append(
                         _PendingJudge(
                             event=event,
                             future=future,
@@ -1180,32 +1231,34 @@ class ArgusSession:
                             input_snap=input_snap,
                             output_snap=output_snap,
                         )
-                    )
+                    ),
+                )
 
-            # Custom check specs are a user-authored opt-in: gated on LLM
-            # investigation being on and on each spec's own `when`, not on the
-            # coherence judge's gate above. Always background work, in both
-            # judge modes; attached at finalize, after the verdicts.
+            # Custom check specs are a user-authored opt-in for *which* nodes
+            # are asked; they send node input/output to the provider, so they
+            # also need the judge switch (`semantic_check`) on. Each spec's own
+            # `when` gates it, not the coherence judge's gate above. Always
+            # background work on the check pool (never the judge's), one future
+            # per spec, in both judge modes; attached at finalize, after the
+            # verdicts.
             if (
                 inspection is not None
                 and output_snap is not None
                 and self._llm_investigation_config
                 and self._llm_investigation_config.enabled
-                and self._get_check_specs()
+                and self._llm_investigation_config.semantic_check
             ):
-                if self._judge_pool is None:
-                    self._judge_pool = ThreadPoolExecutor(
-                        max_workers=4, thread_name_prefix="argus-judge"
+                for spec in self._get_check_specs():
+                    if spec.when == "warning_signal" and not _had_signals:
+                        continue
+                    self._submit_custom_check(
+                        inspection,
+                        f"{spec.name} on {node_name}",
+                        spec,
+                        node_name,
+                        input_snap,
+                        output_snap,
                     )
-                custom_future = self._judge_pool.submit(
-                    self._run_custom_check_specs,
-                    node_name,
-                    input_snap,
-                    output_snap,
-                    _had_signals,
-                )
-                with self._pending_judges_lock:
-                    self._pending_custom_checks.append((inspection, custom_future))
 
             # Track terminal node completion for parallel-aware finalization
             if node_name in self._terminal_nodes:
@@ -1265,7 +1318,7 @@ class ArgusSession:
         """Run the LLM semantic coherence judge synchronously (with retries).
 
         Custom check specs are not run here: they have their own gate and are
-        attached after this verdict is applied (see ``_run_custom_check_specs``).
+        attached after this verdict is applied (see ``_run_custom_check``).
         """
         return self._run_coherence_with_retries(
             node_name,
@@ -1278,6 +1331,74 @@ class ArgusSession:
             prior_rows,
         )
 
+    def _submit_custom_check(
+        self,
+        inspection: InspectionResult,
+        what: str,
+        spec: Any,
+        node_name: str,
+        input_snap: dict,
+        output_snap: dict,
+    ) -> None:
+        """Queue one custom check on the check pool and list it for the drain."""
+        self._submit_background(
+            "_check_pool",
+            "argus-check",
+            f"custom check {what}",
+            self._run_custom_check,
+            spec,
+            node_name,
+            input_snap,
+            output_snap,
+            register=lambda future: self._pending_custom_checks.append((inspection, what, future)),
+        )
+
+    def _submit_background(
+        self,
+        pool_attr: str,
+        prefix: str,
+        label: str,
+        fn: Callable[..., Any],
+        *args: Any,
+        register: Callable[[Future[Any]], Any],
+    ) -> None:
+        """Queue ``fn`` on the session pool named ``pool_attr`` and ``register`` its future.
+
+        Finalize closes the pools and shuts them down, possibly on another
+        thread while this node is still ending. A verdict or a check is
+        advisory, so losing it to that race is a logged skip, never an
+        exception into the user's node. Once the pools are closed nothing is
+        built or queued: no drain would ever read the future, and nothing
+        would shut the new pool down before interpreter exit joins its worker.
+
+        A drain can also run between the submit and the register. So the
+        closed check and ``register`` (the append to a pending list) are one
+        step under the pending lock, the lock the drain closes the run and
+        clears the lists under: an entry either lands before the drain's last
+        look at the lists, which then cancels it, or finds the run closed and
+        is cancelled here. Nothing runs on after finalize returned unseen.
+        """
+        with self._pool_lock:
+            closed = self._pools_closed
+            pool = getattr(self, pool_attr)
+            if pool is None and not closed:
+                pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix=prefix)
+                setattr(self, pool_attr, pool)
+        if closed:
+            logger.warning("argus %s skipped: the run is already finalized", label)
+            return
+        try:
+            future = pool.submit(fn, *args)
+        except RuntimeError as exc:  # "cannot schedule new futures after shutdown"
+            logger.warning("argus %s skipped: %s", label, exc)
+            return
+        with self._pending_judges_lock:
+            if not self._pools_closed:
+                register(future)
+                return
+        future.cancel()  # a queued one never starts; a running one is never attached
+        logger.warning("argus %s skipped: the run was finalized while it was queued", label)
+
     def _get_check_specs(self) -> list[Any]:
         """Custom check specs for this session, loaded once and cached.
 
@@ -1289,64 +1410,49 @@ class ArgusSession:
                 from argus.judge_specs import default_checks_dir, load_check_specs
 
                 self._check_specs = load_check_specs(default_checks_dir())
-            except Exception:
+            except Exception as exc:
+                logger.warning("argus custom checks disabled: cannot load specs (%s)", exc)
                 self._check_specs = []
         return self._check_specs
 
-    def _run_custom_check_specs(
+    def _run_custom_check(
         self,
+        spec: Any,
         node_name: str,
         input_snap: dict,
         output_snap: dict,
-        has_signals: bool,
-    ) -> list[SemanticSignal]:
-        """Run applicable custom check specs; one signal per evaluated verdict.
+    ) -> SemanticSignal | None:
+        """Run one custom check spec on one node; a signal only for a failing verdict.
 
-        Signals are ``check:<name>``, category ``custom_check``. They are
-        report-level and advisory: this returns them rather than attaching, and
-        ``_apply_deferred_judges`` adds them to the step's inspection only
-        after the coherence verdict is applied. So the judge never sees (or
-        dismisses) them, and they cannot set ``is_silent_failure`` or move the
-        step's status — a custom check, like the judge, cannot fail a build on
-        its own. ``when: warning_signal`` specs only run when ``has_signals``
-        (heuristic signals existed on this step).
+        The signal is ``check:<name>``, category ``custom_check``. It is
+        report-level and advisory: this returns it rather than attaching it, and
+        ``_apply_deferred_judges`` adds it to the step's inspection only after
+        the coherence verdict is applied. So the judge never sees (or dismisses)
+        it, and it cannot set ``is_silent_failure`` or move the step's status —
+        a custom check, like the judge, cannot fail a build on its own. A check
+        that passed, or never got an answer, attaches nothing: a clean step
+        should not carry one finding per spec. Errors propagate to the caller,
+        which logs them against this spec alone.
         """
-        try:
-            specs = self._get_check_specs()
-        except Exception:
-            return []
-        if not specs:
-            return []
         from argus.judge_specs import run_check_spec
 
-        signals: list[SemanticSignal] = []
         model = (
             self._llm_investigation_config.semantic_check_model
             if self._llm_investigation_config
             else "gpt-4o-mini"
         )
-        for spec in specs:
-            if spec.when == "warning_signal" and not has_signals:
-                continue
-            try:
-                verdict = run_check_spec(spec, node_name, input_snap, output_snap, model=model)
-            except Exception:
-                # A broken spec or provider hiccup must never break the judge.
-                continue
-            if not verdict.evaluated:
-                continue
-            signals.append(
-                SemanticSignal(
-                    sig_id=f"check:{verdict.check_name}",
-                    category="custom_check",
-                    severity=verdict.severity if not verdict.passed else "info",
-                    description=verdict.reason,
-                    field_path=(),
-                    evidence=verdict.verdict,
-                    confidence=verdict.score if verdict.score is not None else 0.5,
-                )
-            )
-        return signals
+        verdict = run_check_spec(spec, node_name, input_snap, output_snap, model=model)
+        if not verdict.evaluated or verdict.passed:
+            return None
+        return SemanticSignal(
+            sig_id=f"check:{verdict.check_name}",
+            category="custom_check",
+            severity=verdict.severity,
+            description=verdict.reason,
+            field_path=(),
+            evidence=verdict.verdict,
+            confidence=verdict.score if verdict.score is not None else 0.5,
+        )
 
     def _run_coherence_with_retries(
         self,
@@ -1623,6 +1729,7 @@ class ArgusSession:
     def _apply_deferred_judges(self) -> None:
         """Collect all background LLM judge results and apply to events."""
         with self._pending_judges_lock:
+            generation = self._run_generation
             # Step order, not completion order: `_judge_may_fail_this_step`
             # asks whether anything *earlier* already failed, so a verdict must
             # not be able to jump ahead of the origin it is downstream of.
@@ -1635,7 +1742,10 @@ class ArgusSession:
             try:
                 result = pj.future.result(timeout=15)
                 semantic_check_result, disambiguation_results = result
-            except Exception:
+            except Exception as exc:
+                pj.future.cancel()  # gave up on it: a queued verdict must not start later
+                why = str(exc) or type(exc).__name__  # a bare TimeoutError says nothing
+                logger.warning("argus semantic judge verdict for %r lost: %s", pj.node_name, why)
                 semantic_check_result, disambiguation_results = None, []
 
             new_status = self._apply_judge_verdict(
@@ -1666,15 +1776,78 @@ class ArgusSession:
 
         # After every verdict is applied: the judge neither sees nor dismisses
         # a custom check's signal, and nothing below re-derives status from it.
-        for inspection, custom_future in custom_checks:
-            try:
-                inspection.semantic_signals.extend(custom_future.result(timeout=15))
-            except Exception:
+        # One deadline for all of them: a check still running at it is dropped
+        # (its late result is never attached); one that raises loses only its
+        # own signal. Either way the run goes on, and the log says so.
+        done, _ = _wait_for_futures(
+            [future for _, _, future in custom_checks], timeout=_CUSTOM_CHECK_TIMEOUT_S
+        )
+        dropped: list[str] = []
+        for inspection, what, custom_future in custom_checks:
+            if custom_future not in done:
+                custom_future.cancel()  # a queued check must not start after finalize returns
+                dropped.append(what)
                 continue
+            try:
+                signal = custom_future.result()
+            except Exception as exc:
+                why = str(exc) or type(exc).__name__  # no message: name the type
+                logger.warning("argus custom check %s skipped: %s", what, why)
+                continue
+            if signal is not None:
+                inspection.semantic_signals.append(signal)
+        if dropped:
+            logger.warning(
+                "argus custom checks: dropped %d still running after %gs so the run is not "
+                "held up (%s%s)",
+                len(dropped),
+                _CUSTOM_CHECK_TIMEOUT_S,
+                ", ".join(dropped[:5]),
+                ", ..." if len(dropped) > 5 else "",
+            )
 
-        if self._judge_pool is not None:
-            self._judge_pool.shutdown(wait=False)
-            self._judge_pool = None
+        # Close the run: pools, flag and whatever was queued since the snapshot,
+        # in one step under the pending lock (the lock a node's submit
+        # registers under, so an entry is either in the lists here or sees the
+        # closed flag). Only if no new run began while this drain waited: that
+        # run's pools and pending entries are not this drain's to close, and a
+        # drain that did would refuse every later submit of the new run. What
+        # this drain gave up on was already cancelled above.
+        with self._pending_judges_lock:
+            superseded = generation != self._run_generation
+            if not superseded:
+                with self._pool_lock:
+                    self._pools_closed = True
+                    pools = (self._judge_pool, self._check_pool)
+                    self._judge_pool = self._check_pool = None
+                # A submit that succeeded after the snapshot at the top is
+                # nobody's to wait for: it is counted, cancelled, never attached.
+                late = [pj.future for pj in self._pending_judges]
+                late += [future for _, _, future in self._pending_custom_checks]
+                self._pending_judges.clear()
+                self._pending_custom_checks.clear()
+        if superseded:
+            logger.warning(
+                "argus: a new run began while this finalize was draining; the pools and "
+                "pending verdicts now belong to that run and were left alone"
+            )
+            return
+        # A plain shutdown, never `cancel_futures`: another finalize (a crash on
+        # a parallel branch) can reach this point with an empty snapshot while
+        # this one still waits on futures queued in the same pools, and
+        # cancelling the whole queue would lose those. Each drain cancels only
+        # the futures it gave up on.
+        for pool in pools:
+            if pool is not None:
+                pool.shutdown(wait=False)
+        if late:
+            for future in late:
+                future.cancel()
+            logger.warning(
+                "argus: %d verdict(s) or custom check(s) submitted after finalize took its "
+                "snapshot were cancelled, not attached",
+                len(late),
+            )
 
     def _check_degraded_input(
         self,
@@ -1819,6 +1992,11 @@ class ArgusSession:
     # ── Finalization ──────────────────────────────────────────────────────────
 
     def _finalize(self) -> None:
+        """Persist the run, one caller at a time (a second waits, then finds it done)."""
+        with self._finalize_lock:
+            self._finalize_serialized()
+
+    def _finalize_serialized(self) -> None:
         # Collect all deferred LLM judge results before aggregating status
         self._apply_deferred_judges()
 
@@ -2111,7 +2289,7 @@ class ArgusSession:
             warnings.warn(
                 f"[argus] Failed to save run {record.run_id}: {exc}. "
                 "Check that the working directory is writable.",
-                stacklevel=2,
+                stacklevel=3,  # past `_finalize`, to whoever asked for the finalize
             )
 
     def finalize(self) -> None:
@@ -2149,9 +2327,15 @@ class ArgusSession:
             self._defer_auto_finalize = False
             self._node_attempt_counts = {}
             self._completed_terminals = set()
+        # The bump comes before the flag is cleared, so a drain of the run that
+        # just ended either closes the pools first (and this reopens them) or
+        # sees the new generation and leaves them alone.
         with self._pending_judges_lock:
+            self._run_generation += 1
             self._pending_judges.clear()
             self._pending_custom_checks.clear()
+        with self._pool_lock:
+            self._pools_closed = False
         atexit.register(self._atexit_finalize)
 
     def reset_for_resume(self, parent_run_id: str) -> None:
@@ -2172,3 +2356,7 @@ class ArgusSession:
             self._defer_auto_finalize = False
             self._node_attempt_counts = {}
             self._completed_terminals = set()
+        with self._pending_judges_lock:
+            self._run_generation += 1
+        with self._pool_lock:
+            self._pools_closed = False
