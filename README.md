@@ -717,7 +717,7 @@ For AI setup prompts and integration guides, visit **[arguslabs.in](https://argu
 
 ---
 
-**v0.12.1** — [changelog](https://github.com/ArgusLabs-ai/ARGUS/releases)
+**v0.12.2** — [changelog](https://github.com/ArgusLabs-ai/ARGUS/releases)
 
 ## Contributing
 
