@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from argus.failure_class import valid_failure_class
 from argus.findings import collect_findings
 from argus.models import (
     AnomalySignal,
@@ -656,6 +657,7 @@ def _deserialize_findings(items: list[dict[str, Any]]) -> list[Finding]:
             origin_node=f.get("origin_node"),
             confidence=f.get("confidence"),
             suppressed=f.get("suppressed", False),
+            failure_class=valid_failure_class(f.get("failure_class")),
         )
         for f in items
     ]

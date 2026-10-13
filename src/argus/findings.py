@@ -9,6 +9,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from argus.models import Finding
+from argus.tool_chain_analyzer import detect_recovered_after_transient
 
 if TYPE_CHECKING:
     from argus.models import NodeEvent, RunRecord, ToolChainFinding
@@ -137,6 +138,7 @@ def _mk(
     field_path: str | None = None,
     origin_node: str | None = None,
     confidence: float | None = None,
+    failure_class: str | None = None,
 ) -> Finding:
     return Finding(
         id=_fid(type_, node, field_path, source),
@@ -148,6 +150,7 @@ def _mk(
         field_path=field_path,
         origin_node=origin_node,
         confidence=confidence,
+        failure_class=failure_class,
     )
 
 
@@ -235,6 +238,9 @@ def _event_findings(event: NodeEvent) -> list[Finding]:
                     reason=f"Node `{name}` output field `{tf.field_name}` shows {tf.evidence}.",
                     source="heuristic",
                     field_path=tf.field_name,
+                    # PRD-02: lets `argus check --format json` sort "retry the
+                    # run" from "fix the code" without reading the evidence.
+                    failure_class=tf.failure_class,
                 )
             )
         for sig in insp.semantic_signals:
@@ -346,6 +352,11 @@ def collect_findings(
     Retried and skipped steps are excluded (they do not count against the run —
     see docs/STATUS.md). Order: critical before warning before info, then step
     order. Ids are content hashes, stable across runs of the same graph.
+
+    Recovered-after-transient (PRD-02): a node that passed after its retried
+    steps absorbed >=2 transient or rate-limited tool failures gets an info
+    ``recovered_after_transient`` finding. It annotates a clean run that hid a
+    flaky dependency and never gates.
     """
     raw: list[tuple[int, Finding]] = []
     for ev in steps:
@@ -364,6 +375,24 @@ def collect_findings(
                     reason=f"Across {', '.join(tc.nodes_involved) or 'the run'}: {tc.description}",
                     source="heuristic",
                     confidence=tc.confidence,
+                ),
+            )
+        )
+
+    for node, absorbed in detect_recovered_after_transient(steps):
+        raw.append(
+            (
+                10**9,
+                _mk(
+                    node=node,
+                    type_="recovered_after_transient",
+                    severity="info",
+                    reason=(
+                        f"Node `{node}` absorbed {absorbed} transient failures across retried "
+                        "steps before it passed; the run is clean, but a dependency looks flaky."
+                    ),
+                    source="heuristic",
+                    origin_node=node,
                 ),
             )
         )
