@@ -109,6 +109,28 @@ class ToolFailure:
 
 
 @dataclass(frozen=True)
+class CheckVerdict:
+    """Result of one user-defined custom semantic check (YAML/JSON spec).
+
+    Advisory only — the reviewer role applies to custom checks exactly as it
+    does to the coherence judge: a failing check surfaces as a semantic
+    signal for the report, never as a gate failure on its own.
+    """
+
+    check_name: str  # the spec's ``name``
+    verdict: str  # the choice key the judge picked (or "pass"/"fail")
+    score: float | None  # 0.0–1.0 from the spec's choice table; None for pass/fail specs
+    passed: bool
+    reason: str
+    severity: str  # "critical" | "warning" | "info" — the spec's severity
+    prompt_tokens: int
+    completion_tokens: int
+    # False when the judge never actually ran (no key, provider error,
+    # unparseable verdict) — mirrors SemanticCheckResult.evaluated.
+    evaluated: bool = True
+
+
+@dataclass(frozen=True)
 class SemanticSignal:
     """A semantic degradation signal emitted by the heuristic engine."""
 

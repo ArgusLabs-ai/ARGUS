@@ -466,6 +466,14 @@ class ArgusSession:
         self._judge_pool: ThreadPoolExecutor | None = None
         self._pending_judges: list[_PendingJudge] = []
         self._pending_judges_lock = threading.Lock()
+        # Custom checks run beside the coherence judge, not through it: their
+        # signals wait here and are attached at finalize, after every verdict.
+        self._pending_custom_checks: list[
+            tuple[InspectionResult, Future[list[SemanticSignal]]]
+        ] = []
+        # User-defined custom check specs (.argus/checks/*.json); None = not
+        # loaded yet. Loaded lazily on first use and cached per session.
+        self._check_specs: list[Any] | None = None
 
         # Sync shared community signatures from Supabase in the background.
         # Non-blocking — if not logged in or network fails, silently skips.
@@ -1037,6 +1045,10 @@ class ArgusSession:
                 if status == "pass":
                     status = "semantic_fail"
 
+            # `when: warning_signal` custom checks read the heuristic signals as
+            # they stand now, before a judge verdict can drop any.
+            _had_signals = bool(inspection and inspection.semantic_signals)
+
             # Per-node LLM judge: fire in background thread, apply in _finalize.
             # Deterministic status is recorded now; LLM can refine it later.
             semantic_check_result: SemanticCheckResult | None = None
@@ -1170,6 +1182,31 @@ class ArgusSession:
                         )
                     )
 
+            # Custom check specs are a user-authored opt-in: gated on LLM
+            # investigation being on and on each spec's own `when`, not on the
+            # coherence judge's gate above. Always background work, in both
+            # judge modes; attached at finalize, after the verdicts.
+            if (
+                inspection is not None
+                and output_snap is not None
+                and self._llm_investigation_config
+                and self._llm_investigation_config.enabled
+                and self._get_check_specs()
+            ):
+                if self._judge_pool is None:
+                    self._judge_pool = ThreadPoolExecutor(
+                        max_workers=4, thread_name_prefix="argus-judge"
+                    )
+                custom_future = self._judge_pool.submit(
+                    self._run_custom_check_specs,
+                    node_name,
+                    input_snap,
+                    output_snap,
+                    _had_signals,
+                )
+                with self._pending_judges_lock:
+                    self._pending_custom_checks.append((inspection, custom_future))
+
             # Track terminal node completion for parallel-aware finalization
             if node_name in self._terminal_nodes:
                 self._completed_terminals.add(node_name)
@@ -1225,7 +1262,104 @@ class ArgusSession:
         ambiguous_signals: list[SemanticSignal],
         prior_rows: list[Any] | None = None,
     ) -> tuple[SemanticCheckResult | None, list[DisambiguationResult]]:
-        """Run the LLM semantic judge synchronously (with retries)."""
+        """Run the LLM semantic coherence judge synchronously (with retries).
+
+        Custom check specs are not run here: they have their own gate and are
+        attached after this verdict is applied (see ``_run_custom_check_specs``).
+        """
+        return self._run_coherence_with_retries(
+            node_name,
+            input_snap,
+            output_snap,
+            validator_results,
+            anomaly_signals,
+            inspection,
+            ambiguous_signals,
+            prior_rows,
+        )
+
+    def _get_check_specs(self) -> list[Any]:
+        """Custom check specs for this session, loaded once and cached.
+
+        A missing spec directory is the common case (custom checks are
+        opt-in) and means an empty list, not an error.
+        """
+        if self._check_specs is None:
+            try:
+                from argus.judge_specs import default_checks_dir, load_check_specs
+
+                self._check_specs = load_check_specs(default_checks_dir())
+            except Exception:
+                self._check_specs = []
+        return self._check_specs
+
+    def _run_custom_check_specs(
+        self,
+        node_name: str,
+        input_snap: dict,
+        output_snap: dict,
+        has_signals: bool,
+    ) -> list[SemanticSignal]:
+        """Run applicable custom check specs; one signal per evaluated verdict.
+
+        Signals are ``check:<name>``, category ``custom_check``. They are
+        report-level and advisory: this returns them rather than attaching, and
+        ``_apply_deferred_judges`` adds them to the step's inspection only
+        after the coherence verdict is applied. So the judge never sees (or
+        dismisses) them, and they cannot set ``is_silent_failure`` or move the
+        step's status — a custom check, like the judge, cannot fail a build on
+        its own. ``when: warning_signal`` specs only run when ``has_signals``
+        (heuristic signals existed on this step).
+        """
+        try:
+            specs = self._get_check_specs()
+        except Exception:
+            return []
+        if not specs:
+            return []
+        from argus.judge_specs import run_check_spec
+
+        signals: list[SemanticSignal] = []
+        model = (
+            self._llm_investigation_config.semantic_check_model
+            if self._llm_investigation_config
+            else "gpt-4o-mini"
+        )
+        for spec in specs:
+            if spec.when == "warning_signal" and not has_signals:
+                continue
+            try:
+                verdict = run_check_spec(spec, node_name, input_snap, output_snap, model=model)
+            except Exception:
+                # A broken spec or provider hiccup must never break the judge.
+                continue
+            if not verdict.evaluated:
+                continue
+            signals.append(
+                SemanticSignal(
+                    sig_id=f"check:{verdict.check_name}",
+                    category="custom_check",
+                    severity=verdict.severity if not verdict.passed else "info",
+                    description=verdict.reason,
+                    field_path=(),
+                    evidence=verdict.verdict,
+                    confidence=verdict.score if verdict.score is not None else 0.5,
+                )
+            )
+        return signals
+
+    def _run_coherence_with_retries(
+        self,
+        node_name: str,
+        input_snap: dict,
+        output_snap: dict,
+        validator_results: list[ValidatorResult],
+        anomaly_signals: list[AnomalySignal],
+        inspection: InspectionResult | None,
+        ambiguous_signals: list[SemanticSignal],
+        prior_rows: list[Any] | None = None,
+    ) -> tuple[SemanticCheckResult | None, list[DisambiguationResult]]:
+        """Run the LLM semantic coherence check synchronously (with retries)."""
         _judge_exc: Exception | None = None
         result: SemanticCheckResult | None = None
         dis_results: list[DisambiguationResult] = []
@@ -1494,6 +1628,8 @@ class ArgusSession:
             # not be able to jump ahead of the origin it is downstream of.
             pending = sorted(self._pending_judges, key=lambda p: p.event.step_index)
             self._pending_judges.clear()
+            custom_checks = list(self._pending_custom_checks)
+            self._pending_custom_checks.clear()
 
         for pj in pending:
             try:
@@ -1527,6 +1663,14 @@ class ArgusSession:
                 pj.event.status = new_status
             pj.event.semantic_check = semantic_check_result
             pj.event.disambiguation_results = disambiguation_results
+
+        # After every verdict is applied: the judge neither sees nor dismisses
+        # a custom check's signal, and nothing below re-derives status from it.
+        for inspection, custom_future in custom_checks:
+            try:
+                inspection.semantic_signals.extend(custom_future.result(timeout=15))
+            except Exception:
+                continue
 
         if self._judge_pool is not None:
             self._judge_pool.shutdown(wait=False)
@@ -2007,6 +2151,7 @@ class ArgusSession:
             self._completed_terminals = set()
         with self._pending_judges_lock:
             self._pending_judges.clear()
+            self._pending_custom_checks.clear()
         atexit.register(self._atexit_finalize)
 
     def reset_for_resume(self, parent_run_id: str) -> None:

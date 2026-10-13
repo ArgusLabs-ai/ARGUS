@@ -32,9 +32,17 @@ def _call_proxy(
     max_tokens: int = 2000,
     temperature: float = 0.3,
     response_format: dict[str, str] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
-    """Call the ARGUS LLM proxy edge function (hosted deployments only)."""
+    """Call the ARGUS LLM proxy edge function (hosted deployments only).
+
+    ponytail: the proxy speaks plain chat completions, so ``tools``/
+    ``tool_choice`` are dropped here rather than rejected — the judge prompts
+    already carry the full JSON contract, and callers fall back to parsing
+    ``content`` when the response carries no ``tool_calls``.
+    """
     if not SUPABASE_URL or _PROXY_URL is None:
         return {"error": "No LLM configured. Set OPENAI_API_KEY or run: argus key set"}
 
@@ -93,13 +101,18 @@ def create_chat_completion(
     max_tokens: int = 2000,
     temperature: float = 0.3,
     response_format: dict[str, str] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
     api_key: str | None = None,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
     """Create a chat completion via BYOK direct call, else the hosted proxy.
 
     Returns a dict in the OpenAI response shape on success, or {"error": "..."}
-    on failure. Callers should check for the "error" key.
+    on failure. Callers should check for the "error" key. ``tools``/
+    ``tool_choice`` follow the OpenAI chat-completions convention; adapters
+    that cannot honor them (the hosted proxy) silently drop them so the caller
+    can fall back to parsing message content.
     """
     provider, key = _resolve_byok(api_key)
     if key:
@@ -107,6 +120,13 @@ def create_chat_completion(
         actual_model = providers.resolve_model(
             provider, model, user_config.get_model_overrides()
         )
+        # tools/tool_choice are passed only when set so third-party adapter
+        # stubs with the old signature keep working.
+        extra: dict[str, Any] = {}
+        if tools:
+            extra["tools"] = tools
+        if tool_choice:
+            extra["tool_choice"] = tool_choice
         return adapter(
             api_key=key,
             model=actual_model,
@@ -115,6 +135,7 @@ def create_chat_completion(
             temperature=temperature,
             response_format=response_format,
             timeout=timeout,
+            **extra,
         )
     return _call_proxy(
         model=model,
@@ -122,6 +143,8 @@ def create_chat_completion(
         max_tokens=max_tokens,
         temperature=temperature,
         response_format=response_format,
+        tools=tools,
+        tool_choice=tool_choice,
         timeout=timeout,
     )
 

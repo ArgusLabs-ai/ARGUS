@@ -5,6 +5,12 @@ inspection findings, AND ambiguous heuristic signals as context.
 Returns a coherence ruling plus disambiguation verdicts — one LLM
 call instead of two.
 
+The verdict travels a forced tool-call channel (record_verdict): the model
+must emit its ruling as function arguments, so no prose-wrapping, truncation,
+or boolean-as-string repair stands between the ruling and the parser. The
+free-text JSON path is kept as a one-shot fallback for providers that drop
+the tools, and every skip still lands on heuristics (evaluated=False).
+
 Uses gpt-4o-mini by default — ~600 tokens in, ~150 tokens out.
 """
 
@@ -19,7 +25,9 @@ from argus.models import DisambiguationResult, SemanticCheckResult, SemanticSign
 
 _SYSTEM_PROMPT = (
     "You review the flags a deterministic checker already raised on one node "
-    "in an AI pipeline. You do not hunt for new failures. Respond with JSON:\n"
+    "in an AI pipeline. You do not hunt for new failures. Record your verdict "
+    "by calling the record_verdict tool — its schema mirrors this contract. "
+    "If no tool is available to you, respond with JSON instead:\n"
     '{"pass": bool, "reason": "<1 sentence>", "confidence": <0.0-1.0>, '
     '"failure_kind": "unrelated"|"contradiction"|"empty_or_missing"|"other", '
     '"evidence_considered": ["<signal1>", ...], '
@@ -242,6 +250,157 @@ def _coerce_verdict(value: Any) -> bool | None:
 
 
 _FAILURE_KINDS = frozenset({"unrelated", "contradiction", "empty_or_missing", "other"})
+
+
+def build_verdict_tool(
+    name: str,
+    description: str,
+    properties: dict[str, Any],
+    required: list[str],
+) -> dict[str, Any]:
+    """One OpenAI-shaped function tool from a JSON-schema property map.
+
+    Shared by the coherence judge and custom check specs so every LLM verdict
+    in ARGUS travels the same forced-tool-call channel.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+JUDGE_VERDICT_TOOL = build_verdict_tool(
+    "record_verdict",
+    (
+        "Record the coherence verdict for the node under review. Call this "
+        "exactly once, with every field filled in."
+    ),
+    {
+        "pass": {
+            "type": "boolean",
+            "description": (
+                "true if the Prior Signals are wrong or the output is a "
+                "reasonable response to the input; false if those signals are "
+                "correct and should be kept."
+            ),
+        },
+        "reason": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "One sentence: why it passes or fails.",
+        },
+        "confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "How confident you are in the verdict, 0.0-1.0.",
+        },
+        "failure_kind": {
+            "type": "string",
+            "enum": sorted(_FAILURE_KINDS),
+            "description": (
+                "When pass is false, which kind of failure: unrelated (output "
+                "is about a different subject than the input), contradiction "
+                "(output asserts the opposite of the input or itself), "
+                "empty_or_missing (a field is blank, null or absent), other. "
+                "Use other when pass is true."
+            ),
+        },
+        "evidence_considered": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Every Prior Signal you evaluated (empty if none).",
+        },
+        "overridden_signals": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Prior Signals you chose to PASS despite (empty if you agreed "
+                "with all or none were provided)."
+            ),
+        },
+        "disambiguation_verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "sig_id": {"type": "string"},
+                    "is_failure": {"type": "boolean"},
+                    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "reason": {"type": "string", "maxLength": 200},
+                },
+                "required": ["sig_id", "is_failure", "confidence", "reason"],
+                "additionalProperties": False,
+            },
+            "description": (
+                "One verdict per Ambiguous Heuristic Match: is_failure true "
+                "means the pattern is a real problem, false means legitimate "
+                "content that happens to match."
+            ),
+        },
+    },
+    ["pass", "reason", "confidence", "failure_kind"],
+)
+
+# Forced function call: the verdict must arrive as tool arguments, not prose.
+JUDGE_TOOL_CHOICE = {"type": "function", "function": {"name": "record_verdict"}}
+
+
+def _verdict_from_tool_calls(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Pull the first tool call's arguments out of a normalized completion.
+
+    Providers are normalized (in providers.py) so the arguments are always a
+    JSON string; a dict is also tolerated for hand-rolled test doubles.
+    Arguments cut off by ``max_tokens`` get the same truncation repair as the
+    content path. Anything still unparseable gave no verdict, and the caller
+    falls back to the free-text content path exactly once, then skips.
+    """
+    choices = result.get("choices") or []
+    if not choices:
+        return None
+    message = choices[0].get("message") or {}
+    tool_calls = message.get("tool_calls") or []
+    if not tool_calls:
+        return None
+    arguments = (tool_calls[0].get("function") or {}).get("arguments")
+    if isinstance(arguments, dict):
+        return arguments
+    if not isinstance(arguments, str) or not arguments.strip():
+        return None
+    try:
+        parsed = json.loads(arguments)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return _repair_truncated_json(arguments.lstrip())
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _parse_verdict_payload(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Verdict payload from a completion, tool-call first, free-text fallback.
+
+    The structured channel is tried first; a response with no tool_calls
+    (older mocks, providers that dropped the tools, the hosted proxy) is read
+    as free text through the repairing extractor — one fallback, then the
+    caller skips.
+    """
+    parsed = _verdict_from_tool_calls(result)
+    if parsed is not None:
+        return parsed
+    choices = result.get("choices") or []
+    if not choices:
+        return None
+    raw = (choices[0].get("message") or {}).get("content")
+    if not isinstance(raw, str):
+        return None
+    return _extract_json_object(raw)
 
 
 def _coerce_failure_kind(value: Any) -> str:
@@ -479,6 +638,8 @@ def check_semantic_coherence(
             max_tokens=max_tokens,
             temperature=0.0,
             response_format={"type": "json_object"},
+            tools=[JUDGE_VERDICT_TOOL],
+            tool_choice=JUDGE_TOOL_CHOICE,
             timeout=8.0 if amb else 5.0,
         )
         elapsed = (time.perf_counter() - t0) * 1000
@@ -490,8 +651,7 @@ def check_semantic_coherence(
         if not choices:
             # No completion at all — the judge never ruled on anything.
             return _skip_result("check skipped: judge returned no completion", model, elapsed), []
-        raw = choices[0]["message"]["content"]
-        parsed = _extract_json_object(raw)
+        parsed = _parse_verdict_payload(result)
         if parsed is None:
             return _skip_result(
                 "check skipped: Unterminated string / invalid JSON from judge",
