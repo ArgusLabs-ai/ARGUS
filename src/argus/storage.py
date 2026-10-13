@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from argus.claim_models import deserialize_claim_verdicts
 from argus.failure_class import valid_failure_class
 from argus.findings import collect_findings
 from argus.models import (
@@ -416,6 +417,7 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         complete=complete,
         end_reason=end_reason,
         behavior_judgments=_deserialize_behavior_judgments(data.get("behavior_judgments", [])),
+        claim_verdicts=deserialize_claim_verdicts(data.get("claim_verdicts", [])),
         judge_scores=_deserialize_judge_scores(data.get("judge_scores")),
     )
 

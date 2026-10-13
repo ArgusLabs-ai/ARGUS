@@ -162,6 +162,14 @@ def check_run(
         if f.type == "recovered_after_transient":
             console.print(f"  [dim]note[/dim]  {escape(f.reason)}")
 
+    # Reviewer surface, never a gate input: `argus claims` annotates the run with
+    # broken promises, and the verdict below reads only the deterministic layers.
+    # The reason carries a claim an LLM lifted out of node output, so it is escaped.
+    for f in (f for f in record.findings if f.type == "broken_claim"):
+        origin = f"  [dim](origin: {escape(f.origin_node)})[/dim]" if f.origin_node else ""
+        console.print(f"  [yellow]warning[/yellow]  broken_claim  {escape(f.node)}{origin}")
+        console.print(f"      [dim]{escape(f.reason)}[/dim]")
+
     if passed:
         console.print("  [bold green]✓[/bold green]  pass")
         console.print()

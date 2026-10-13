@@ -158,7 +158,9 @@ optional `field_path`, `origin_node`, `confidence`, `suppressed`, `failure_class
 (`fatal | transient | rate_limited` on tool-failure findings, else null). Built at finalize by
 `findings.collect_findings`; retried/skipped steps contribute nothing (they only feed
 the info finding `recovered_after_transient`). Records written before
-`schema_version` "2" get the list back-filled on load. Consumers should read this instead of
+`schema_version` "2" get the list back-filled on load. `argus claims` later adds
+`broken_claim` warnings (`origin_node` is the node that made the claim, `field_path` the
+claim id) and, on a re-run, replaces only those. Consumers should read this instead of
 walking `steps[].inspection / validator_results / anomaly_signals / semantic_check`.
 
 ## Related vocabularies (do not confuse with statuses)

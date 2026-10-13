@@ -20,6 +20,7 @@ except ImportError:
 from argus.cli.cmd_baseline import baseline_for_runs
 from argus.cli.cmd_behavior import behavior_judge, behavior_list, behavior_show, behavior_validate
 from argus.cli.cmd_check import check_run
+from argus.cli.cmd_claims import claims_run
 from argus.cli.cmd_consumers import propose_for_run
 from argus.cli.cmd_diff import diff_runs
 from argus.cli.cmd_doctor import doctor
@@ -293,6 +294,7 @@ _COMMANDS = [
     ("behavior validate", "check behavior spec files (exit 2 on errors, 0 on warnings)"),
     ("behavior list", "list behavior contracts and clause counts"),
     ("behavior judge <id>", "judge a run against the contracts, save verdicts"),
+    ("claims <id>", "check what steps claimed about state against later steps; save verdicts"),
     ("edges mod:fn", "write a graph's edges for ingest --edges"),
     ("login", "(optional) hosted cloud sync — only if a hosted backend is configured"),
     ("logout", "clear stored credentials"),
@@ -578,6 +580,19 @@ def cmd_check(
         argus check last --strict warn_as_fail
     """
     check_run(run_id, output_format=output_format, fail_on=fail_on, strict=strict)
+
+
+@app.command("claims")
+def cmd_claims(
+    run_id: Annotated[str, typer.Argument(help="Run ID, 8-char prefix, or 'last'.")],
+    model: Annotated[str, typer.Option("--model", "-m", help="Judge model.")] = "gpt-4o-mini",
+) -> None:
+    """Extract and verify what steps claimed about state; broken claims become warnings.
+
+    The verifier is a reviewer, not a gate: the exit code reflects command
+    success, never a broken claim.
+    """
+    raise typer.Exit(claims_run(_resolve_selector(run_id), model))
 
 
 @app.command("list")

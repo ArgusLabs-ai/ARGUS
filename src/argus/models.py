@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Literal
 
+from argus.claim_models import ClaimVerdict
 from argus.failure_class import classify_failure_class, status_from_text, valid_failure_class
 
 # Closed status vocabularies. Documented in docs/STATUS.md — change both together.
@@ -559,6 +560,10 @@ class RunRecord:
     replay_comparison: ReplayComparisonResult | None = None
     loop_analyses: list[LoopAnalysisResult] = field(default_factory=list)
     tool_chain_findings: list[ToolChainFinding] = field(default_factory=list)
+    # Cross-step claim verdicts (PRD-10) appended by `argus claims <run-id>`
+    # (read-modify-write, like `behavior_judgments`). Audit data: a broken one
+    # surfaces as a `broken_claim` warning finding, never as a gate input.
+    claim_verdicts: list[ClaimVerdict] = field(default_factory=list)
     # Flat, normalized list of every failure signal on the run (schema_version >= "2").
     # Back-filled on load for older records. See docs/STATUS.md and findings.py.
     findings: list[Finding] = field(default_factory=list)
