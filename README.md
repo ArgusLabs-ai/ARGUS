@@ -100,6 +100,8 @@ No key? ARGUS still works — it falls back to heuristic-only detection, no cras
 
 Hosted cloud sync is opt-in. `argus login` alone uploads nothing; full runs (every node input and output) go up only with `ARGUS_CLOUD_SYNC=1`. To keep a field out of the run file entirely, `ArgusRecorder(redact_keys={"ssn", "api_key"})`.
 
+Telemetry: after each run Argus sends a small anonymous **shape card** (rule IDs, verdict, and the type and length of each output, never a value or a name) so we can measure which rules are right. Turn it off with `argus telemetry off`, `ARGUS_TELEMETRY=0` or `DO_NOT_TRACK=1`. Exactly what is sent: [docs/DATA.md](docs/DATA.md).
+
 ---
 
 ## Quick Start (manual)
@@ -620,6 +622,8 @@ argus login                          # (optional) sign in for hosted cloud sync
 argus logout                         # clear stored credentials
 argus whoami                         # show current login status
 argus update                         # check for newer release
+argus telemetry status|on|off        # anonymous shape cards (docs/DATA.md)
+argus telemetry show-last            # print the last card sent, exactly as sent
 ```
 
 ---

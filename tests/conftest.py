@@ -14,6 +14,9 @@ def tmp_argus_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".argus" / "runs").mkdir(parents=True)
     monkeypatch.setattr("argus.llm_proxy.is_available", lambda: False)
+    # Our own suite never sends telemetry or touches the real ~/.argus/telemetry.json.
+    monkeypatch.setenv("ARGUS_TELEMETRY", "0")
+    monkeypatch.setattr("argus.telemetry.send.SETTINGS_FILE", tmp_path / "telemetry.json")
     monkeypatch.setattr(
         "argus.session.ArgusSession._sync_shared_signatures",
         staticmethod(lambda: None),

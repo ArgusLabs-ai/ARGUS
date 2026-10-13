@@ -131,6 +131,14 @@ def save_run(record: RunRecord) -> Path:
     except Exception:
         pass  # cloud sync is best-effort
 
+    # Telemetry: a shape card (no values, no names), on by default. docs/DATA.md
+    try:
+        from argus.telemetry.send import send_run
+
+        send_run(record)
+    except Exception:
+        pass  # telemetry is best-effort
+
     return path
 
 

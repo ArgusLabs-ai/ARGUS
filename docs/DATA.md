@@ -4,8 +4,10 @@ Argus sends one small **shape card** after each graded run so we can see which
 rules catch real failures and which fire on healthy runs. A shape card carries
 no value your pipeline produced and no name your code chose.
 
-> Status: the card format is final (`src/argus/data/share_card.schema.json`).
-> The sender ships in 0.13.0. Until then, Argus sends nothing automatically.
+> Status: the card format and the sender are built
+> (`src/argus/telemetry/`). A build sends only once its intake address is
+> set; until the intake is deployed, released versions send nothing.
+> `argus telemetry status` says which case you are in.
 
 ## Turn it off
 
