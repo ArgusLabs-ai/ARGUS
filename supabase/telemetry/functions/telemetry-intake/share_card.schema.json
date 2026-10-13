@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ArgusLabs-ai/ARGUS/blob/master/src/argus/data/share_card.schema.json",
+  "title": "Argus shape card",
+  "description": "Everything automatic telemetry sends about one run. No value a pipeline produced, and no name it chose, can be expressed here: names are keyed hashes, values are type + length + a fixed feature list. The intake rejects any field not listed. See docs/DATA.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "install", "run", "argus_version", "python", "ci", "fingerprint", "status", "graph", "steps", "findings", "blamed"],
+  "properties": {
+    "schema": {"type": "integer", "enum": [1]},
+    "install": {"type": "string", "pattern": "^i_[0-9a-z_]{1,40}$"},
+    "run": {"$ref": "#/$defs/run_hash"},
+    "argus_version": {"$ref": "#/$defs/version"},
+    "langgraph_version": {"anyOf": [{"$ref": "#/$defs/version"}, {"type": "null"}]},
+    "python": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+    "ci": {"type": "boolean"},
+    "fingerprint": {"type": "string", "pattern": "^g_[0-9a-f]{10}$"},
+    "status": {"$ref": "#/$defs/word"},
+    "duration_ms": {"type": ["integer", "null"], "minimum": 0},
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges", "cyclic"],
+      "properties": {
+        "nodes": {"type": "integer", "minimum": 0},
+        "edges": {"type": "integer", "minimum": 0},
+        "cyclic": {"type": "boolean"}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "structural": {"type": "number"},
+        "heuristic": {"type": "number"},
+        "judge": {"type": "number"}
+      }
+    },
+    "blamed": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/name_hash"}},
+    "steps": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/step"}},
+    "findings": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/finding"}}
+  },
+  "$defs": {
+    "name_hash": {"type": "string", "pattern": "^k_[0-9a-f]{10}$"},
+    "run_hash": {"type": "string", "pattern": "^r_[0-9a-f]{10}$"},
+    "field_path": {"type": "string", "pattern": "^k_[0-9a-f]{10}(\\.k_[0-9a-f]{10}){0,7}$"},
+    "version": {"type": "string", "pattern": "^[0-9A-Za-z.+-]{1,32}$"},
+    "word": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,47}$"},
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "status", "attempt", "error", "tools", "review"],
+      "properties": {
+        "node": {"$ref": "#/$defs/name_hash"},
+        "status": {"$ref": "#/$defs/word"},
+        "attempt": {"type": "integer", "minimum": 0},
+        "ms": {"type": "integer", "minimum": 0},
+        "error": {"type": "boolean"},
+        "update": {"anyOf": [{"$ref": "#/$defs/shape"}, {"type": "null"}]},
+        "tools": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/tool"}},
+        "review": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/review"}}
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "error"],
+      "properties": {
+        "name": {"$ref": "#/$defs/name_hash"},
+        "error": {"type": "boolean"},
+        "output": {"$ref": "#/$defs/shape"}
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "kind"],
+      "properties": {
+        "role": {"$ref": "#/$defs/word"},
+        "kind": {"$ref": "#/$defs/word"}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "severity", "source", "node", "heuristic", "suppressed"],
+      "properties": {
+        "type": {"$ref": "#/$defs/word"},
+        "severity": {"$ref": "#/$defs/word"},
+        "source": {"$ref": "#/$defs/word"},
+        "node": {"$ref": "#/$defs/name_hash"},
+        "origin": {"anyOf": [{"$ref": "#/$defs/name_hash"}, {"type": "null"}]},
+        "field": {"anyOf": [{"$ref": "#/$defs/field_path"}, {"type": "null"}]},
+        "heuristic": {"type": "boolean"},
+        "confidence": {"type": ["number", "null"]},
+        "suppressed": {"type": "boolean"}
+      }
+    },
+    "shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t"],
+      "properties": {
+        "t": {"enum": ["null", "bool", "int", "float", "string", "array", "object", "other", "truncated"]},
+        "v": {"type": "boolean"},
+        "len": {"type": "integer", "minimum": 0},
+        "f": {
+          "type": "array",
+          "maxItems": 11,
+          "items": {"enum": ["empty", "multiline", "json_like", "url", "email_like", "numeric", "done_word", "pending_word", "error_word", "refusal", "placeholder"]}
+        },
+        "item": {"$ref": "#/$defs/shape"},
+        "keys": {"type": "object", "maxProperties": 50, "propertyNames": {"pattern": "^k_[0-9a-f]{10}$"}, "additionalProperties": {"$ref": "#/$defs/shape"}},
+        "more": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}
