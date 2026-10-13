@@ -109,12 +109,18 @@ def _node_structural_weight(event: NodeEvent) -> float:
 def _is_behavioral_only(event: NodeEvent) -> bool:
     """True if the node's signals are exclusively behavioral anomalies
     with no structural evidence (tool failures, semantic signals, missing fields).
+
+    A user-defined ``custom_check`` signal is an advisory opinion, not
+    structural evidence: it must not lift the behavioral-only cap.
     """
     insp = event.inspection
     has_structural = False
     if insp is not None:
         has_structural = bool(
-            insp.tool_failures or insp.semantic_signals or insp.missing_fields or insp.empty_fields
+            insp.tool_failures
+            or any(s.category != "custom_check" for s in insp.semantic_signals)
+            or insp.missing_fields
+            or insp.empty_fields
         )
     return not has_structural and bool(event.anomaly_signals)
 
@@ -155,8 +161,11 @@ def _brief_signal_summary(event: NodeEvent) -> str:
             parts.append(f"tool {tf.failure_type}")
         if insp.missing_fields:
             parts.append(f"missing: {', '.join(insp.missing_fields[:2])}")
-        if insp.semantic_signals:
-            parts.append(insp.semantic_signals[0].sig_id)
+        # A custom check is advisory: it is listed in the findings, not named
+        # as what is wrong with this node.
+        rule_signals = [s for s in insp.semantic_signals if s.category != "custom_check"]
+        if rule_signals:
+            parts.append(rule_signals[0].sig_id)
     if event.anomaly_signals:
         parts.append(f"anomaly: {event.anomaly_signals[0].anomaly_id}")
     return "; ".join(parts) if parts else "no signals"

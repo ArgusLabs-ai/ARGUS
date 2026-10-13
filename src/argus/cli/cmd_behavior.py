@@ -15,7 +15,12 @@ from typing import Optional
 from rich.console import Console
 from rich.markup import escape
 
-from argus.behaviors import default_behaviors_dir, load_behavior_specs, validate_behaviors
+from argus.behaviors import (
+    clause_hash,
+    default_behaviors_dir,
+    load_behavior_specs,
+    validate_behaviors,
+)
 from argus.models import BehaviorVerdict, fold_behavior_verdicts
 
 console = Console()
@@ -28,7 +33,10 @@ _FOLD_LABELS = {
 
 
 def behavior_validate(path: Optional[Path]) -> int:
-    """Validate spec files; returns 0 when clean, 2 when any problem exists.
+    """Validate spec files; returns 0 when there are no errors, 2 when there are any.
+
+    Warnings (an empty clause, a spec with no clauses) are printed but do not
+    change the exit code.
 
     ``path`` is a directory or one spec file. With no ``path`` the default
     directory is checked, and its absence is fine (specs are opt-in); a
@@ -111,7 +119,7 @@ def behavior_judge(run_id: str, behavior: Optional[str], model: str) -> int:
     clauses are reported as "unjudged" so an offline run never prints a
     misleading all-NA summary as if the judge had spoken.
     """
-    from argus.behavior_judge import judge_run_behaviors
+    from argus.behavior_judge import _TRAJECTORY_BUDGET, judge_run_behaviors, omitted_steps
     from argus.storage import load_run, save_run
 
     try:
@@ -140,9 +148,20 @@ def behavior_judge(run_id: str, behavior: Optional[str], model: str) -> int:
 
     # A re-run that could not judge a clause (no key, a transient 429, an
     # uncitable FALSE) must not erase a verdict an earlier run already earned:
-    # per clause, the stored evaluated judgment stands in for an unjudged one.
-    earned = {(j.behavior, j.clause): j for j in record.behavior_judgments if j.evaluated}
+    # per clause, the stored evaluated judgment stands in for an unjudged one
+    # — but only while the clause text is the one it was judged against. A
+    # rewritten clause is a different contract, and a judgment saved before
+    # the hash existed cannot prove it still matches: both stay unjudged, and
+    # the summary says how many earlier verdicts that cost.
+    current = {(s.name, c.name): clause_hash(c.text) for s in specs for c in s.clauses}
+    earned = {
+        (j.behavior, j.clause): j
+        for j in record.behavior_judgments
+        if j.evaluated and j.clause_hash and j.clause_hash == current.get((j.behavior, j.clause))
+    }
+    stored = {(j.behavior, j.clause) for j in record.behavior_judgments if j.evaluated}
     kept: dict[str, int] = {}
+    dropped: dict[str, int] = {}
     merged = []
     for j in judgments:
         old = earned.get((j.behavior, j.clause))
@@ -151,6 +170,8 @@ def behavior_judge(run_id: str, behavior: Optional[str], model: str) -> int:
             kept[j.behavior] = kept.get(j.behavior, 0) + 1
         else:
             merged.append(j)
+            if not j.evaluated and (j.behavior, j.clause) in stored:
+                dropped[j.behavior] = dropped.get(j.behavior, 0) + 1
 
     # Read-modify-write, the `argus locate` precedent: append to what the
     # record already carries (prior judgments from an earlier run of this
@@ -160,7 +181,7 @@ def behavior_judge(run_id: str, behavior: Optional[str], model: str) -> int:
         j for j in record.behavior_judgments if j.behavior not in judged_names
     ]
     record.behavior_judgments.extend(merged)
-    path = save_run(record)
+    path = save_run(record, local_only=True)  # a rewrite: never re-upload the run
 
     by_behavior: dict[str, list] = {}
     for j in merged:
@@ -173,8 +194,36 @@ def behavior_judge(run_id: str, behavior: Optional[str], model: str) -> int:
         line = f"  [{style}]{_FOLD_LABELS[fold]:<4}[/{style}]  {escape(name)}"
         if unevaluated:
             line += f"  [dim]({unevaluated} clause(s) unjudged)[/dim]"
+        if fold is BehaviorVerdict.NA and any(
+            j.evaluated
+            and j.verdict is BehaviorVerdict.NA
+            and j.na_reason == "insufficient_evidence"
+            for j in js
+        ):
+            # the cause: the run itself was cut short, or only the judge's view of a finished one
+            cause = (
+                "insufficient evidence on a partial run"
+                if not record.complete
+                else "insufficient evidence: the judge's trajectory view was truncated"
+            )
+            line += f"  [dim]({cause})[/dim]"
         if kept.get(name):
             line += f"  [dim]({kept[name]} clause(s) kept from an earlier judgment)[/dim]"
+        if dropped.get(name):
+            line += (
+                f"  [dim]({dropped[name]} earlier verdict(s) not kept: "
+                "the clause changed or cannot be checked)[/dim]"
+            )
         console.print(line)
+    if omitted_steps(record):  # whatever the clauses read: the view, not the verdicts, is cut
+        console.print(
+            "  [dim]The judge's view of this run omitted steps to fit its "
+            f"{_TRAJECTORY_BUDGET:,}-character trajectory budget, so no clause could be "
+            "judged TRUE from it and an NA may only mean the missing steps were not seen.[/dim]"
+        )
     console.print(f"\n  [green]Saved to {escape(str(path))}[/green]")
+    from argus.cloud import is_logged_in
+
+    if is_logged_in():  # the cloud copy of this run does not get these verdicts
+        console.print("  [dim]Verdicts are saved locally and are not synced to the cloud.[/dim]")
     return 0

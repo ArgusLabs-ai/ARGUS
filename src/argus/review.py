@@ -433,7 +433,8 @@ def settle_step_signals(events: list[NodeEvent], review: Review) -> None:
     Runs before the whole-trace rules, so a demoted step is not treated as an
     origin that stops their scan. Only a step whose every critical signal is
     accounted for here is touched; anything else stays exactly as the
-    inspector left it.
+    inspector left it. A custom check is advisory and never counts as one of
+    those signals (it cannot hold a step at ``fail``).
     """
     if not review.ok:
         return
@@ -449,7 +450,10 @@ def settle_step_signals(events: list[NodeEvent], review: Review) -> None:
             or insp.missing_fields
             or insp.empty_fields
             or insp.type_mismatches
-            or any(s.severity == "critical" for s in insp.semantic_signals)
+            or any(
+                s.severity == "critical" and s.category != "custom_check"
+                for s in insp.semantic_signals
+            )
             or any(a.severity == "critical" for a in e.anomaly_signals)
             or any(v.is_blocking for v in e.validator_results)
         ):
@@ -501,7 +505,7 @@ def _warning_signal(e: NodeEvent) -> str | None:
             if t.severity == "warning" and t.failure_type not in _NOT_A_SIGNAL:
                 return t.failure_type
         for s in insp.semantic_signals:
-            if s.severity == "warning":
+            if s.severity == "warning" and s.category != "custom_check":
                 return s.sig_id
     for a in e.anomaly_signals:
         if a.severity == "warning" and a.anomaly_id not in _NOT_A_SIGNAL:

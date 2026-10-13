@@ -102,17 +102,24 @@ def _to_json_serializable(obj: Any) -> Any:
     return str(obj)
 
 
-def save_run(record: RunRecord) -> Path:
+def save_run(record: RunRecord, *, local_only: bool = False) -> Path:
     """Write a completed RunRecord to .argus/runs/<run-id>.json atomically.
 
     If the user is logged in to ARGUS cloud, the run is also pushed
     to Supabase in a background thread (non-blocking).
+
+    ``local_only`` is for rewriting a run that is already saved (``argus
+    behavior judge`` appending verdicts): just the file, with no cloud push
+    — the run may have been kept off the cloud on purpose — and none of the
+    first-save bookkeeping (hit counts, run-id registration).
     """
     path = _runs_path() / f"{record.run_id}.json"
     tmp = path.with_suffix(".tmp")
     data = _to_json_serializable(record)
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.rename(path)
+    if local_only:
+        return path
     record_run_id(record.run_id)
 
     # Update hit metadata for learned/shared signatures, then prune stale ones
@@ -333,7 +340,10 @@ def _run_completeness(data: dict[str, Any]) -> tuple[bool, str | None]:
     complete would hold a run a crash or interrupt cut short to the strict
     absence rule, so derive it from how the run ended, with the
     ``end_reason`` words ``ArgusSession`` writes (a crash outranks an
-    interrupt there, too). A file that carries ``complete`` is taken as written.
+    interrupt there, too). A file that carries ``complete`` is taken as
+    written, ``end_reason="unknown"`` (finalized at process exit) included.
+    An old file that ended clean is assumed complete: nothing in it says
+    whether the process was cut off, so it keeps the strict rule.
     """
     if "complete" in data:
         return data["complete"], data.get("end_reason")
@@ -440,6 +450,7 @@ def _deserialize_behavior_judgments(items: list[dict[str, Any]]) -> list[Behavio
                 judge_model=j.get("judge_model", ""),
                 evaluated=j.get("evaluated") is True
                 and not (verdict is BehaviorVerdict.FALSE and not cited),
+                clause_hash=j["clause_hash"] if isinstance(j.get("clause_hash"), str) else "",
             )
         )
     return out

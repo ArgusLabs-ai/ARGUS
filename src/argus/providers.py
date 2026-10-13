@@ -1,12 +1,15 @@
 """Multi-provider LLM adapters (BYOK).
 
-Each adapter takes OpenAI-shaped arguments and returns a response normalized
-to the OpenAI chat-completions shape:
+Each adapter takes OpenAI-shaped arguments and returns a response in the
+OpenAI chat-completions shape. OpenAI's own response passes through as is
+(extra fields and all; ``content`` may be ``None`` on a tool call); Anthropic's
+and Gemini's are converted to the minimum callers read:
 
-    {"choices": [{"message": {"content": "..."}}],
+    {"choices": [{"message": {"content": "...", "tool_calls": [...]}}],
      "usage": {"prompt_tokens": int, "completion_tokens": int}}
 
-or {"error": "..."} on failure. This lets every existing caller keep reading
+(``tool_calls`` only when the model made one) or {"error": "..."} on failure.
+This lets every existing caller keep reading
 ``result["choices"][0]["message"]["content"]`` and ``result["usage"]``
 regardless of which provider actually served the request.
 
@@ -146,7 +149,7 @@ def call_openai(
     tool_choice: str | dict[str, Any] | None = None,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
-    """Call OpenAI chat completions. Response already matches the target shape.
+    """Call OpenAI chat completions. The response is the target shape, passed through.
 
     Reasoning models (``o1`` / ``o3`` / ``o4-mini`` …) reject ``temperature`` and
     ``max_tokens``; they take ``max_completion_tokens``, which also has to cover
@@ -284,14 +287,22 @@ def _google_schema_type(value: Any) -> Any:
     while JSON schema uses lowercase; every other keyword is identical enough
     to pass through — except ``additionalProperties``, which Gemini's
     function-declaration schema does not list, so it is dropped at every depth.
+
+    Gemini does not honor the order of a JSON schema's ``properties``, so every
+    object schema also gets ``propertyOrdering``, Gemini's own field for it.
+    That is what lets a tool ask for its verdict before its reason.
     """
     if isinstance(value, dict):
-        out = {}
+        out: dict[str, Any] = {}
         for k, v in value.items():
             if k == "additionalProperties":
                 continue
             if k == "type" and isinstance(v, str):
                 out[k] = v.upper()
+            elif k == "properties" and isinstance(v, dict):
+                # a name -> schema map, not a schema: a property may be called "type"
+                out[k] = {name: _google_schema_type(sub) for name, sub in v.items()}
+                out["propertyOrdering"] = list(v)
             else:
                 out[k] = _google_schema_type(v)
         return out
@@ -330,8 +341,8 @@ def call_google(
     """Call Google Gemini generateContent and normalize to the OpenAI shape.
 
     Forced tool calls come back as ``functionCall`` parts and are re-shaped
-    into OpenAI ``message.tool_calls`` (arguments serialized to a JSON string
-    so both providers read identically downstream).
+    into OpenAI ``message.tool_calls`` (arguments serialized to a JSON string,
+    as OpenAI sends them).
     """
     system, convo = _split_system(messages)
     contents = [
@@ -345,7 +356,9 @@ def call_google(
         "maxOutputTokens": max_tokens,
         "temperature": temperature,
     }
-    if response_format and response_format.get("type") == "json_object":
+    # Gemini rejects function calling combined with a JSON response mime type
+    # (HTTP 400); with tools set, the tool call is the structured channel.
+    if response_format and response_format.get("type") == "json_object" and not tools:
         generation_config["responseMimeType"] = "application/json"
 
     payload: dict[str, Any] = {"contents": contents, "generationConfig": generation_config}

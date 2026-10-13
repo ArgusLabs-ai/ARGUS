@@ -130,11 +130,15 @@ def finish(
     session: ArgusSession,
     consumers: ConsumerMap | None,
     unfinished: Iterable[str] = (),
+    root_error: BaseException | str | None = None,
 ) -> None:
     """Ledger → reviewer → rules → contextual → reviewer verdicts → verdict.
 
     ``unfinished`` names steps that started but never reported an update; any
-    at all refuses the run.
+    at all refuses the run. ``root_error`` is what the graph run itself raised,
+    outside any node — the steps may all be clean and the run still did not
+    finish, so it is saved as ``complete=False`` (it does not change a step's
+    grade).
     """
     unfinished = list(unfinished)
     if unfinished:
@@ -206,6 +210,7 @@ def finish(
     # Everything after this is the existing ARGUS brain: per-step structure,
     # tool and semantic checks already ran inside on_node_end; finalize rolls
     # them up, applies the judge last, collects findings and saves the run.
+    session._root_error = root_error
     session.finalize()
 
     # Do not write ARGUS_RUN_ID here (#90). One attach serves many runs

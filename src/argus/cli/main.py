@@ -155,7 +155,7 @@ def cmd_behavior_validate(
         help="Spec directory or a single spec file (default: .argus/behaviors).",
     ),
 ) -> None:
-    """Validate behavior spec files: exit 0 when clean, 2 on any problem."""
+    """Validate behavior spec files: exit 0 unless there are errors (then 2); warnings exit 0."""
     raise typer.Exit(behavior_validate(path))
 
 
@@ -186,7 +186,11 @@ def cmd_behavior_judge(
         "gpt-4o-mini",
         "--model",
         "-m",
-        help="Judge model.",
+        help=(
+            "Judge model, used as given with an OpenAI key. With an Anthropic or Google key "
+            "it is only a tier hint (mini/flash/haiku = cheap, anything else = capable): the "
+            "model configured for that tier runs, not this name."
+        ),
     ),
 ) -> None:
     """Judge a run against the behavior contracts and save the verdicts to the run.
@@ -286,7 +290,7 @@ _COMMANDS = [
     ("diff <id-a> <id-b>", "diff any two runs side-by-side"),
     ("fix <id>", "print a fix prompt for the root cause, ready to paste"),
     ("ingest langsmith <file>", "grade a LangSmith JSONL export with no live app"),
-    ("behavior validate", "check behavior spec files (exit 2 on problems)"),
+    ("behavior validate", "check behavior spec files (exit 2 on errors, 0 on warnings)"),
     ("behavior list", "list behavior contracts and clause counts"),
     ("behavior judge <id>", "judge a run against the contracts, save verdicts"),
     ("edges mod:fn", "write a graph's edges for ingest --edges"),

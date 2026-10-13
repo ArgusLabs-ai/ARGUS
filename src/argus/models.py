@@ -121,7 +121,13 @@ NA_REASONS = frozenset({"not_applicable", "insufficient_evidence", "behavior_not
 # Why a run ended — drives the complete-run absence rule in the behavior
 # judge. None on a clean record that predates the field; a crashed or
 # interrupted one gets the matching reason on load (storage._run_completeness).
-EndReason = Literal["finished", "exception", "interrupted", "cancelled"]
+# "unknown": nobody told ARGUS the run was over — it was finalized at process
+# exit and nothing proves it had reached its end, so it may have been cut off
+# anywhere: there was no topology, the graph is conditional (its edge map cannot
+# say which branch a router took), or an edge map names a node that never ran.
+# "cancelled": the caller abandoned a streamed run (ArgusWatcher)
+# before its last node ran, or the user aborted it (KeyboardInterrupt).
+EndReason = Literal["finished", "exception", "interrupted", "cancelled", "unknown"]
 
 _TRUE_STRINGS = frozenset({"true", "yes", "1", "pass", "passed"})
 _FALSE_STRINGS = frozenset({"false", "no", "0", "fail", "failed", "violation", "violated"})
@@ -161,9 +167,9 @@ class BehaviorJudgment:
 
     ``evaluated=False`` marks every path where no real judgment happened —
     judge unavailable, unrepairable payload, an uncited or unquoted FALSE, an
-    insufficient-evidence NA on a complete run. Unevaluated
-    judgments are excluded from the fold and every score/count: fail closed
-    to *unjudged*, never to pass.
+    insufficient-evidence NA on a complete run, a TRUE on a trajectory view
+    that omits steps. Unevaluated judgments are excluded from the fold and
+    every score/count: fail closed to *unjudged*, never to pass.
     """
 
     behavior: str  # the spec's name
@@ -172,10 +178,17 @@ class BehaviorJudgment:
     na_reason: str | None  # required when verdict is NA; must be in NA_REASONS
     confidence: float  # 0.0–1.0
     cited_steps: tuple[int, ...]  # step_index values into the run's steps
-    violated_clause: str | None  # the clause text quoted by a FALSE (whitespace collapsed)
+    # The model's own quote behind a FALSE, whitespace-collapsed but otherwise as given: it
+    # may carry Markdown or curly quotes the clause text does not (the judge matched it
+    # against the clause body on a normalized form), so it is not a slice of the clause.
+    violated_clause: str | None
     reason: str  # the judge's one-sentence justification
     judge_model: str
     evaluated: bool = True
+    # sha256[:16] of the clause text this was judged against; "" on a judgment
+    # that predates the field. A re-run keeps an earlier verdict only while the
+    # clause still hashes to this — a rewritten clause is a different contract.
+    clause_hash: str = ""
 
 
 def fold_behavior_verdicts(
@@ -183,18 +196,28 @@ def fold_behavior_verdicts(
 ) -> BehaviorVerdict:
     """Deterministic fold over one behavior's clause judgments.
 
-    Any FALSE ⇒ FALSE (one violated clause breaks the contract — clauses are
-    individually judgeable so the contract reads as a conjunction). Else, if
-    every evaluated judgment is NA ⇒ NA. Else TRUE. Unevaluated judgments are
-    excluded entirely, and an empty/fully-unevaluated set folds to NA: with
-    no evidence the only honest answer is "not a verdict", never TRUE. The
-    judge never performs this fold — it is pure Python so the aggregation is
-    auditable and testable, not prompt-interpretable.
+    Any evaluated FALSE ⇒ FALSE (one violated clause breaks the contract —
+    clauses are individually judgeable so the contract reads as a
+    conjunction). Else, if any clause is unevaluated, or is an evaluated NA
+    for ``insufficient_evidence`` ⇒ NA: part of the contract could not be
+    judged for want of evidence and may hide a violation, so the behavior
+    cannot be called satisfied. Else, if every judgment is NA (or there are
+    none) ⇒ NA: with no evidence the only honest answer is "not a verdict",
+    never TRUE. Else TRUE: an NA that says the clause does not apply
+    (``not_applicable``) or cannot be observed in any trace
+    (``behavior_not_judgeable``) is left out of the score, because nothing
+    was hidden. The judge never performs this fold — it is pure Python so the
+    aggregation is auditable and testable, not prompt-interpretable.
     """
-    evaluated = [j for j in judgments if j.evaluated]
-    if any(j.verdict is BehaviorVerdict.FALSE for j in evaluated):
+    if any(j.evaluated and j.verdict is BehaviorVerdict.FALSE for j in judgments):
         return BehaviorVerdict.FALSE
-    if not evaluated or all(j.verdict is BehaviorVerdict.NA for j in evaluated):
+    if not judgments or any(
+        not j.evaluated
+        or (j.verdict is BehaviorVerdict.NA and j.na_reason == "insufficient_evidence")
+        for j in judgments
+    ):
+        return BehaviorVerdict.NA
+    if all(j.verdict is BehaviorVerdict.NA for j in judgments):
         return BehaviorVerdict.NA
     return BehaviorVerdict.TRUE
 
@@ -512,7 +535,8 @@ class RunRecord:
     # schema_version stays "2" — both fields are optional-with-defaults, which
     # is the compatibility layer.
     complete: bool = True
-    end_reason: str | None = None  # None | "finished" | "exception" | "interrupted" | "cancelled"
+    # None | "finished" | "exception" | "interrupted" | "cancelled" | "unknown"
+    end_reason: str | None = None
     # Behavior-contract judgments appended by `argus behavior judge`
     # (read-modify-write, the same precedent as `argus locate`). Round-trips
     # through save_run/load_run; excluded from every score and gate.

@@ -24,6 +24,7 @@ CI gate on its own — same rule as the coherence judge in
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -60,7 +61,12 @@ class BehaviorClause:
     """One independently-judgeable behavior clause (an H2 section)."""
 
     name: str  # the heading text
-    text: str  # heading + body, verbatim — the judge quotes substrings of this
+    text: str  # heading + body, verbatim — the judge quotes substrings of the body
+
+    @property
+    def body(self) -> str:
+        """The text under the heading (everything after its line); all of ``text`` if none."""
+        return self.text.partition("\n")[2].strip() or self.text
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,11 @@ class BehaviorSpec:
     description: str  # ≤1024 chars, from frontmatter
     clauses: tuple[BehaviorClause, ...]  # one per H2 section, in file order
     path: Path = field(compare=False)  # source file, for diagnostics
+
+
+def clause_hash(text: str) -> str:
+    """Short fingerprint of a clause's text, stored beside the verdict judged on it."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def default_behaviors_dir() -> Path:
@@ -92,7 +103,8 @@ def _parse_frontmatter(
     (0 when there is no body). Structural problems (no opening fence, no
     closing fence, a line that is not ``key: value``) are errors and the
     caller skips the file — a spec whose contract cannot be read must not
-    be half-judged.
+    be half-judged. A repeated key is the same kind of error: last-wins would
+    silently pick one of two contradictory values.
     """
     diagnostics: list[Diagnostic] = []
     if not lines or lines[0].strip() != "---":
@@ -122,6 +134,19 @@ def _parse_frontmatter(
                     "error",
                     "invalid-frontmatter-line",
                     f"{path.name}: line {i + 1} is not a 'key: value' pair; skipped",
+                    path,
+                    i + 1,
+                    1,
+                )
+            )
+            continue
+        if m.group(1) in values:
+            diagnostics.append(
+                Diagnostic(
+                    "error",
+                    "duplicate-key",
+                    f"{path.name}: line {i + 1} repeats the '{m.group(1)}' key "
+                    f"already set on line {key_lines[m.group(1)]}; skipped",
                     path,
                     i + 1,
                     1,
@@ -166,15 +191,18 @@ def _fence_after(line: str, fence: str | None) -> str | None:
 def _split_clauses(
     body_lines: list[str], body_start: int, path: Path
 ) -> tuple[list[BehaviorClause], list[Diagnostic]]:
-    """Group the body into clauses at each ``## ``, rejecting duplicate names.
+    """Group the body into clauses at each ``## `` (or ``##<tab>``), rejecting duplicate names.
 
-    The clause text keeps the heading line so the judge's ``violated_clause``
-    citation can quote it verbatim and a reader can find the section. A
+    The clause text keeps the heading line so a reader can find the section
+    (the judge's quote of a violation is checked against the body under it,
+    never the heading, which the judge is always shown). A
     duplicate H2 is an error: two clauses that cannot be told apart would
     make per-clause verdicts ambiguous, which defeats the machine-verifiable
     fold. A ``##`` line inside a fenced code block is example text, not a
-    heading. An unnamed heading or a heading with no body has nothing to
-    judge: it is skipped with a warning, never judged on its heading alone.
+    heading, and a fence still open at the end of the file is an error: the
+    rest of the file would otherwise vanish into it without a word. An unnamed
+    heading or a heading with no body has nothing to judge: it is skipped with
+    a warning, never judged on its heading alone.
     """
     clauses: list[BehaviorClause] = []
     diagnostics: list[Diagnostic] = []
@@ -183,6 +211,7 @@ def _split_clauses(
     current_line = 0
     current_lines: list[str] = []
     fence: str | None = None
+    fence_line = 0
 
     def _flush() -> None:
         nonlocal current_name, current_lines
@@ -206,7 +235,7 @@ def _split_clauses(
 
     for offset, line in enumerate(body_lines):
         lineno = body_start + offset
-        if fence is None and (line.startswith("## ") or line.rstrip() == "##"):
+        if fence is None and (line.startswith(("## ", "##\t")) or line.rstrip() == "##"):
             name = line[2:].strip()
             _flush()
             if not name:
@@ -239,12 +268,27 @@ def _split_clauses(
                 current_line = lineno
                 current_lines = [line]
         else:
+            was_open = fence is not None
             fence = _fence_after(line, fence)
+            if fence is not None and not was_open:
+                fence_line = lineno
             if current_name is not None:
                 current_lines.append(line)
         # content before the first H2 belongs to no clause — ignored, it is
         # intro prose; only H2 sections are judgeable contract text
     _flush()
+    if fence is not None:
+        diagnostics.append(
+            Diagnostic(
+                "error",
+                "unterminated-fence",
+                f"{path.name}: the code fence opened at line {fence_line} is never "
+                "closed, so every clause after it would be lost; skipped",
+                path,
+                fence_line,
+                1,
+            )
+        )
     return clauses, diagnostics
 
 

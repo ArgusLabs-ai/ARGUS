@@ -156,10 +156,10 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
         return value if isinstance(value, dict) else None
 
     try:
-        parsed = _as_dict(json.loads(text))
+        parsed = _as_dict(_loads_verdict(text))
         if parsed is not None:
             return parsed
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         pass
 
     start = text.find("{")
@@ -168,17 +168,70 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
     end = text.rfind("}")
     if end > start:
         try:
-            parsed = _as_dict(json.loads(text[start : end + 1]))
+            parsed = _as_dict(_loads_verdict(text[start : end + 1]))
             if parsed is not None:
                 return parsed
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
             pass
 
     return _repair_truncated_json(text[start:])
 
 
+# The keys that carry a judge's ruling (the coherence judge's boolean, a custom
+# check's choice). Everything else in a verdict is explanation.
+_DECISIVE_KEYS = frozenset({"pass", "verdict"})
+
+
+def _no_repeated_ruling(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook``: an object that names a decisive key twice has no ruling.
+
+    ``json.loads`` keeps the first key's position but the *last* value, so
+    ``{"verdict": "clean", "reason": "x", "verdict": "clean_with_wa`` would
+    look like a payload whose last key is ``reason``.
+
+    The hook runs on every object at every depth, so a ``pass`` or ``verdict``
+    repeated anywhere (inside one entry of a ``verdicts`` list, say) fails the
+    whole payload closed. Deliberately simple: a model that repeats a ruling
+    key is not to be trusted with the rest of the payload either.
+    """
+    keys = [key for key, _ in pairs]
+    if any(keys.count(key) > 1 for key in _DECISIVE_KEYS):
+        raise ValueError("repeated ruling key")
+    return dict(pairs)
+
+
+def _loads_verdict(text: str) -> Any:
+    """``json.loads`` for every place a verdict is read, so they all agree.
+
+    ``strict=False`` lets a raw CR/LF sit inside a string (models do emit one
+    in ``reason``); strict JSON would drop the whole verdict for it. The hook
+    makes a ruling named twice a ``ValueError``, whole payload or cut one.
+    """
+    return json.loads(text, strict=False, object_pairs_hook=_no_repeated_ruling)
+
+
 def _repair_truncated_json(fragment: str) -> dict[str, Any] | None:
-    """Close an unterminated JSON object (truncated string / missing braces)."""
+    """Close an unterminated JSON object (truncated string / missing braces).
+
+    Closing a cut-off *explanation* is fine. A cut-off *ruling* is not: a
+    ``"verdict": "clean`` closes to ``clean`` even when the model was writing
+    ``clean_with_warnings``, which is a different score. A ruling must arrive
+    whole (its string closed, its boolean spelled out), and appear once, or
+    there is no repair.
+
+    Covered: a cut inside a string value, or right after a value that is
+    already whole. Not covered, and giving no verdict (as before this guard): a
+    cut right after a backslash or inside a ``\\uXXXX`` escape, inside a key
+    name, right after a colon, or inside a half-written literal (``fal``,
+    ``0.``), including one nested in ``disambiguation_verdicts``.
+
+    The ruling can sit at any depth (a list of per-clause ``verdict`` values is
+    read item by item), so the check follows the cut to the last value in the
+    payload and the key that owns it, whichever object it is in. A cut ``no``
+    would close to ``no`` and read as ``False`` while the model was writing
+    ``none``. A decisive value nested deeper that is whole, or a cut in any
+    other key, is repaired as before.
+    """
     s = fragment.rstrip()
     if not s.startswith("{"):
         return None
@@ -209,10 +262,37 @@ def _repair_truncated_json(fragment: str) -> dict[str, Any] | None:
     candidate = candidate.rstrip().rstrip(",")
     candidate += "".join(reversed(stack))
     try:
-        parsed = json.loads(candidate)
-    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed = _loads_verdict(candidate)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    # Only the last value can be the cut one. A closed string or a spelled-out
+    # true/false is whole; an open string or a bare number (`1` of `10`) is not.
+    key, value = _last_value(parsed)
+    if key in _DECISIVE_KEYS and (in_string or not isinstance(value, (bool, str))):
+        return None
+    return parsed
+
+
+def _last_value(parsed: dict[str, Any]) -> tuple[str | None, Any]:
+    """The last value in a parsed payload, at any depth, and the key that owns it.
+
+    A list's items belong to the key that holds the list. The descent stops at
+    a decisive key: whatever it holds is the ruling.
+    """
+    key: str | None = None
+    node: Any = parsed
+    while True:
+        if isinstance(node, dict) and node:
+            key = next(reversed(node))
+            node = node[key]
+            if key in _DECISIVE_KEYS:
+                return key, node
+        elif isinstance(node, list) and node:
+            node = node[-1]
+        else:
+            return key, node
 
 
 _TRUE_STRINGS = frozenset({"true", "yes", "1"})
@@ -358,11 +438,12 @@ JUDGE_TOOL_CHOICE = {"type": "function", "function": {"name": "record_verdict"}}
 def _verdict_from_tool_calls(result: dict[str, Any]) -> dict[str, Any] | None:
     """Pull the first tool call's arguments out of a normalized completion.
 
-    Providers are normalized (in providers.py) so the arguments are always a
-    JSON string; a dict is also tolerated for hand-rolled test doubles.
-    Arguments cut off by ``max_tokens`` get the same truncation repair as the
-    content path. Anything still unparseable gave no verdict, and the caller
-    falls back to the free-text content path exactly once, then skips.
+    Every BYOK adapter (providers.py) hands the arguments over as a JSON
+    string; a dict is also tolerated for hand-rolled test doubles. Arguments cut
+    off by ``max_tokens`` get the same truncation repair as the content path,
+    which refuses a ruling cut mid-value. Anything still unparseable gave no
+    verdict, and the caller falls back to the free-text content path exactly
+    once, then skips.
     """
     choices = result.get("choices") or []
     if not choices:
@@ -377,8 +458,8 @@ def _verdict_from_tool_calls(result: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(arguments, str) or not arguments.strip():
         return None
     try:
-        parsed = json.loads(arguments)
-    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed = _loads_verdict(arguments)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return _repair_truncated_json(arguments.lstrip())
     return parsed if isinstance(parsed, dict) else None
 

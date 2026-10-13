@@ -779,7 +779,7 @@ class ArgusRecorder(BaseCallbackHandler):
         if run_id == root:
             with self._lock:
                 self._roots.pop(root, None)
-            self._finish(session, root)
+            self._finish(session, root, exc)
 
     def _close_step(
         self, session: ArgusSession, run_id: UUID, outputs: Any, exc: BaseException | None
@@ -1003,8 +1003,14 @@ class ArgusRecorder(BaseCallbackHandler):
 
     # ── the layer chain ─────────────────────────────────────────────────────
 
-    def _finish(self, session: ArgusSession, root: UUID) -> None:
-        """Grade one finished run (:func:`argus.grading.finish`)."""
+    def _finish(
+        self, session: ArgusSession, root: UUID, error: BaseException | None = None
+    ) -> None:
+        """Grade one finished run (:func:`argus.grading.finish`).
+
+        ``error`` is the exception the root chain ended with, if any: the graph
+        can raise outside every node, and then no step carries it.
+        """
         try:
             with self._lock:
                 # Only this run's steps. Another `.batch()` item may still be mid
@@ -1015,7 +1021,7 @@ class ArgusRecorder(BaseCallbackHandler):
                     if self._root_of.get(rid) == root
                 )
             self._blame_barren_subgraphs(session)
-            finish(session, self._consumers, unfinished)
+            finish(session, self._consumers, unfinished, error)
             self.run_ids.append(session.run_id)
         finally:
             # Exception-safe: a crashed grade must not leak this recorder into
