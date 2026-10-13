@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 
 import pytest
@@ -7,6 +8,11 @@ from argus.models import (
     NodeEvent,
     RunRecord,
 )
+
+# Off for the whole process, not only inside a test: a session a test leaves
+# open is finalized by atexit, after every monkeypatch is undone, and would
+# otherwise send a real card from the real ~/.argus.
+os.environ["ARGUS_TELEMETRY"] = "0"
 
 
 @pytest.fixture(autouse=True)
