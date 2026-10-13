@@ -118,6 +118,9 @@ Every wrapped node executes through this pipeline:
 | `src/argus/cli/cmd_check.py` | `argus check <id>` / `ARGUS_RUN_ID=<id> argus check` (user/CI-set) / `argus check last` — grade one run, print its file, and exit 1 when it was not clean (`--strict warn_as_fail` escalates warnings). Finish no longer auto-writes `ARGUS_RUN_ID` (#90) |
 | `src/argus/pytest_plugin.py` | pytest `--argus` plugin: fail tests whose instrumented run was not clean; `run_context.py` binds saved run IDs to each test for xdist-safe grading |
 | `tests/test_argus_ci_gate.py` | Narrow sync-invoke graph run under CI `pytest --argus` (eat-own-cooking; #56). An autouse fixture forces `argus.patcher.patch_graph` to raise (#78) |
+| `docs/MATH-CERTIFICATES.md` | Design-time proofs (SMT, QF_LIA, via the Jacobian math MCP) that the behavior-verdict fold and the cycle-detection convention hold for every input in a bounded model, plus three satisfiable checks that show the proofs are not vacuous. Read once when you change `fold_behavior_verdicts` or `has_cycles`; nothing in the product calls the MCP at runtime |
+| `tests/test_fold_laws.py` | Checks the real `fold_behavior_verdicts` against the proved count model over every subset of the 14 verdict kinds: order independence, and a blocker never yields TRUE. Mutants of the fold fail it |
+| `tests/test_cycle_detection_oracle.py` | Checks `has_cycles` against an independent topological-order oracle on seven graphs, plus the self-loop convention ARGUS uses. |
 | `src/argus/cli/main.py` | `argus` CLI entry point (Typer) |
 | `src/argus/cli/cmd_doctor.py` | `argus doctor` diagnostic command |
 | `src/argus/findings.py` | `collect_findings()` — builds `RunRecord.findings`; also the one-line terminal summary after invoke. A `custom_check` signal becomes a `source: llm` Finding keyed by its spec name |
