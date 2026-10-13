@@ -68,6 +68,20 @@ def clear_credentials() -> None:
         _CREDENTIALS_FILE.unlink()
 
 
+def _opted_in(var: str) -> bool:
+    return os.environ.get(var, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def run_sync_enabled() -> bool:
+    """Uploading full runs (real node inputs / outputs) is opt-in: ``ARGUS_CLOUD_SYNC=1``."""
+    return _opted_in("ARGUS_CLOUD_SYNC")
+
+
+def hosted_llm_enabled() -> bool:
+    """Sending ledger rows through the hosted LLM proxy is opt-in: ``ARGUS_HOSTED_LLM=1``."""
+    return _opted_in("ARGUS_HOSTED_LLM")
+
+
 def is_logged_in() -> bool:
     if SUPABASE_URL is None:
         return False
@@ -205,6 +219,9 @@ def push_run_async(run_data: dict[str, Any]) -> None:
 def push_shared_signature(sig_data: dict[str, Any]) -> bool:
     """Push an approved signature to the shared community table.
 
+    Pattern and stats only: no ``evidence`` (real output snippets), no
+    ``reasoning`` (may quote them), no node names, no contributor email.
+
     Returns True on success, False if not logged in or on error.
     """
     creds = _get_valid_credentials()
@@ -219,13 +236,9 @@ def push_shared_signature(sig_data: dict[str, Any]) -> bool:
         "match_strategy": sig_data["match_strategy"],
         "severity": sig_data["severity"],
         "description": sig_data["description"],
-        "reasoning": sig_data.get("reasoning"),
-        "evidence": sig_data.get("evidence", []),
         "confidence": sig_data.get("metadata", {}).get("confidence"),
         "source_run_ids": sig_data.get("source_run_ids", []),
-        "source_nodes": sig_data.get("source_nodes", []),
         "times_seen": sig_data.get("metadata", {}).get("frequency", 1),
-        "contributed_by": creds.email,
     }
 
     try:

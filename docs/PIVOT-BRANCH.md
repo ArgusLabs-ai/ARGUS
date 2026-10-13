@@ -1886,3 +1886,22 @@ PYTHONPATH=src pytest tests/test_argus_ci_gate.py --argus -q
 PYTHONPATH=src pytest tests/test_pytest_plugin.py tests/test_review.py tests/test_trace_rules.py -q
 PYTHONPATH=src python blind_eval/validate_review.py all && PYTHONPATH=src python blind_eval/final_probe.py   # live, reads .env
 ```
+
+## Data leaving the machine: closed (12 Oct)
+
+Nothing a pipeline produced leaves without an explicit opt-in.
+
+- **Run upload** (`storage.save_run` → `cloud.push_run`): logging in used to
+  upload every run, every node input and output. Now only with
+  `ARGUS_CLOUD_SYNC=1`.
+- **Shared signatures** (`cloud.push_shared_signature`): no longer sends
+  `evidence` (real output snippets), `reasoning` (can quote them),
+  `source_nodes` or the contributor's email. Pattern + stats only.
+- **Hosted LLM proxy** (`llm_proxy`): the reviewer / judge prompts carry ledger
+  values. With no own key they went through ARGUS servers automatically; now
+  only with `ARGUS_HOSTED_LLM=1`. BYOK is unchanged.
+- **`ArgusRecorder(redact_keys=...)`**: same as `ArgusWatcher` — the named
+  fields, at any depth, are replaced before the run file is written.
+
+`tests/test_data_leaks.py` plants canary values and fails if any reaches an
+outbound payload or (for `redact_keys`) the saved run.
