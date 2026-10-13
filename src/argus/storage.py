@@ -105,8 +105,9 @@ def _to_json_serializable(obj: Any) -> Any:
 def save_run(record: RunRecord, *, local_only: bool = False) -> Path:
     """Write a completed RunRecord to .argus/runs/<run-id>.json atomically.
 
-    If the user is logged in to ARGUS cloud, the run is also pushed
-    to Supabase in a background thread (non-blocking).
+    The full run (every node input and output) is pushed to ARGUS cloud only
+    when the user is logged in **and** opted in with ``ARGUS_CLOUD_SYNC=1``.
+    Logging in alone uploads nothing.
 
     ``local_only`` is for rewriting a run that is already saved (``argus
     behavior judge`` appending verdicts): just the file, with no cloud push
@@ -133,9 +134,9 @@ def save_run(record: RunRecord, *, local_only: bool = False) -> Path:
 
     # Cloud sync — push synchronously so the thread isn't killed on process exit
     try:
-        from argus.cloud import is_logged_in, push_run
+        from argus.cloud import is_logged_in, push_run, run_sync_enabled
 
-        if is_logged_in():
+        if run_sync_enabled() and is_logged_in():
             push_run(data)
     except Exception:
         pass  # cloud sync is best-effort

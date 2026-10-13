@@ -1562,6 +1562,8 @@ class TestCustomCheckOverHostedProxy:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr("argus.user_config._CONFIG_FILE", tmp_path / "no-config.json")
         monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
+        # The hosted proxy is opt-in: prompts carry real ledger values.
+        monkeypatch.setenv("ARGUS_HOSTED_LLM", "1")
         monkeypatch.setattr(llm_proxy, "SUPABASE_URL", "https://example.supabase.co")
         monkeypatch.setattr(
             llm_proxy, "_PROXY_URL", "https://example.supabase.co/functions/v1/llm-proxy"

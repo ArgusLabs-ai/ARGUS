@@ -80,6 +80,7 @@ def new_session(
     node_state_keys: dict[str, list[str]] | None = None,
     baseline: dict[str, Any] | None = None,
     reviewer: Reviewer | None = None,
+    redact_keys: set[str] | list[str] | None = None,
 ) -> ArgusSession:
     """A session for one graph run, ready for ``on_node_start`` / ``on_node_end``.
 
@@ -102,6 +103,7 @@ def new_session(
         max_field_size=max_field_size,
         validators=validators,
         strict=strict,
+        redact_keys=redact_keys,
         # Explicit config (never None) so the session does not fall back to
         # its own auto-enable logic — the caller owns the decision here.
         llm_investigation=LLMInvestigationConfig(

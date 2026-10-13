@@ -3,8 +3,9 @@
 Priority:
   1. explicit api_key arg / active-provider key (env or saved) -> call that
      provider directly (BYOK: OpenAI, Anthropic, or Google Gemini).
-  2. logged in + Supabase configured -> route through the ARGUS proxy
-     (hosted/enterprise path; OpenAI-only).
+  2. logged in + Supabase configured + ``ARGUS_HOSTED_LLM=1`` -> route through
+     the ARGUS proxy (hosted/enterprise path; OpenAI-only). Opt-in because the
+     prompts carry real ledger values, which then pass through ARGUS servers.
   3. none of the above -> {"error": ...}; callers fall back to
      heuristic-only detection.
 
@@ -20,7 +21,7 @@ import urllib.request
 from typing import Any
 
 from argus import providers, user_config
-from argus.cloud import SUPABASE_URL, _get_valid_credentials
+from argus.cloud import SUPABASE_URL, _get_valid_credentials, hosted_llm_enabled
 
 _PROXY_URL = f"{SUPABASE_URL}/functions/v1/llm-proxy" if SUPABASE_URL else None
 
@@ -43,7 +44,7 @@ def _call_proxy(
     already carry the full JSON contract, and callers fall back to parsing
     ``content`` when the response carries no ``tool_calls``.
     """
-    if not SUPABASE_URL or _PROXY_URL is None:
+    if not hosted_llm_enabled() or not SUPABASE_URL or _PROXY_URL is None:
         return {"error": "No LLM configured. Set OPENAI_API_KEY or run: argus key set"}
 
     creds = _get_valid_credentials()
@@ -153,6 +154,6 @@ def is_available() -> bool:
     """True if any LLM path is usable: a BYOK key, or the logged-in proxy."""
     if user_config.configured_providers():
         return True
-    if not SUPABASE_URL:
+    if not hosted_llm_enabled() or not SUPABASE_URL:
         return False
     return _get_valid_credentials() is not None

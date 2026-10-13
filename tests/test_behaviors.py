@@ -1511,6 +1511,7 @@ def test_stored_verdict_without_a_clause_hash_is_never_kept(tmp_path, monkeypatc
 @pytest.fixture
 def cloud_pushes(monkeypatch):
     pushed: list = []
+    monkeypatch.setenv("ARGUS_CLOUD_SYNC", "1")  # uploading full runs is opt-in
     monkeypatch.setattr("argus.cloud.is_logged_in", lambda: True)
     monkeypatch.setattr("argus.cloud.push_run", lambda data: pushed.append(data["run_id"]))
     return pushed
@@ -1567,6 +1568,7 @@ def _hosted_proxy(monkeypatch, tmp_path, reply_content):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("argus.user_config._CONFIG_FILE", tmp_path / "no-config.json")
     monkeypatch.setattr("argus.llm_proxy.is_available", lambda: True)
+    monkeypatch.setenv("ARGUS_HOSTED_LLM", "1")  # the hosted proxy is opt-in
     monkeypatch.setattr(llm_proxy, "SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setattr(
         llm_proxy, "_PROXY_URL", "https://example.supabase.co/functions/v1/llm-proxy"
@@ -2349,12 +2351,20 @@ def test_without_a_byok_key_the_requested_model_is_recorded(tmp_path, monkeypatc
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(("logged_in", "said"), [(True, True), (False, False)])
+@pytest.mark.parametrize(
+    ("logged_in", "opted_in", "said"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+    ids=["synced-run", "logged-out", "no-opt-in"],
+)
 def test_cli_judge_says_the_verdicts_are_not_synced_when_logged_in(
-    tmp_path, monkeypatch, logged_in, said
+    tmp_path, monkeypatch, logged_in, opted_in, said
 ):
     _write_spec(tmp_path / _SPEC_REL)
     save_run(make_run_record(events=[make_event()], run_id="cli-sync-1"))
+    if opted_in:
+        monkeypatch.setenv("ARGUS_CLOUD_SYNC", "1")
+    else:
+        monkeypatch.delenv("ARGUS_CLOUD_SYNC", raising=False)
     monkeypatch.setattr("argus.cloud.is_logged_in", lambda: logged_in)
     monkeypatch.setattr("argus.cloud.push_run", lambda data: None)
     _online(monkeypatch, [_true_verdict(c) for c in _CLAUSES])

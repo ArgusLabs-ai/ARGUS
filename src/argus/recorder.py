@@ -441,6 +441,7 @@ class ArgusRecorder(BaseCallbackHandler):
         baseline: dict[str, Any] | None = None,
         purposes: dict[str, str] | None = None,
         review: bool | None = None,
+        redact_keys: set[str] | list[str] | None = None,
     ) -> None:
         if not _HAS_LANGCHAIN:
             raise ImportError(
@@ -452,6 +453,8 @@ class ArgusRecorder(BaseCallbackHandler):
         # at attach). True/False force it either way regardless of key state.
         self._semantic_judge = semantic_judge
         self._max_field_size = max_field_size
+        # Field names whose values never reach the saved run file (any depth).
+        self._redact_keys = redact_keys
         # Declared `field -> [reader nodes]`; a trace cannot tell us who reads what.
         self._consumers = consumers
         # Healthy-run shape from `argus baseline` (argus.trace_rules D5/D6/D16).
@@ -582,6 +585,7 @@ class ArgusRecorder(BaseCallbackHandler):
             node_state_keys=self._inner_keys,
             baseline=self._baseline,
             reviewer=self._reviewer,
+            redact_keys=self._redact_keys,
         )
 
     def _resolve_reviewer(self) -> Reviewer | None:

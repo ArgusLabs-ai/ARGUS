@@ -222,8 +222,10 @@ def behavior_judge(run_id: str, behavior: Optional[str], model: str) -> int:
             "judged TRUE from it and an NA may only mean the missing steps were not seen.[/dim]"
         )
     console.print(f"\n  [green]Saved to {escape(str(path))}[/green]")
-    from argus.cloud import is_logged_in
+    from argus.cloud import is_logged_in, run_sync_enabled
 
-    if is_logged_in():  # the cloud copy of this run does not get these verdicts
+    # Cloud sync is opt-in (ARGUS_CLOUD_SYNC=1): only then does a cloud copy exist
+    # that these verdicts do not reach.
+    if run_sync_enabled() and is_logged_in():
         console.print("  [dim]Verdicts are saved locally and are not synced to the cloud.[/dim]")
     return 0
