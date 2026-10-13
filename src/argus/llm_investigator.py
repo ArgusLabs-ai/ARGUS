@@ -32,6 +32,11 @@ from argus.models import (
 _DEFAULT_CONFIG = LLMInvestigationConfig()
 
 
+def _judged(record: RunRecord) -> set[tuple[int | None, str]]:
+    """The (step, validator) pairs that scored: a low score is advisory, not a failed validator."""
+    return {(js.step_index, js.validator_name) for js in record.judge_scores}
+
+
 def should_investigate(
     record: RunRecord,
     config: LLMInvestigationConfig | None = None,
@@ -47,6 +52,7 @@ def should_investigate(
     # Always collect detailed evidence — even for always_investigate or clean runs.
     # The LLM needs specific pointers to reason about the execution.
     reasons: list[str] = []
+    judged = _judged(record)
 
     for event in record.steps:
         if event.status == "fail":
@@ -83,7 +89,9 @@ def should_investigate(
                 ]
                 signals = [f"{s.sig_id} on {s.dotted_path}" for s in rule_signals[:3]]
             failed_validators = [
-                v.validator_name for v in event.validator_results if not v.is_valid
+                v.validator_name
+                for v in event.validator_results
+                if not v.is_valid and (event.step_index, v.validator_name) not in judged
             ]
             detail = f"semantic failure at '{event.node_name}'"
             if signals:
@@ -141,6 +149,7 @@ def should_investigate(
 def _compress_node_summary(record: RunRecord) -> list[dict[str, Any]]:
     """Compress node events into concise summaries for the LLM prompt."""
     summaries: list[dict[str, Any]] = []
+    judged = _judged(record)
     for event in record.steps:
         summary: dict[str, Any] = {
             "step": event.step_index,
@@ -198,7 +207,11 @@ def _compress_node_summary(record: RunRecord) -> list[dict[str, Any]]:
             ]
 
         # Compact validator results
-        failed_validators = [v for v in event.validator_results if not v.is_valid]
+        failed_validators = [
+            v
+            for v in event.validator_results
+            if not v.is_valid and (event.step_index, v.validator_name) not in judged
+        ]
         if failed_validators:
             summary["failed_validators"] = [
                 {"name": v.validator_name, "message": v.message[:80]} for v in failed_validators

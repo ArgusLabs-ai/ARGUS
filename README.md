@@ -555,6 +555,47 @@ app = ArgusRecorder(validators={
 
 Validator failures cannot be overridden by the LLM judge — they are hard constraints.
 
+### Scored judges
+
+A validator can ask for what it needs by parameter name and return a **score** instead of pass/fail. It
+declares any of `output` (the node's output), `expected` (your reference value) and `metadata`
+(`{"node", "step_index", "run_id"}`) and gets exactly those:
+
+```python
+def total_close(output, expected):
+    got, want = output["total"], expected
+    return {"score": max(0.0, 1 - abs(got - want) / want), "label": "total", "explanation": f"{got} vs {want}"}
+
+app = ArgusRecorder(
+    validators={"calc": total_close},
+    expected={"calc": 142},      # per node name, or "*" as the fallback
+    judge_score_floor=0.5,       # a score under this is a warning (default 0.5)
+).attach(graph)
+```
+
+A score is a number in [0, 1], or a dict with `score` and optionally `label`, `explanation` and
+`direction` (`"maximize"` by default; `"minimize"` for "lower is better"). Scores are recorded on the run:
+`argus stats <run>` lists them and `argus diff <a> <b>` shows the change per validator and node.
+A score under the floor is a `low_judge_score` **warning** finding. It never fails the node or `argus check`.
+
+Everything else works as before: a validator that is not called by those names (below) is called with the
+output as its one argument, `fn(output)`, and `(ok, message[, severity])` still gates. Any other return from it,
+including a bare `True` / `False`, a string, `None`, or any bare number or score dict, is invalid and fails the
+node as it always did. A score only counts from a validator called by name.
+ARGUS calls a validator by name when, read from its own signature, every parameter it requires is `output`,
+`expected` or `metadata` (passable by keyword), and no positional parameter that is not passed by name comes
+before the first one that is. `def judge(output, expected, threshold=0.5)` is called by name (optional
+parameters after the names do not matter). These are still called `fn(output)` and never score: `lambda out: ...`,
+`def v(state, expected=None)`, `def v(x=None, output=None)` (the output goes to `x`), a positional-only
+`def v(output, /)`, `def v(*args)`, and a builtin. A `functools.partial` keeps the keywords it pinned
+(`partial(judge, expected="x")` is given `output` only; one that pins every name it declares is called
+`fn(output)`). A `functools.wraps` wrapper is judged by its own signature, not the function it wraps, so a
+`(*args, **kwargs)` wrapper is called `fn(output)`; set `wrapper.__signature__ = inspect.signature(judge)` to
+have it called by name.
+`output` and `expected` arrive as copies, so a judge cannot alter what is recorded. Judges are plain
+synchronous functions in your code; ARGUS does not load them from files, call an LLM for them, or time them
+out.
+
 ---
 
 ## Configuration

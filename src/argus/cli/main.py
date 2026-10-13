@@ -838,6 +838,11 @@ def cmd_stats(
         bool,
         typer.Option("--prune", help="Remove stale signatures that haven't proven useful"),
     ] = False,
+    # Default-value style, not Annotated: on Python 3.9 Typer cannot read Annotated
+    # metadata under `from __future__ import annotations`, and this must stay an Argument.
+    run: Optional[str] = typer.Argument(
+        None, help="Run ID, 8-char prefix, or 'last': show that run's judge scores."
+    ),
 ) -> None:
     """Show signature effectiveness stats and manage learned patterns."""
     stats(
@@ -848,4 +853,5 @@ def cmd_stats(
         dispute=dispute,
         run_id=run_id,
         prune=prune,
+        judge_run=_resolve_selector(run) if run else None,
     )
