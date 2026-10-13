@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.2 — 2026-10-13
+
+Privacy fix: pipeline data no longer leaves your machine unless you opt in.
+
+- `argus login` no longer uploads every run. Full runs sync only with `ARGUS_CLOUD_SYNC=1`
+- Shared signatures carry the pattern and counts only: no evidence, reasoning, node names or email
+- The hosted LLM fallback (which sends real values in the prompt) runs only with `ARGUS_HOSTED_LLM=1`. Your own key (BYOK) works as before
+- `ArgusRecorder(redact_keys=...)` keeps chosen fields out of the run file
+
 ## 0.12.1 — 2026-10-06
 
 - README: the quickstart says how to turn on the run reviewer (a key plus node purposes); image links point at ArgusLabs-ai/ARGUS; the validators example uses `ArgusRecorder`. No code changes
