@@ -139,6 +139,84 @@ select cron.schedule(
   $$
 );
 
+-- ── Admin panel (admin/) ─────────────────────────────────────
+-- Rule scoreboard: one row per rule. `ignored` = hits the user silenced with
+-- `argus ignore` (the card's `suppressed` flag), the first false-alarm signal.
+create view public.tele_rule_stats with (security_invoker = true) as
+select
+  rule,
+  bool_or(heuristic)                         as heuristic,
+  count(*)                                   as fires,
+  count(distinct card_id)                    as runs,
+  count(distinct install)                    as installs,
+  count(*) filter (where suppressed)         as ignored,
+  count(*) filter (where ci)                 as in_ci,
+  count(*) filter (where severity = 'critical') as critical,
+  max(received_at)                           as last_seen,
+  array_agg(distinct argus_version)          as versions
+from public.tele_findings
+group by rule;
+
+-- Daily volume for the overview chart.
+create view public.tele_daily with (security_invoker = true) as
+select
+  (received_at at time zone 'utc')::date      as day,
+  count(*)                                    as cards,
+  count(distinct install)                     as installs,
+  count(*) filter (where status <> 'clean')   as not_clean
+from public.tele_cards
+group by 1;
+
+-- Overview: verdict mix per Argus version.
+create view public.tele_status with (security_invoker = true) as
+select status, argus_version, count(*) as cards, count(distinct install) as installs
+from public.tele_cards
+group by status, argus_version;
+
+-- Owner adds a maintainer by email. They must have signed in once (that
+-- creates their auth user); the owner cannot be replaced from the panel.
+create or replace function public.add_maintainer(maintainer_email text)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  uid uuid;
+begin
+  if public.admin_role() is distinct from 'owner' then
+    raise exception 'only the owner can add maintainers';
+  end if;
+  select id into uid from auth.users where lower(email) = lower(trim(maintainer_email));
+  if uid is null then
+    return 'not_signed_in';
+  end if;
+  insert into admin_users (user_id, email, role)
+    values (uid, lower(trim(maintainer_email)), 'maintainer')
+    on conflict (user_id) do nothing;
+  return 'added';
+end;
+$$;
+
+create or replace function public.remove_maintainer(maintainer_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if public.admin_role() is distinct from 'owner' then
+    raise exception 'only the owner can remove maintainers';
+  end if;
+  delete from admin_users where user_id = maintainer_id and role = 'maintainer';
+end;
+$$;
+
+revoke all on function public.add_maintainer(text) from public, anon;
+revoke all on function public.remove_maintainer(uuid) from public, anon;
+grant execute on function public.add_maintainer(text) to authenticated;
+grant execute on function public.remove_maintainer(uuid) to authenticated;
+
 -- ── Bootstrap the owner (run once, by hand, after first sign-in) ─
 -- insert into public.admin_users (user_id, email, role)
 --   select id, email, 'owner' from auth.users where email = '<owner email>';

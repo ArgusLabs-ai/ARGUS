@@ -87,7 +87,9 @@ keeps its value (`ok: false` is the signal). Numbers keep only their type.
 ## Where it goes and who sees it
 
 Cards go over HTTPS to an Argus-run Supabase project used for nothing else.
-Two people can read them: the project owner and the open-source maintainer.
+Two people can read them: the project owner and the open-source maintainer,
+through a private panel ([`admin/`](../admin/README.md)) whose access is
+enforced by row-level security in the database.
 Cards are deleted after 12 months.
 
 ## Paying teams
