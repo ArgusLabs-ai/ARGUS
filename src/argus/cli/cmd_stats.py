@@ -6,6 +6,7 @@ from typing import Annotated, Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 _console = Console()
@@ -40,8 +41,17 @@ def stats(
         bool,
         typer.Option("--prune", help="Remove stale signatures that haven't proven useful"),
     ] = False,
+    judge_run: Optional[str] = None,
 ) -> None:
-    """Show signature effectiveness stats and manage learned patterns."""
+    """Show signature effectiveness stats and manage learned patterns.
+
+    ``judge_run`` (the ``<run>`` argument) shows that run's per-validator judge
+    scores instead (PRD-09).
+    """
+
+    if judge_run is not None:
+        _print_judge_scores(judge_run)
+        return
 
     # Handle prune
     if prune:
@@ -150,6 +160,58 @@ def stats(
             last_hit,
             status,
             s.description[:40] if s.description else "",
+        )
+
+    _console.print()
+    _console.print(table)
+    _console.print()
+
+
+def _print_judge_scores(run_id: str) -> None:
+    """One persisted run's judge scores. A pure read: nothing is recomputed.
+
+    Everything in a row came from user code or a run file, so it is escaped
+    before Rich reads it as markup.
+    """
+    from argus.findings import _INACTIVE
+    from argus.storage import load_run
+
+    try:
+        record = load_run(run_id)
+    except (FileNotFoundError, ValueError) as e:
+        _console.print(f"[red]Error:[/red] {escape(str(e))}")
+        raise typer.Exit(1) from e
+
+    # a retried / skipped pass does not count against the run, as in the findings
+    inactive = {
+        ev.step_index
+        for ev in record.steps
+        if ev.status in _INACTIVE and ev.step_index is not None
+    }
+    scores = [js for js in record.judge_scores if js.step_index not in inactive]
+    if not scores:
+        _console.print(f"[dim]No judge scores recorded for run {escape(record.run_id)}.[/dim]")
+        return
+
+    table = Table(title=f"Judge scores  {escape(record.run_id)}", show_lines=False)
+    table.add_column("Validator", style="bold")
+    table.add_column("Node")
+    table.add_column("Step", justify="right")
+    table.add_column("Direction")
+    table.add_column("Score", justify="right")
+    table.add_column("Label")
+    table.add_column("Explanation", max_width=50)
+
+    for js in scores:
+        style = "yellow" if js.severity == "warning" else "green"
+        table.add_row(
+            escape(js.validator_name),
+            escape(js.origin_node or "-"),
+            "-" if js.step_index is None else str(js.step_index),
+            js.direction,
+            f"[{style}]{js.score:.2f}[/{style}]",
+            escape(js.label),
+            escape(js.explanation),
         )
 
     _console.print()

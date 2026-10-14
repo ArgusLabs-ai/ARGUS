@@ -16,6 +16,7 @@ from argus.models import (
     FieldMismatch,
     Finding,
     InspectionResult,
+    JudgeScore,
     LLMCallInfo,
     LLMInvestigationResult,
     LLMUsage,
@@ -388,7 +389,47 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         findings=findings,
         dry_run=data.get("dry_run", False),
         coverage_summary=data.get("coverage_summary", {}),
+        judge_scores=_deserialize_judge_scores(data.get("judge_scores")),
     )
+
+
+def _deserialize_judge_scores(items: Any) -> list[JudgeScore]:
+    """JudgeScore rows, tolerant of hand edits like the rest of this loader.
+
+    A run file is user-editable JSON: anything that is not a list of dicts loads
+    as no scores, a bad row is skipped, and a bad field takes its default
+    (a score outside [0, 1] or not a number reads 0.0 or the nearest bound,
+    an unknown direction reads "maximize"). A mangled row never makes the run
+    unreadable, which would take every command down with it.
+    """
+    out: list[JudgeScore] = []
+    for row in items if isinstance(items, list) else []:
+        if not isinstance(row, dict):
+            continue
+        score = row.get("score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or score != score:
+            score = 0.0
+        step = row.get("step_index")
+        origin = row.get("origin_node")
+        direction = row.get("direction")
+        severity = row.get("severity")
+        out.append(
+            JudgeScore(
+                score=float(min(1.0, max(0.0, score))),
+                label=_str_or(row.get("label")),
+                explanation=_str_or(row.get("explanation")),
+                direction=direction if direction in ("maximize", "minimize") else "maximize",
+                validator_name=_str_or(row.get("validator_name")),
+                severity=severity if severity in ("ok", "warning") else "ok",
+                origin_node=origin if isinstance(origin, str) else None,
+                step_index=step if isinstance(step, int) and not isinstance(step, bool) else None,
+            )
+        )
+    return out
+
+
+def _str_or(value: Any) -> str:
+    return value if isinstance(value, str) else ""
 
 
 def _deserialize_correlation(data: dict[str, Any]) -> CorrelationReport:
