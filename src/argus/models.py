@@ -419,6 +419,13 @@ class RunRecord:
     # the source of `low_judge_score` findings; never a gate input. Default []
     # loads records written before the field existed.
     judge_scores: list[JudgeScore] = field(default_factory=list)
+    # Did the run reach its natural end? False for a crash, an interrupt, a
+    # graph that raised outside every node, a stream its caller abandoned, or
+    # a run nobody ended (finalized at interpreter exit). Old run files derive
+    # it on load (storage._run_completeness). Recorded only; never gates.
+    complete: bool = True
+    # None | "finished" | "exception" | "interrupted" | "cancelled" | "unknown"
+    end_reason: str | None = None
 
 
 # ── Correlation layer dataclasses ──────────────────────────────────────────────

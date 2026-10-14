@@ -58,6 +58,20 @@ Rules that follow from the table:
 
 "Active" = every node event whose status is not `retried` or `skipped`.
 
+### Did the run finish? — `RunRecord.complete` / `end_reason`
+
+Separate from the status: whether the run reached its natural end. Recorded only; it never changes a status or what `argus check` gates on.
+
+| `end_reason` | `complete` | When |
+|---|---|---|
+| `finished` | `true` | The run ended normally. |
+| `exception` | `false` | A node crashed, or the graph raised outside every node (recursion limit, a router that raised). |
+| `interrupted` | `false` | A node was interrupted (human-in-the-loop pause). |
+| `cancelled` | `false` | The caller abandoned a stream, or the user hit Ctrl-C. |
+| `unknown` | `false` | Nobody ended the run; it was saved at interpreter exit and the topology cannot prove it reached its end (any conditional edge, or a node that never ran). |
+
+Run files from before these fields derive them on load: `crashed` → `exception`, `interrupted` → `interrupted`, anything else → `complete: true`.
+
 ## Roll-up: node → run
 
 Evaluated in this order; the first match wins (`session.py` `_finalize`):

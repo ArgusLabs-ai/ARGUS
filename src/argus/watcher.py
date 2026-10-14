@@ -9,7 +9,7 @@ from typing import Any, Callable
 from argus.checkpoints import mark_checkpoint_resumed
 from argus.models import ArgusConfig
 from argus.patcher import extract_conditional_sources, extract_edge_map, extract_fn, patch_graph
-from argus.session import ArgusSession
+from argus.session import ArgusSession, _GraphInterrupt
 
 # Backward-compat alias — RunSession was the internal name before ArgusSession was public
 RunSession = ArgusSession
@@ -374,6 +374,19 @@ class ArgusWatcher:
         except Exception:
             pass  # HTTP recording is best-effort
 
+    def _note_root_error(self, exc: BaseException) -> None:
+        """Remember what the graph call raised, so the run is saved as unfinished.
+
+        Same mechanism as the recorder (``session._root_error``, read by
+        ``_finalize``): a recursion limit or a router that raises leaves every
+        node clean, and a stream its caller abandoned (``GeneratorExit``) never
+        reached its last node. A ``GraphInterrupt`` is a human-in-the-loop
+        pause, already recorded as an interrupted step; it is not a failure.
+        """
+        if self._session is None or (_GraphInterrupt and isinstance(exc, _GraphInterrupt)):
+            return
+        self._session._root_error = exc
+
     def _exit_persist_scope(self) -> None:
         should_persist = False
         with self._persist_lock:
@@ -395,6 +408,9 @@ class ArgusWatcher:
                 self._enter_persist_scope()
                 try:
                     return await original(*args, **kwargs)
+                except BaseException as exc:
+                    self._note_root_error(exc)
+                    raise
                 finally:
                     self._exit_persist_scope()
 
@@ -406,6 +422,9 @@ class ArgusWatcher:
             self._enter_persist_scope()
             try:
                 return original(*args, **kwargs)
+            except BaseException as exc:
+                self._note_root_error(exc)
+                raise
             finally:
                 self._exit_persist_scope()
 
@@ -426,6 +445,9 @@ class ArgusWatcher:
                         agen = await agen
                     async for item in agen:
                         yield item
+                except BaseException as exc:
+                    self._note_root_error(exc)
+                    raise
                 finally:
                     self._exit_persist_scope()
 
@@ -443,6 +465,9 @@ class ArgusWatcher:
                     self._enter_persist_scope()
                     try:
                         yield from iterator
+                    except BaseException as exc:
+                        self._note_root_error(exc)
+                        raise
                     finally:
                         self._exit_persist_scope()
 

@@ -359,5 +359,5 @@ def ingest_langsmith(
             unreadable_update=unreadable,
         )
 
-    finish(session, consumers)
+    finish(session, consumers, root_error=roots[0].get("error") or None)
     return session

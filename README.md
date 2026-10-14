@@ -369,6 +369,8 @@ result = app.invoke(initial_state)
 | **Broken model output** | Unrendered `{{var}}`, lorem ipsum, `Dear [Customer Name]`; the model repeating itself; a generation cut at its token limit that was used anyway; JSON that did not parse, replaced by a default |
 | **Ungrounded claims** | A number in a model's output that nothing it was given supports (sums and % changes are allowed); an ID one or two characters off the one it was given (`A-1002` for `A-1001`); "I've refunded your order" or "I've processed your refund" with no refund call anywhere in the run; a loop repeating one tool call. Heuristic: with the [run reviewer](#run-reviewer) on, these fail only when it agrees |
 | **Not a failure** | A node's own verdict — `{"status": "denied"}` or a linter's `errors: [...]` — is a warning on that node's update, not a CI fail. The same shape from a **tool** response stays critical |
+| **Retry or fix?** | Every tool failure carries a retry class: `fatal` (fix the call: 401, 404, bad input), `transient` (a retry is reasonable: 5xx, timeouts, resets) or `rate_limited` (429). `argus check --format json` and `argus fix` use it. A bare `429` inside an ID or count (`order 1429 not found`) is not read as a rate limit |
+| **Runs that never finished** | A graph that raised outside every node (recursion limit, a router that raised), an abandoned stream, Ctrl-C, or a run saved at interpreter exit is recorded `complete: false` with an `end_reason`. Recorded only, never gates ([`docs/STATUS.md`](docs/STATUS.md)) |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
 | **Conditional path confusion** | Unchosen branches correctly shown as "skipped" — not false "crashed" |
 
@@ -697,6 +699,7 @@ argus fix <id>                       # fix prompt for the root cause, ready to p
 argus replay <id> <node> --app m:fn  # re-run from a node, against the graph you pass
 argus diff <id-a> <id-b>             # compare two runs
 argus stats                          # signature hit stats, disable/enable/dispute signatures
+argus stats <id|last>                # a run's scored-judge results (see Scored judges)
 argus ingest langsmith <file.jsonl>  # grade a LangSmith export — no app, no graph needed
 argus edges mypkg.graph:build -o edges.json   # real topology for `ingest --edges`
 argus ignore <SIG-ID> [--node N]     # silence a noisy signature project-wide or on one node

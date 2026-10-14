@@ -334,6 +334,25 @@ def build_replay_tree(run_id: str, max_depth: int = 5) -> dict[str, Any]:
     return _build(run_id, 0)
 
 
+def _run_completeness(data: dict[str, Any]) -> tuple[bool, str | None]:
+    """``(complete, end_reason)`` for a run file.
+
+    Files from before the field have no ``complete``, so derive it from how the
+    run ended, with the ``end_reason`` words ``ArgusSession`` writes (a crash
+    outranks an interrupt there, too). A file that carries ``complete`` is taken
+    as written, ``end_reason="unknown"`` (finalized at process exit) included.
+    An old file that ended clean is assumed complete: nothing in it says
+    whether the process was cut off.
+    """
+    if "complete" in data:
+        return data["complete"], data.get("end_reason")
+    if data.get("overall_status") == "crashed":
+        return False, "exception"
+    if data.get("overall_status") == "interrupted" or data.get("interrupted"):
+        return False, "interrupted"
+    return True, data.get("end_reason")
+
+
 def _deserialize_run(data: dict[str, Any]) -> RunRecord:
     steps = [_deserialize_event(s) for s in data.get("steps", [])]
     bc_data = data.get("behavior_config")
@@ -351,6 +370,7 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
     else:
         # Pre-"2" record: derive the list from the per-step data it already carries.
         findings = collect_findings(steps, tool_chain_findings)
+    complete, end_reason = _run_completeness(data)
     return RunRecord(
         run_id=data["run_id"],
         argus_version=data.get("argus_version", "unknown"),
@@ -390,6 +410,8 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         dry_run=data.get("dry_run", False),
         coverage_summary=data.get("coverage_summary", {}),
         judge_scores=_deserialize_judge_scores(data.get("judge_scores")),
+        complete=complete,
+        end_reason=end_reason,
     )
 
 
