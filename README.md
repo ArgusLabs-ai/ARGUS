@@ -810,7 +810,7 @@ For AI setup prompts and integration guides, visit **[arguslabs.in](https://argu
 
 ---
 
-**v0.13.0** — [changelog](https://github.com/ArgusLabs-ai/ARGUS/releases)
+**v0.14.0** — [changelog](https://github.com/ArgusLabs-ai/ARGUS/releases)
 
 ## Contributing
 
