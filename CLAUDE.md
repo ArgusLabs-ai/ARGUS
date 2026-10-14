@@ -122,6 +122,7 @@ Every wrapped node executes through this pipeline:
 | `src/argus/hotspots.py` | Cross-run origin × node finding counts for the dashboard hotspot matrix |
 | `src/argus/telemetry/` | Anonymous **shape cards**, on by default (`docs/DATA.md`). `card.py` builds each card field by field from a fixed list: values become type / length / feature tags, names become HMAC hashes keyed by a per-install secret that is never sent. Schema: `data/share_card.schema.json`, copied verbatim to the intake function (a test keeps them identical). `send.py`: off switches `DO_NOT_TRACK=1` > `ARGUS_TELEMETRY=0\|1` > `argus telemetry off`; outbox `.argus/outbox/`, dedupe per run, daily cap, 2 s POST on a thread. Called from `storage.save_run`; any error is swallowed. `tests/conftest.py` sets `ARGUS_TELEMETRY=0` so tests never send |
 | `supabase/telemetry/` + `admin/` | Telemetry intake (separate Supabase project: schema-validating edge function, rate limits, RLS, 12-month retention) and the private Next.js admin panel. `admin/` is excluded from the sdist |
+| `tests/test_cycle_detection_oracle.py` | Checks `has_cycles` against an independent topological-order oracle on seven graphs, plus the self-loop convention ARGUS uses |
 | `src/argus/data/signatures.json` | Bundled semantic failure signatures |
 
 ### Semantic Signature Registry (`registry.py` + `data/signatures.json`)
