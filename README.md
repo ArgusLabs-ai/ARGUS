@@ -100,6 +100,56 @@ No key? ARGUS still works — it falls back to heuristic-only detection, no cras
 
 Hosted cloud sync is opt-in. `argus login` alone uploads nothing; full runs (every node input and output) go up only with `ARGUS_CLOUD_SYNC=1`. To keep a field out of the run file entirely, `ArgusRecorder(redact_keys={"ssn", "api_key"})`.
 
+Telemetry is **on by default** and sends the **shape** of each run, never its data. Read [Telemetry: shapes, never values](#telemetry-shapes-never-values) before you run Argus on real data.
+
+---
+
+## Telemetry: shapes, never values
+
+> [!IMPORTANT]
+> **Argus never sends your data.** After each run it sends one anonymous **shape card**: *what kind* of thing each node returned, never *what* it returned. No prompt, model output, state value, tool input or output, exception message, node name, field name, tool name, API key, file path or email address leaves your machine through telemetry.
+
+**Why it exists:** we use these cards to measure which rules catch real failures and which fire on healthy runs. Without them, we can't tell whether Argus is right.
+
+**Example.** Your node returns:
+
+```json
+{"customer": {"email": "ana@acme.com"}, "refund_status": "scheduled"}
+```
+
+The card carries only this:
+
+```json
+{"t": "object", "keys": {
+  "k_91c2…": {"t": "object", "keys": {"k_4be0…": {"t": "string", "len": 12, "f": ["email_like"]}}},
+  "k_e11d…": {"t": "string", "len": 9, "f": ["done_word"]}}}
+```
+
+- **Values become shapes.**
+  - A string becomes its type, its length and a few features from a fixed list (`empty`, `multiline`, `json_like`, `url`, `email_like`, `numeric`, `done_word`, `pending_word`, `error_word`, `refusal`, `placeholder`). The features are computed on your machine, and the text itself is never sent.
+  - A number becomes `int` or `float`, and its value is never sent.
+  - A boolean keeps `true`/`false`, because `ok: false` is the signal we're measuring.
+- **Names become keyed hashes.** `customer` becomes `k_91c2…`. The hash uses a secret stored only on your machine (`~/.argus/telemetry.json`) that is never sent, so nobody who reads the card can check a guess such as "is this `customer`?".
+- **What else is on the card:** the verdict, the IDs of rules that fired (such as `empty_output`), which hashed node was blamed, node and edge counts, step timings, and the Argus, LangGraph and Python versions.
+
+**How you can check this:**
+
+- **Only listed fields.** The card is built field by field from a fixed list; no code copies part of the run. The server rejects any card with a field that isn't in the [published schema](src/argus/data/share_card.schema.json).
+- **Canary tests.** A test fills a pipeline with fake secrets and fails if any of them reach a card. It runs on every pull request.
+- **Read every card.** Each card is written to `.argus/outbox/` before it's sent. `argus telemetry show-last` prints the last one exactly as it was sent.
+
+**Turn it off.** Any one of these works:
+
+```bash
+argus telemetry off      # this machine
+export ARGUS_TELEMETRY=0 # this shell / CI job
+export DO_NOT_TRACK=1    # every tool that honours it
+```
+
+`argus telemetry status` shows whether telemetry is on and why. Cards are deleted after 12 months.
+
+Telemetry is separate from cloud sync: full runs, with real values, are uploaded only if you set `ARGUS_CLOUD_SYNC=1`. Every field and the full list of what is never sent: [docs/DATA.md](docs/DATA.md).
+
 ---
 
 ## Quick Start (manual)
@@ -620,6 +670,8 @@ argus login                          # (optional) sign in for hosted cloud sync
 argus logout                         # clear stored credentials
 argus whoami                         # show current login status
 argus update                         # check for newer release
+argus telemetry status|on|off        # anonymous shape cards (docs/DATA.md)
+argus telemetry show-last            # print the last card sent, exactly as sent
 ```
 
 ---

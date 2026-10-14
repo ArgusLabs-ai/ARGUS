@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 
 import pytest
@@ -8,12 +9,20 @@ from argus.models import (
     RunRecord,
 )
 
+# Off for the whole process, not only inside a test: a session a test leaves
+# open is finalized by atexit, after every monkeypatch is undone, and would
+# otherwise send a real card from the real ~/.argus.
+os.environ["ARGUS_TELEMETRY"] = "0"
+
 
 @pytest.fixture(autouse=True)
 def tmp_argus_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".argus" / "runs").mkdir(parents=True)
     monkeypatch.setattr("argus.llm_proxy.is_available", lambda: False)
+    # Our own suite never sends telemetry or touches the real ~/.argus/telemetry.json.
+    monkeypatch.setenv("ARGUS_TELEMETRY", "0")
+    monkeypatch.setattr("argus.telemetry.send.SETTINGS_FILE", tmp_path / "telemetry.json")
     monkeypatch.setattr(
         "argus.session.ArgusSession._sync_shared_signatures",
         staticmethod(lambda: None),

@@ -117,12 +117,11 @@ Every wrapped node executes through this pipeline:
 | `src/argus/cli/main.py` | `argus` CLI entry point (Typer) |
 | `src/argus/cli/cmd_doctor.py` | `argus doctor` diagnostic command |
 | `src/argus/findings.py` | `collect_findings()` — builds `RunRecord.findings`; also the one-line terminal summary after invoke |
-<<<<<<< HEAD
 | `src/argus/suppressions.py` | `argus ignore` — project-level signature/anomaly suppressions in `.argus/config.json`; applied in `session.py` before status is decided, hits kept on `NodeEvent.suppressed_*` |
 | `src/argus/cli/cmd_ignore.py` | `argus ignore` CLI |
-=======
 | `src/argus/hotspots.py` | Cross-run origin × node finding counts for the dashboard hotspot matrix |
->>>>>>> origin/dev
+| `src/argus/telemetry/` | Anonymous **shape cards**, on by default (`docs/DATA.md`). `card.py` builds each card field by field from a fixed list: values become type / length / feature tags, names become HMAC hashes keyed by a per-install secret that is never sent. Schema: `data/share_card.schema.json`, copied verbatim to the intake function (a test keeps them identical). `send.py`: off switches `DO_NOT_TRACK=1` > `ARGUS_TELEMETRY=0\|1` > `argus telemetry off`; outbox `.argus/outbox/`, dedupe per run, daily cap, 2 s POST on a thread. Called from `storage.save_run`; any error is swallowed. `tests/conftest.py` sets `ARGUS_TELEMETRY=0` so tests never send |
+| `supabase/telemetry/` + `admin/` | Telemetry intake (separate Supabase project: schema-validating edge function, rate limits, RLS, 12-month retention) and the private Next.js admin panel. `admin/` is excluded from the sdist |
 | `src/argus/data/signatures.json` | Bundled semantic failure signatures |
 
 ### Semantic Signature Registry (`registry.py` + `data/signatures.json`)
