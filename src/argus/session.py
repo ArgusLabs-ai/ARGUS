@@ -475,6 +475,11 @@ class ArgusSession:
         self._initial_state: dict[str, Any] = {}
         self._started_at = datetime.now(timezone.utc).isoformat()
         self._completed = False
+        # The exception the whole graph run raised outside any node (a
+        # recursion limit, a bad router), set by grading.finish and by
+        # ArgusWatcher; None otherwise. A GeneratorExit / CancelledError here
+        # means the caller abandoned the run rather than the graph failing.
+        self._root_error: BaseException | str | None = None
         # True while nested inside batch/abatch (or stream→invoke): last-node
         # auto-finalize must wait so items 2..N are not dropped after _completed.
         self._defer_auto_finalize = False
@@ -537,11 +542,63 @@ class ArgusSession:
             )
             return
         try:
-            self._finalize()
+            self._finalize(unknown_end=not self._reached_its_end())
         except Exception:
             pass
         finally:
             self._finalize_lock.release()
+
+    def _reached_its_end(self) -> bool:
+        """Did a fully known topology run to its end?
+
+        Decides whether a run nobody ended may be called finished at exit. The
+        topology is the terminal nodes of ``set_node_names`` or, when only
+        ``set_edges`` was used, the edge map (``__start__`` / ``__end__`` or
+        ``__START__`` / ``__END__`` left out: a node that leads to ``__end__`` is a leaf).
+
+        The two ways to be wrong are not equal: a run called finished by
+        mistake claims a whole trace it may not have, while one called unknown
+        by mistake only loses that claim. So every doubt answers False:
+
+        - no topology: nothing says the run got anywhere;
+        - any conditional edge (``set_conditional_sources``, which the watcher
+          and the recorder fill from the graph, a router with no path map
+          included): the edge map cannot say which branch a router took, which
+          it left unrun, or how many a ``Send`` fan-out dispatched, and a router
+          whose targets could not be read is stored with no successors, like a
+          real leaf. No rule over that map tells a finished conditional run from
+          one cut short, so none is guessed. (Last-node auto-finalize, which
+          shrinks its expected terminals to the ones that ran, is separate and
+          unchanged; this only decides what a run nobody ended is called at exit.)
+        - an edge map alone, with a node that never ran: the map lists the
+          successors a node can have, not the ones this run took, so reaching
+          every leaf proves nothing (a -> b -> d and a -> c -> d, run a, c, d:
+          ``b`` was skipped by a router the map does not show). Every node of
+          the map must have run, and the map needs a leaf (one that only cycles
+          has no end to reach). Plain linear, fan-out and cyclic runs that ran
+          every node pass.
+
+        What this cannot see: a router that was never declared conditional and
+        has no entry in a hand-written map (``{"start": ["R"], "R": []}``) looks
+        exactly like a leaf, so a run that stopped there reads as complete.
+        Declare it with ``set_conditional_sources`` (the watcher and the recorder
+        do) and the run reads as unknown. With ``set_node_names`` registered
+        (``instrument`` does) only the terminals are checked, so a skipped
+        intermediate node is not seen there either.
+        """
+        if self._has_conditional_edges:
+            return False
+        if self._terminal_nodes:
+            return self._completed_terminals >= self._terminal_nodes
+        sentinels = ("__start__", "__end__", "__START__", "__END__")
+        edges = {
+            src: [dst for dst in successors if dst not in sentinels]
+            for src, successors in self.graph_edge_map.items()
+            if src not in sentinels
+        }
+        nodes = set(edges) | {dst for successors in edges.values() for dst in successors}
+        leaves = {n for n in nodes if not edges.get(n)}
+        return bool(leaves) and nodes <= {e.node_name for e in self._events}
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
@@ -1745,12 +1802,13 @@ class ArgusSession:
 
     # ── Finalization ──────────────────────────────────────────────────────────
 
-    def _finalize(self) -> None:
+    def _finalize(self, unknown_end: bool = False) -> None:
         """Persist the run, one caller at a time (a second waits, then finds it done)."""
+        # ``unknown_end``: finalized at interpreter exit, nobody ended the run.
         with self._finalize_lock:
-            self._finalize_serialized()
+            self._finalize_serialized(unknown_end)
 
-    def _finalize_serialized(self) -> None:
+    def _finalize_serialized(self, unknown_end: bool = False) -> None:
         # Collect all deferred LLM judge results before aggregating status
         self._apply_deferred_judges()
 
@@ -1810,6 +1868,28 @@ class ArgusSession:
             overall_status = "silent_failure"
         else:
             overall_status = "clean"
+
+        # Only a run whose graph ran to its natural end gets complete=True.
+        # A crash or interrupt means later steps may simply never have run,
+        # so absence on such a trace proves nothing. So does a graph that raised
+        # outside every node (`_root_error`) and a run that nobody ended —
+        # finalized at process exit with no known terminal node run, it may
+        # have been cut off anywhere ("unknown"). A stream its caller abandoned,
+        # or a run the user aborted with Ctrl-C, is "cancelled" (ArgusWatcher
+        # records either as the root error).
+        cancelled = isinstance(
+            self._root_error, (GeneratorExit, asyncio.CancelledError, KeyboardInterrupt)
+        )
+        if has_crash or (self._root_error is not None and not cancelled):
+            run_complete, end_reason = False, "exception"
+        elif has_interrupt:
+            run_complete, end_reason = False, "interrupted"
+        elif cancelled:
+            run_complete, end_reason = False, "cancelled"
+        elif unknown_end:
+            run_complete, end_reason = False, "unknown"
+        else:
+            run_complete, end_reason = True, "finished"
 
         # After overall_status is decided (a crashed run stays `crashed`) but
         # before first_failure — the omitter ran *before* the crash site, so it
@@ -1882,6 +1962,8 @@ class ArgusSession:
             dry_run=self._dry_run,
             coverage_summary=coverage_summary,
             judge_scores=judge_scores,
+            complete=run_complete,
+            end_reason=end_reason,
         )
 
         # Load parent run once if this is a replay (reused by correlation + comparison)
@@ -2083,6 +2165,7 @@ class ArgusSession:
             self._initial_state = {}
             self._started_at = datetime.now(timezone.utc).isoformat()
             self._completed = False
+            self._root_error = None
             self._defer_auto_finalize = False
             self._node_attempt_counts = {}
             self._completed_terminals = set()
@@ -2106,6 +2189,7 @@ class ArgusSession:
             self._initial_state = {}
             self._started_at = datetime.now(timezone.utc).isoformat()
             self._completed = False
+            self._root_error = None
             self._defer_auto_finalize = False
             self._node_attempt_counts = {}
             self._completed_terminals = set()
