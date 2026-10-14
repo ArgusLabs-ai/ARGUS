@@ -5,6 +5,12 @@ inspection findings, AND ambiguous heuristic signals as context.
 Returns a coherence ruling plus disambiguation verdicts — one LLM
 call instead of two.
 
+The verdict travels a forced tool-call channel (record_verdict): the model
+must emit its ruling as function arguments, so no prose-wrapping, truncation,
+or boolean-as-string repair stands between the ruling and the parser. The
+free-text JSON path is kept as a one-shot fallback for providers that drop
+the tools, and every skip still lands on heuristics (evaluated=False).
+
 Uses gpt-4o-mini by default — ~600 tokens in, ~150 tokens out.
 """
 
@@ -19,7 +25,9 @@ from argus.models import DisambiguationResult, SemanticCheckResult, SemanticSign
 
 _SYSTEM_PROMPT = (
     "You review the flags a deterministic checker already raised on one node "
-    "in an AI pipeline. You do not hunt for new failures. Respond with JSON:\n"
+    "in an AI pipeline. You do not hunt for new failures. Record your verdict "
+    "by calling the record_verdict tool — its schema mirrors this contract. "
+    "If no tool is available to you, respond with JSON instead:\n"
     '{"pass": bool, "reason": "<1 sentence>", "confidence": <0.0-1.0>, '
     '"failure_kind": "unrelated"|"contradiction"|"empty_or_missing"|"other", '
     '"evidence_considered": ["<signal1>", ...], '
@@ -148,10 +156,10 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
         return value if isinstance(value, dict) else None
 
     try:
-        parsed = _as_dict(json.loads(text))
+        parsed = _as_dict(_loads_verdict(text))
         if parsed is not None:
             return parsed
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         pass
 
     start = text.find("{")
@@ -160,17 +168,70 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
     end = text.rfind("}")
     if end > start:
         try:
-            parsed = _as_dict(json.loads(text[start : end + 1]))
+            parsed = _as_dict(_loads_verdict(text[start : end + 1]))
             if parsed is not None:
                 return parsed
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
             pass
 
     return _repair_truncated_json(text[start:])
 
 
+# The keys that carry a judge's ruling (a boolean ``pass``, or a choice in
+# ``verdict``). Everything else in a verdict is explanation.
+_DECISIVE_KEYS = frozenset({"pass", "verdict"})
+
+
+def _no_repeated_ruling(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook``: an object that names a decisive key twice has no ruling.
+
+    ``json.loads`` keeps the first key's position but the *last* value, so
+    ``{"verdict": "clean", "reason": "x", "verdict": "clean_with_wa`` would
+    look like a payload whose last key is ``reason``.
+
+    The hook runs on every object at every depth, so a ``pass`` or ``verdict``
+    repeated anywhere (inside one entry of a ``verdicts`` list, say) fails the
+    whole payload closed. Deliberately simple: a model that repeats a ruling
+    key is not to be trusted with the rest of the payload either.
+    """
+    keys = [key for key, _ in pairs]
+    if any(keys.count(key) > 1 for key in _DECISIVE_KEYS):
+        raise ValueError("repeated ruling key")
+    return dict(pairs)
+
+
+def _loads_verdict(text: str) -> Any:
+    """``json.loads`` for every place a verdict is read, so they all agree.
+
+    ``strict=False`` lets a raw CR/LF sit inside a string (models do emit one
+    in ``reason``); strict JSON would drop the whole verdict for it. The hook
+    makes a ruling named twice a ``ValueError``, whole payload or cut one.
+    """
+    return json.loads(text, strict=False, object_pairs_hook=_no_repeated_ruling)
+
+
 def _repair_truncated_json(fragment: str) -> dict[str, Any] | None:
-    """Close an unterminated JSON object (truncated string / missing braces)."""
+    """Close an unterminated JSON object (truncated string / missing braces).
+
+    Closing a cut-off *explanation* is fine. A cut-off *ruling* is not: a
+    ``"verdict": "clean`` closes to ``clean`` even when the model was writing
+    ``clean_with_warnings``, which is a different score. A ruling must arrive
+    whole (its string closed, its boolean spelled out), and appear once, or
+    there is no repair.
+
+    Covered: a cut inside a string value, or right after a value that is
+    already whole. Not covered, and giving no verdict (as before this guard): a
+    cut right after a backslash or inside a ``\\uXXXX`` escape, inside a key
+    name, right after a colon, or inside a half-written literal (``fal``,
+    ``0.``), including one nested in ``disambiguation_verdicts``.
+
+    The ruling can sit at any depth (a list of per-clause ``verdict`` values is
+    read item by item), so the check follows the cut to the last value in the
+    payload and the key that owns it, whichever object it is in. A cut ``no``
+    would close to ``no`` and read as ``False`` while the model was writing
+    ``none``. A decisive value nested deeper that is whole, or a cut in any
+    other key, is repaired as before.
+    """
     s = fragment.rstrip()
     if not s.startswith("{"):
         return None
@@ -201,10 +262,37 @@ def _repair_truncated_json(fragment: str) -> dict[str, Any] | None:
     candidate = candidate.rstrip().rstrip(",")
     candidate += "".join(reversed(stack))
     try:
-        parsed = json.loads(candidate)
-    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed = _loads_verdict(candidate)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    # Only the last value can be the cut one. A closed string or a spelled-out
+    # true/false is whole; an open string or a bare number (`1` of `10`) is not.
+    key, value = _last_value(parsed)
+    if key in _DECISIVE_KEYS and (in_string or not isinstance(value, (bool, str))):
+        return None
+    return parsed
+
+
+def _last_value(parsed: dict[str, Any]) -> tuple[str | None, Any]:
+    """The last value in a parsed payload, at any depth, and the key that owns it.
+
+    A list's items belong to the key that holds the list. The descent stops at
+    a decisive key: whatever it holds is the ruling.
+    """
+    key: str | None = None
+    node: Any = parsed
+    while True:
+        if isinstance(node, dict) and node:
+            key = next(reversed(node))
+            node = node[key]
+            if key in _DECISIVE_KEYS:
+                return key, node
+        elif isinstance(node, list) and node:
+            node = node[-1]
+        else:
+            return key, node
 
 
 _TRUE_STRINGS = frozenset({"true", "yes", "1"})
@@ -242,6 +330,157 @@ def _coerce_verdict(value: Any) -> bool | None:
 
 
 _FAILURE_KINDS = frozenset({"unrelated", "contradiction", "empty_or_missing", "other"})
+
+
+def build_verdict_tool(
+    name: str,
+    description: str,
+    properties: dict[str, Any],
+    required: list[str],
+) -> dict[str, Any]:
+    """One OpenAI-shaped function tool from a JSON-schema property map.
+
+    Any LLM verdict in ARGUS can travel the same forced-tool-call channel.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+JUDGE_VERDICT_TOOL = build_verdict_tool(
+    "record_verdict",
+    (
+        "Record the coherence verdict for the node under review. Call this "
+        "exactly once, with every field filled in."
+    ),
+    {
+        "pass": {
+            "type": "boolean",
+            "description": (
+                "true if the Prior Signals are wrong or the output is a "
+                "reasonable response to the input; false if those signals are "
+                "correct and should be kept."
+            ),
+        },
+        "reason": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "One sentence: why it passes or fails.",
+        },
+        "confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "How confident you are in the verdict, 0.0-1.0.",
+        },
+        "failure_kind": {
+            "type": "string",
+            "enum": sorted(_FAILURE_KINDS),
+            "description": (
+                "When pass is false, which kind of failure: unrelated (output "
+                "is about a different subject than the input), contradiction "
+                "(output asserts the opposite of the input or itself), "
+                "empty_or_missing (a field is blank, null or absent), other. "
+                "Use other when pass is true."
+            ),
+        },
+        "evidence_considered": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Every Prior Signal you evaluated (empty if none).",
+        },
+        "overridden_signals": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Prior Signals you chose to PASS despite (empty if you agreed "
+                "with all or none were provided)."
+            ),
+        },
+        "disambiguation_verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "sig_id": {"type": "string"},
+                    "is_failure": {"type": "boolean"},
+                    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "reason": {"type": "string", "maxLength": 200},
+                },
+                "required": ["sig_id", "is_failure", "confidence", "reason"],
+                "additionalProperties": False,
+            },
+            "description": (
+                "One verdict per Ambiguous Heuristic Match: is_failure true "
+                "means the pattern is a real problem, false means legitimate "
+                "content that happens to match."
+            ),
+        },
+    },
+    ["pass", "reason", "confidence", "failure_kind"],
+)
+
+# Forced function call: the verdict must arrive as tool arguments, not prose.
+JUDGE_TOOL_CHOICE = {"type": "function", "function": {"name": "record_verdict"}}
+
+
+def _verdict_from_tool_calls(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Pull the first tool call's arguments out of a normalized completion.
+
+    Every BYOK adapter (providers.py) hands the arguments over as a JSON
+    string; a dict is also tolerated for hand-rolled test doubles. Arguments cut
+    off by ``max_tokens`` get the same truncation repair as the content path,
+    which refuses a ruling cut mid-value. Anything still unparseable gave no
+    verdict, and the caller falls back to the free-text content path exactly
+    once, then skips.
+    """
+    choices = result.get("choices") or []
+    if not choices:
+        return None
+    message = choices[0].get("message") or {}
+    tool_calls = message.get("tool_calls") or []
+    if not tool_calls:
+        return None
+    arguments = (tool_calls[0].get("function") or {}).get("arguments")
+    if isinstance(arguments, dict):
+        return arguments
+    if not isinstance(arguments, str) or not arguments.strip():
+        return None
+    try:
+        parsed = _loads_verdict(arguments)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
+        return _repair_truncated_json(arguments.lstrip())
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _parse_verdict_payload(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Verdict payload from a completion, tool-call first, free-text fallback.
+
+    The structured channel is tried first; a response with no tool_calls
+    (older mocks, providers that dropped the tools, the hosted proxy) is read
+    as free text through the repairing extractor — one fallback, then the
+    caller skips.
+    """
+    parsed = _verdict_from_tool_calls(result)
+    if parsed is not None:
+        return parsed
+    choices = result.get("choices") or []
+    if not choices:
+        return None
+    raw = (choices[0].get("message") or {}).get("content")
+    if not isinstance(raw, str):
+        return None
+    return _extract_json_object(raw)
 
 
 def _coerce_failure_kind(value: Any) -> str:
@@ -479,6 +718,8 @@ def check_semantic_coherence(
             max_tokens=max_tokens,
             temperature=0.0,
             response_format={"type": "json_object"},
+            tools=[JUDGE_VERDICT_TOOL],
+            tool_choice=JUDGE_TOOL_CHOICE,
             timeout=8.0 if amb else 5.0,
         )
         elapsed = (time.perf_counter() - t0) * 1000
@@ -490,8 +731,7 @@ def check_semantic_coherence(
         if not choices:
             # No completion at all — the judge never ruled on anything.
             return _skip_result("check skipped: judge returned no completion", model, elapsed), []
-        raw = choices[0]["message"]["content"]
-        parsed = _extract_json_object(raw)
+        parsed = _parse_verdict_payload(result)
         if parsed is None:
             return _skip_result(
                 "check skipped: Unterminated string / invalid JSON from judge",

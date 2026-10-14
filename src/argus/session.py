@@ -28,6 +28,7 @@ import asyncio
 import atexit
 import functools
 import json
+import logging
 import threading
 import time
 import traceback
@@ -104,6 +105,13 @@ _MISSING = object()
 _JUDGE_BLOCKING_STATUSES = frozenset({"fail", "crashed", "semantic_fail", "degraded_input"})
 
 _REDACTED = "__REDACTED__"
+
+logger = logging.getLogger("argus")
+
+# How long the interpreter-exit hook waits for another thread that is already
+# finalizing this session. Finalize is serialized, and a daemon thread stuck
+# mid-finalize (a hung provider call) would otherwise hold exit forever.
+_ATEXIT_FINALIZE_WAIT_S = 30.0
 
 # Built-in patterns that match common secret shapes (compiled once at import)
 import re as _re  # noqa: E402
@@ -466,6 +474,12 @@ class ArgusSession:
         self._judge_pool: ThreadPoolExecutor | None = None
         self._pending_judges: list[_PendingJudge] = []
         self._pending_judges_lock = threading.Lock()
+        # One finalize at a time, held across drain + build + save. Without it
+        # a second finalize (a crash on a parallel branch) saw the first's
+        # emptied judge list, marked the run complete and saved it before the
+        # first had applied a single verdict. Re-entrant, so the exit hook can
+        # take it with a timeout and then call `_finalize`.
+        self._finalize_lock = threading.RLock()
 
         # Sync shared community signatures from Supabase in the background.
         # Non-blocking — if not logged in or network fails, silently skips.
@@ -498,10 +512,21 @@ class ArgusSession:
         """Safety net: persist at interpreter exit if invoke() never completed."""
         if self._completed:
             return
+        # Bounded: another thread mid-finalize may never finish (a daemon
+        # thread stuck in a provider call), and exit must not wait on it.
+        if not self._finalize_lock.acquire(timeout=_ATEXIT_FINALIZE_WAIT_S):
+            logger.warning(
+                "argus atexit finalize skipped: another thread is still finalizing, "
+                "gave up after %gs",
+                _ATEXIT_FINALIZE_WAIT_S,
+            )
+            return
         try:
             self._finalize()
         except Exception:
             pass
+        finally:
+            self._finalize_lock.release()
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
@@ -1499,7 +1524,10 @@ class ArgusSession:
             try:
                 result = pj.future.result(timeout=15)
                 semantic_check_result, disambiguation_results = result
-            except Exception:
+            except Exception as exc:
+                pj.future.cancel()  # gave up on it: a queued verdict must not start later
+                why = str(exc) or type(exc).__name__  # a bare TimeoutError says nothing
+                logger.warning("argus semantic judge verdict for %r lost: %s", pj.node_name, why)
                 semantic_check_result, disambiguation_results = None, []
 
             new_status = self._apply_judge_verdict(
@@ -1675,6 +1703,11 @@ class ArgusSession:
     # ── Finalization ──────────────────────────────────────────────────────────
 
     def _finalize(self) -> None:
+        """Persist the run, one caller at a time (a second waits, then finds it done)."""
+        with self._finalize_lock:
+            self._finalize_serialized()
+
+    def _finalize_serialized(self) -> None:
         # Collect all deferred LLM judge results before aggregating status
         self._apply_deferred_judges()
 
@@ -1967,7 +2000,7 @@ class ArgusSession:
             warnings.warn(
                 f"[argus] Failed to save run {record.run_id}: {exc}. "
                 "Check that the working directory is writable.",
-                stacklevel=2,
+                stacklevel=3,  # past `_finalize`, to whoever asked for the finalize
             )
 
     def finalize(self) -> None:
