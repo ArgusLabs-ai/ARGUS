@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.0 — 2026-10-14
+
+Anonymous telemetry, and a sturdier semantic judge.
+
+- After each run Argus sends one anonymous shape card: types, lengths and hashed names, never values. Turn it off with `argus telemetry off`, `ARGUS_TELEMETRY=0` or `DO_NOT_TRACK=1`. See `docs/DATA.md`
+- `argus telemetry status | on | off | show-last`. Every card is saved to `.argus/outbox/` before it is sent
+- The semantic judge returns its verdict through a forced tool call (OpenAI, Anthropic, Gemini) instead of free text. A cut-off verdict no longer counts
+- Fixed: two finalizes at once could save a run without its judge verdicts
+
 ## 0.12.2 — 2026-10-13
 
 Privacy fix: pipeline data no longer leaves your machine unless you opt in.
