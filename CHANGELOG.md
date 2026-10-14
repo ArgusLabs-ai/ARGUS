@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.1 — 2026-10-14
+
+- Runs record whether they finished: `complete` and `end_reason` (`finished`, `exception`, `interrupted`, `cancelled`, `unknown`). A graph that raised outside every node, an abandoned stream, Ctrl-C or a run saved at exit is `complete: false`. Recorded only, never gates
+
 ## 0.14.0 — 2026-10-14
 
 - Tool failures carry a retry class: `fatal`, `transient` or `rate_limited`. `argus fix` advises to match
