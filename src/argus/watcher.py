@@ -77,6 +77,7 @@ class ArgusWatcher:
         record_http: bool = True,
         semantic_judge: bool = False,
         judge_model: str = "gpt-4o",
+        expected: dict[str, Any] | None = None,
     ) -> None:
         # Build config from typed object or loose kwargs (backward compat)
         if config is not None:
@@ -96,6 +97,8 @@ class ArgusWatcher:
             )
         self._redact_functions = (config.redact_functions if config else redact_functions) or {}
         self._validators = validators or {}
+        # What a judge declaring `expected` is handed (per node, "*" fallback).
+        self._expected = expected
         self._http_recorder_ctx = None
         self._http_recorder = None
         self._session: ArgusSession | None = None
@@ -270,6 +273,7 @@ class ArgusWatcher:
             redact_functions=self._redact_functions,
             redact_patterns=cfg.redact_patterns,
             persist_state=cfg.persist_state,
+            expected=self._expected,
         )
         self._session.set_node_names(node_names)
         self._session.set_edges(edge_map)

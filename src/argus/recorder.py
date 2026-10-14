@@ -47,6 +47,7 @@ from uuid import UUID
 
 from argus.contextual import ConsumerMap
 from argus.grading import IncompleteTraceError, finish, new_session
+from argus.judge_api import check_floor
 from argus.llm_tracker import call_from_llm_outputs, usage_from_calls
 from argus.models import LLMCallInfo, ToolFailure
 from argus.review import Reviewer
@@ -442,12 +443,20 @@ class ArgusRecorder(BaseCallbackHandler):
         purposes: dict[str, str] | None = None,
         review: bool | None = None,
         redact_keys: set[str] | list[str] | None = None,
+        expected: dict[str, Any] | None = None,
+        judge_score_floor: float | None = None,
     ) -> None:
         if not _HAS_LANGCHAIN:
             raise ImportError(
                 "ArgusRecorder needs langchain-core. Install it with: pip install langchain-core"
             )
         self._validators = validators or {}
+        # What a judge declaring `expected` is handed (per node, "*" fallback), and
+        # the score under which it files a `low_judge_score` warning (None = 0.5).
+        self._expected = expected
+        self._judge_score_floor = (
+            None if judge_score_floor is None else check_floor(judge_score_floor)
+        )
         self._strict = strict
         # None = auto: on when a key/login is available, off otherwise (resolved
         # at attach). True/False force it either way regardless of key state.
@@ -586,6 +595,8 @@ class ArgusRecorder(BaseCallbackHandler):
             baseline=self._baseline,
             reviewer=self._reviewer,
             redact_keys=self._redact_keys,
+            expected=self._expected,
+            judge_score_floor=self._judge_score_floor,
         )
 
     def _resolve_reviewer(self) -> Reviewer | None:

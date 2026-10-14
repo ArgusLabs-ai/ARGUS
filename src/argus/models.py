@@ -61,6 +61,28 @@ class ValidatorResult:
         return (not self.is_valid) and self.severity != "warning"
 
 
+@dataclass
+class JudgeScore:
+    """One scored judgment from a name-bound validator (PRD-09), kept beside its
+    ``ValidatorResult`` on ``RunRecord.judge_scores``.
+
+    ``score`` is in [0, 1]; ``direction`` says which end is good, so runs rank
+    consistently for "maximize" and "minimize" judges. ``severity`` is ``ok`` or
+    ``warning`` only: a score below the floor is advisory and never gates. A
+    judge may return one of these directly; the session stamps ``validator_name``,
+    ``origin_node`` and ``step_index`` itself.
+    """
+
+    score: float
+    label: str = ""
+    explanation: str = ""
+    direction: Literal["maximize", "minimize"] = "maximize"
+    validator_name: str = ""  # e.g. "*:judge" — same key as ValidatorResult
+    severity: str = "ok"  # "ok" | "warning" (under the floor)
+    origin_node: str | None = None
+    step_index: int | None = None
+
+
 @dataclass(frozen=True)
 class SemanticCheckResult:
     """Result of the per-node LLM semantic coherence check."""
@@ -392,6 +414,11 @@ class RunRecord:
     # Keys: "structural", "heuristic", "judge". Empty on old runs / when a layer
     # ran on no nodes. Distinguishes "checked, clean" from "never checked".
     coverage_summary: dict[str, float] = field(default_factory=dict)
+    # One JudgeScore per scored judge invocation (PRD-09), stamped at the end of
+    # the run. A display/ranking surface (`argus stats <run>`, `argus diff`) and
+    # the source of `low_judge_score` findings; never a gate input. Default []
+    # loads records written before the field existed.
+    judge_scores: list[JudgeScore] = field(default_factory=list)
 
 
 # ── Correlation layer dataclasses ──────────────────────────────────────────────
@@ -596,6 +623,9 @@ class ArgusConfig:
     # Latency-correlated degradation thresholds (VAR-8)
     node_timeout_ms: float | None = None  # e.g. 30000 — flag outputs at >=95% of this
     min_expected_ms: float | None = None  # e.g. 500 — flag suspiciously fast LLM nodes
+    # A judge score under this floor is `low_judge_score` (warning, never a gate);
+    # for "minimize" judges the bad end is above 1 - floor (PRD-09).
+    judge_score_floor: float = 0.5
 
     def __post_init__(self) -> None:
         """Cross-validate parameter combinations — fail fast with clear messages (VAR-73)."""
@@ -624,6 +654,11 @@ class ArgusConfig:
 
         if not (0.0 <= self.sample_rate <= 1.0):
             errors.append(f"sample_rate must be between 0.0 and 1.0, got {self.sample_rate}")
+
+        if not (0.0 <= self.judge_score_floor <= 1.0):
+            errors.append(
+                f"judge_score_floor must be between 0.0 and 1.0, got {self.judge_score_floor}"
+            )
 
         # ── Cross-parameter checks ───────────────────────────────────────
         if not self.persist_state and self.investigate == "always":

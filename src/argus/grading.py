@@ -16,6 +16,7 @@ from functools import partial
 from typing import Any
 
 from argus.contextual import GUESS_CONFIDENCE, ConsumerMap, contextual_findings, readers_of
+from argus.judge_api import coerce_judge_score
 from argus.ledger import build_ledger
 from argus.models import Finding, InspectionResult, LLMInvestigationConfig, ToolFailure
 from argus.review import (
@@ -29,7 +30,7 @@ from argus.review import (
 from argus.session import ArgusSession
 from argus.trace_rules import PRODUCED_NOTHING, Hit, run_rules
 
-__all__ = ["IncompleteTraceError", "finish", "new_session"]
+__all__ = ["IncompleteTraceError", "coerce_judge_score", "finish", "new_session"]
 
 
 class IncompleteTraceError(RuntimeError):
@@ -81,6 +82,8 @@ def new_session(
     baseline: dict[str, Any] | None = None,
     reviewer: Reviewer | None = None,
     redact_keys: set[str] | list[str] | None = None,
+    expected: dict[str, Any] | None = None,
+    judge_score_floor: float | None = None,
 ) -> ArgusSession:
     """A session for one graph run, ready for ``on_node_start`` / ``on_node_end``.
 
@@ -98,12 +101,19 @@ def new_session(
     baseline``; without one the baseline rules in :mod:`argus.trace_rules` are off.
     ``reviewer`` settles the rules' heuristic calls (:mod:`argus.review`); without
     one the rules alone decide.
+
+    ``expected`` (per node name, ``"*"`` as the fallback) is what a judge that
+    declares ``expected`` is handed; ``judge_score_floor`` is where a judge score
+    becomes a ``low_judge_score`` warning (default 0.5). Both are local data, no
+    LLM call (:mod:`argus.judge_api`).
     """
     session = ArgusSession(
         max_field_size=max_field_size,
         validators=validators,
         strict=strict,
         redact_keys=redact_keys,
+        expected=expected,
+        judge_score_floor=judge_score_floor,
         # Explicit config (never None) so the session does not fall back to
         # its own auto-enable logic — the caller owns the decision here.
         llm_investigation=LLMInvestigationConfig(

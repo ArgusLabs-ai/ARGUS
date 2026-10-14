@@ -47,6 +47,7 @@ from argus.inspector import (
     inspect_tool_calls,
     inspect_transition,
 )
+from argus.judge_api import check_floor, coerce_judge_score, invoke_validator, is_name_bound
 from argus.ledger import build_ledger
 from argus.ledger import reducer_kinds as _reducer_kinds
 from argus.llm_tracker import create_tracker, extract_usage, install_handler, remove_handler
@@ -56,6 +57,7 @@ from argus.models import (
     BehaviorConfig,
     DisambiguationResult,
     InspectionResult,
+    JudgeScore,
     LLMInvestigationConfig,
     LLMUsage,
     NodeEvent,
@@ -386,6 +388,8 @@ class ArgusSession:
         config: ArgusConfig | None = None,
         node_timeout_ms: float | None = None,
         min_expected_ms: float | None = None,
+        expected: dict[str, Any] | None = None,
+        judge_score_floor: float | None = None,
     ) -> None:
         self.run_id: str = run_id or generate_run_id()
         self.max_field_size = max_field_size
@@ -399,6 +403,13 @@ class ArgusSession:
         self._sample_rate = config.sample_rate if config else 1.0
         self._persist_failures = config.persist_failures if config else True
         self._dry_run = config.dry_run if config else False
+        # A judge score under this floor is a warning finding (PRD-09); the
+        # kwarg wins over the config, the same as the two timeouts above.
+        self._judge_score_floor = (
+            check_floor(judge_score_floor)
+            if judge_score_floor is not None
+            else (config.judge_score_floor if config else 0.5)
+        )
         self.graph_node_names: list[str] = []
         # Keys the graph's state has; see RunRecord.state_keys.
         self.state_keys: list[str] = []
@@ -453,6 +464,10 @@ class ArgusSession:
 
         # validator map: key is node name or "*" (wildcard)
         self._validators: dict[str, Callable[[dict], tuple[bool, str]]] = validators or {}
+        # Per-node values for judges that declare `expected` (key: node name or
+        # "*"), and the JudgeScore rows of this run, stamped onto the record.
+        self._expected: dict[str, Any] = dict(expected or {})
+        self._judge_scores: list[JudgeScore] = []
 
         self._lock = threading.Lock()
         self._events: list[NodeEvent] = []
@@ -1034,6 +1049,7 @@ class ArgusSession:
                 validator_results = self._run_validators(
                     node_name,
                     output_snap,
+                    step_idx,
                 )
                 if any(r.is_blocking for r in validator_results) and status == "pass":
                     status = "semantic_fail"
@@ -1216,8 +1232,13 @@ class ArgusSession:
         if should_finalize:
             self._finalize()
 
-    def _run_validators(self, node_name: str, output_snap: dict) -> list[ValidatorResult]:
+    def _run_validators(
+        self, node_name: str, output_snap: dict, step_index: int | None = None
+    ) -> list[ValidatorResult]:
         results: list[ValidatorResult] = []
+        # `expected` is the node's entry, else the "*" one (a falsy entry is a value)
+        expected = self._expected.get(node_name, self._expected.get("*"))
+        metadata = {"node": node_name, "step_index": step_index, "run_id": self.run_id}
         # wildcard runs first, then node-specific
         for key in ("*", node_name):
             fn = self._validators.get(key)
@@ -1226,7 +1247,29 @@ class ArgusSession:
             fn_name = getattr(fn, "__name__", "lambda")
             vname = f"{key}:{fn_name}"
             try:
-                is_valid, message, severity = _parse_validator_return(fn(output_snap))
+                raw = invoke_validator(fn, output_snap, expected, metadata)
+                # Only a name-bound judge can return a score; a legacy
+                # `fn(output_snap)` validator is judged by the legacy parser alone.
+                score = (
+                    coerce_judge_score(
+                        raw,
+                        validator_name=vname,
+                        origin_node=node_name,
+                        step_index=step_index,
+                        floor=self._judge_score_floor,
+                    )
+                    if is_name_bound(fn)
+                    else None
+                )
+                if score is None:
+                    # Not a score: the legacy parser decides, so every shape it
+                    # knew (and every invalid one) gates exactly as before.
+                    is_valid, message, severity = _parse_validator_return(raw)
+                else:
+                    # Advisory: a low score is a warning, never blocking.
+                    self._judge_scores.append(score)
+                    is_valid, severity = score.severity == "ok", score.severity
+                    message = ": ".join(t for t in (score.label, score.explanation) if t)
             except Exception as ve:
                 is_valid, message, severity = False, f"Validator raised: {ve}", "critical"
             results.append(
@@ -1717,6 +1760,7 @@ class ArgusSession:
             self._completed = True
             self._apply_loop_retries()
             events_snapshot = list(self._events)
+            judge_scores = list(self._judge_scores)
 
         completed_at = datetime.now(timezone.utc).isoformat()
 
@@ -1837,6 +1881,7 @@ class ArgusSession:
             behavior_config=self._behavior_config,
             dry_run=self._dry_run,
             coverage_summary=coverage_summary,
+            judge_scores=judge_scores,
         )
 
         # Load parent run once if this is a replay (reused by correlation + comparison)
@@ -1961,7 +2006,9 @@ class ArgusSession:
         try:
             from argus.findings import collect_findings  # noqa: PLC0415
 
-            record.findings = collect_findings(record.steps, record.tool_chain_findings)
+            record.findings = collect_findings(
+                record.steps, record.tool_chain_findings, judge_scores=record.judge_scores
+            )
         except Exception:
             pass
 
@@ -2031,6 +2078,7 @@ class ArgusSession:
             self.parent_run_id = None
             self.replay_from_step = None
             self._events = []
+            self._judge_scores = []
             self._step_index = 0
             self._initial_state = {}
             self._started_at = datetime.now(timezone.utc).isoformat()
@@ -2053,6 +2101,7 @@ class ArgusSession:
             self.run_id = generate_run_id()
             self.parent_run_id = parent_run_id
             self._events = []
+            self._judge_scores = []
             self._step_index = 0
             self._initial_state = {}
             self._started_at = datetime.now(timezone.utc).isoformat()
