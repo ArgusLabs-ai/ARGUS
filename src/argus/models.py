@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
+from argus.failure_class import classify_failure_class, status_from_text, valid_failure_class
+
 # Closed status vocabularies. Documented in docs/STATUS.md — change both together.
 StepStatus = Literal[
     "pass",
@@ -40,6 +42,10 @@ class Finding:
     origin_node: str | None = None  # upstream culprit when known
     confidence: float | None = None
     suppressed: bool = False
+    # Retryability class of a tool-failure finding ("fatal" | "transient" |
+    # "rate_limited"); None for every other finding. Last on purpose: records
+    # saved before it existed load with the default.
+    failure_class: str | None = None
 
 
 @dataclass
@@ -106,6 +112,19 @@ class ToolFailure:
     field_name: str  # which key in the output dict triggered detection
     severity: str  # "critical" | "warning"
     evidence: str  # short human-readable description of what was found
+    # Retryability class ("fatal" | "transient" | "rate_limited", see
+    # argus.failure_class). Additive: never changes failure_type or severity.
+    # The inspector passes it where the status / error text is in scope; an
+    # empty or unrecognised value is derived from failure_type + the HTTP status
+    # in the evidence, so records saved before it existed load with a class.
+    failure_class: str = ""
+
+    def __post_init__(self) -> None:
+        # Never raises: a ToolFailure is built on every graded step and on every
+        # run load, and an unknown failure_type must not make a run unreadable.
+        self.failure_class = valid_failure_class(self.failure_class) or classify_failure_class(
+            self.failure_type, status_from_text(self.evidence), self.evidence
+        )
 
 
 @dataclass(frozen=True)
