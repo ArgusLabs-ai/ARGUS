@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0 — 2026-10-14
+
+- Tool failures carry a retry class: `fatal`, `transient` or `rate_limited`. `argus fix` advises to match
+- A bare 429 inside an ID or count no longer reads as a rate limit
+- Validators can return a score; `argus stats` lists scores, `argus diff` compares them. Low scores warn, never fail
+
 ## 0.13.0 — 2026-10-14
 
 Anonymous telemetry, and a sturdier semantic judge.
