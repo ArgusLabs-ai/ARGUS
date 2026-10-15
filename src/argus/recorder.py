@@ -45,7 +45,7 @@ from collections import Counter
 from typing import Any, Callable
 from uuid import UUID
 
-from argus import determinism
+from argus import determinism, verdict_cache
 from argus.contextual import ConsumerMap
 from argus.grading import IncompleteTraceError, finish, new_session
 from argus.judge_api import check_floor
@@ -618,7 +618,9 @@ class ArgusRecorder(BaseCallbackHandler):
                 )
             return None
         temperature, seed = determinism.resolve_sampling()
-        return Reviewer(purposes=self._purposes, temperature=temperature, seed=seed)
+        # Only a pinned request is ever cached, so an unseeded reviewer is given no scope.
+        scope = verdict_cache.current_scope() if determinism.is_pinned(temperature, seed) else None
+        return Reviewer(purposes=self._purposes, temperature=temperature, seed=seed, cache=scope)
 
     def _resolve_judge(self) -> bool:
         """Decide whether the LLM judge runs for this attach.
