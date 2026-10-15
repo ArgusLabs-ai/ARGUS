@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
+from argus.determinism import validate_sampling
 from argus.failure_class import classify_failure_class, status_from_text, valid_failure_class
 
 # Closed status vocabularies. Documented in docs/STATUS.md — change both together.
@@ -112,6 +113,14 @@ class SemanticCheckResult:
     # Audit only. None of these kinds fail `argus check` on their own —
     # the judge reviews soft flags and cannot originate a fail.
     failure_kind: str = "other"
+    # How reproducible the verdict claims to be (argus.determinism). `deterministic` is True
+    # only for temperature 0.0 with a seed the provider honored; `temperature`/`seed` are the
+    # sampling it was asked under (None on a record that predates this); `system_fingerprint`
+    # is OpenAI's backend build id. Audit metadata: never read by a gate.
+    deterministic: bool = False
+    temperature: float | None = None
+    seed: int | None = None
+    system_fingerprint: str = ""
 
 
 # Kept so older records and tests can name the kinds. None of them gate CI.
@@ -633,6 +642,11 @@ class ArgusConfig:
     # A judge score under this floor is `low_judge_score` (warning, never a gate);
     # for "minimize" judges the bad end is above 1 - floor (PRD-09).
     judge_score_floor: float = 0.5
+    # Judge sampling (argus.determinism). None = not set here: $ARGUS_JUDGE_SEED decides the
+    # seed (temperature 0.0, no seed). A verdict claims to be reproducible only at temperature
+    # 0.0 with a seed; anything else is stamped non-deterministic.
+    judge_temperature: float | None = None
+    judge_seed: int | None = None
 
     def __post_init__(self) -> None:
         """Cross-validate parameter combinations — fail fast with clear messages (VAR-73)."""
@@ -666,6 +680,12 @@ class ArgusConfig:
             errors.append(
                 f"judge_score_floor must be between 0.0 and 1.0, got {self.judge_score_floor}"
             )
+
+        errors.extend(
+            validate_sampling(
+                0.0 if self.judge_temperature is None else self.judge_temperature, self.judge_seed
+            )
+        )
 
         # ── Cross-parameter checks ───────────────────────────────────────
         if not self.persist_state and self.investigate == "always":

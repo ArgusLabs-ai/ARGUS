@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from argus import __version__
+from argus import __version__, determinism
 from argus.anomaly_detector import detect_anomalies
 from argus.contextual import node_writes_allow_empty
 from argus.inspector import (
@@ -410,6 +410,9 @@ class ArgusSession:
             if judge_score_floor is not None
             else (config.judge_score_floor if config else 0.5)
         )
+        # The judge's (temperature, seed), resolved once: ArgusConfig where set, else
+        # $ARGUS_JUDGE_SEED, else (0.0, no seed).
+        self._sampling = determinism.resolve_sampling(config)
         self.graph_node_names: list[str] = []
         # Keys the graph's state has; see RunRecord.state_keys.
         self.state_keys: list[str] = []
@@ -1371,6 +1374,7 @@ class ArgusSession:
                     ambiguous_signals=ambiguous_signals or None,
                     prior_rows=prior_rows or None,
                     consumers=self.consumers or None,
+                    **determinism.sampling_kwargs(*self._sampling),
                 )
                 return result, dis_results
             except Exception as _e:

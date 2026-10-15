@@ -21,6 +21,7 @@ import re
 import time
 from typing import Any
 
+from argus import determinism
 from argus.models import DisambiguationResult, SemanticCheckResult, SemanticSignal
 
 _SYSTEM_PROMPT = (
@@ -602,6 +603,8 @@ def check_semantic_coherence(
     ambiguous_signals: list[SemanticSignal] | None = None,
     prior_rows: list[Any] | None = None,
     consumers: dict[str, Any] | None = None,
+    temperature: float = 0.0,
+    seed: int | None = None,
 ) -> tuple[SemanticCheckResult, list[DisambiguationResult]]:
     """Check coherence and disambiguate heuristic signals in one LLM call.
 
@@ -614,6 +617,9 @@ def check_semantic_coherence(
     emptied legitimately partway through, still needed here. Scoped to the
     fields this node reads or writes (``consumers`` declares the rest), so the
     prompt grows with the node's contract, not with the run.
+
+    ``temperature``/``seed`` are the sampling the request asks for; the verdict records them
+    and whether it was ``deterministic`` (``determinism.stamp``). No seed is sent unless set.
     """
     t0 = time.perf_counter()
 
@@ -716,7 +722,7 @@ def check_semantic_coherence(
                 {"role": "user", "content": user_msg},
             ],
             max_tokens=max_tokens,
-            temperature=0.0,
+            **determinism.sampling_params(temperature, seed),
             response_format={"type": "json_object"},
             tools=[JUDGE_VERDICT_TOOL],
             tool_choice=JUDGE_TOOL_CHOICE,
@@ -763,6 +769,7 @@ def check_semantic_coherence(
             evidence_considered=tuple(parsed.get("evidence_considered", ())),
             overridden_signals=tuple(parsed.get("overridden_signals", ())),
             failure_kind=_coerce_failure_kind(parsed.get("failure_kind")),
+            **determinism.stamp(temperature, seed, result),
         )
 
         dis_results: list[DisambiguationResult] = []

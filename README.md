@@ -530,6 +530,19 @@ returns a few seconds later. Use it for CI and pre-deploy test runs, not on ever
 production request. If any reviewer call fails, the run is graded by the rules alone.
 When the reviewer runs, the per-step judge below does not.
 
+**Reproducible verdicts.** Both LLM judges (the reviewer and the per-step judge) run at
+temperature 0.0 and send no seed by default. Set `ARGUS_JUDGE_SEED=<int>` to pin
+one (for the per-step judge you can also use `ArgusConfig(judge_seed=...)`). A verdict then says
+it is *deterministic* only when the provider really took the seed (OpenAI and Gemini do,
+Anthropic and the hosted proxy do not, and OpenAI reasoning models like `o4-mini`, the default
+second model on an OpenAI key, take neither a temperature nor a seed, so a finding they
+confirmed is never deterministic). Seeds are best effort: this
+records what was asked and whether it could hold, it does not promise identical replies.
+`argus show` and `argus check` print a `judge determinism:` line, `argus check --format json`
+adds `judge_determinism`, and `argus diff` warns when two runs' verdicts came from different
+sampling. It is information only: no exit code reads it. Only verified reviewer items carry
+a stamp, so a run the reviewer cleared reports none.
+
 ## Semantic Judge
 
 The rules fail the build. The judge reviews the flags they raised — that is all.
@@ -673,6 +686,7 @@ from argus import ArgusWatcher, ArgusConfig
 config = ArgusConfig(
     semantic_judge=True,           # review soft rule flags (default: on when a key is set)
     judge_model="gpt-4o",          # model for the judge
+    judge_seed=0,                  # pin the judge's seed (temperature 0): its verdicts say they are reproducible
     node_timeout_ms=30000,         # flag outputs at ≥95% of this
     min_expected_ms=500,           # flag suspiciously fast LLM nodes
     sample_rate=0.5,               # persist 50% of clean runs (save disk)
