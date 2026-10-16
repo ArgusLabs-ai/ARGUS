@@ -86,7 +86,8 @@ _EXTERNAL_CALL_TYPES = frozenset(
 
 
 def _failure_plain(failure_type: str) -> str:
-    return _TOOL_FAILURE_PLAIN.get(failure_type, f"a `{failure_type}` failure was detected")
+    fallback = f"a `{_inline(failure_type, 40)}` failure was detected"
+    return _TOOL_FAILURE_PLAIN.get(failure_type, fallback)
 
 
 # Present tense, for the "Done when" conditions — the past-tense phrasings above
@@ -784,7 +785,7 @@ def _what_went_wrong(
             f"{_failure_plain(tf.failure_type)}{detail}. {passed_on}"
         )
         advice = _CLASS_ADVICE.get(tf.failure_class)
-        if advice and (tf.failure_type in _TOOL_FAILURE_PLAIN or tf.failure_type == "tool_error"):
+        if advice and tf.failure_type in _EXTERNAL_CALL_TYPES:
             paras.append(f"Retry guidance: {advice}.")
 
     if insp.missing_fields:
@@ -870,7 +871,7 @@ def _done_when(
                 continue
             if tf.failure_type not in _TOOL_FAILURE_CONDITION:
                 conds.append(
-                    f"`{target}` no longer produces a `{tf.failure_type}` failure "
+                    f"`{target}` no longer produces a `{_inline(tf.failure_type, 40)}` failure "
                     f"on `{_inline(tf.field_name, 80)}`."
                 )
                 continue
