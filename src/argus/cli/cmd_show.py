@@ -5,6 +5,7 @@ from collections import Counter
 
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
@@ -1089,7 +1090,7 @@ def _print_signals(event: NodeEvent, indent: str) -> None:
                 console.print(
                     f"  {indent}[dim]└─[/dim]  "
                     f"[bold magenta]⊗ {vr.validator_name}[/bold magenta]"
-                    f"  [italic]{vr.message}[/italic]"
+                    f"  [italic]{escape(vr.message)}[/italic]"
                 )
 
 
@@ -1176,7 +1177,7 @@ def _print_node(
                 console.print(
                     f"  {indent}[dim]└─[/dim]  "
                     f"[bold magenta]{vr.validator_name}[/bold magenta]"
-                    f"[italic]  {vr.message}[/italic]"
+                    f"[italic]  {escape(vr.message)}[/italic]"
                 )
         _print_signals(event, indent)
         console.print()

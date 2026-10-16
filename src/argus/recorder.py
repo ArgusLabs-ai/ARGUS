@@ -47,6 +47,7 @@ from uuid import UUID
 
 from argus.contextual import ConsumerMap
 from argus.grading import IncompleteTraceError, finish, new_session
+from argus.judge_api import check_floor
 from argus.llm_tracker import call_from_llm_outputs, usage_from_calls
 from argus.models import LLMCallInfo, ToolFailure
 from argus.review import Reviewer
@@ -441,17 +442,28 @@ class ArgusRecorder(BaseCallbackHandler):
         baseline: dict[str, Any] | None = None,
         purposes: dict[str, str] | None = None,
         review: bool | None = None,
+        redact_keys: set[str] | list[str] | None = None,
+        expected: dict[str, Any] | None = None,
+        judge_score_floor: float | None = None,
     ) -> None:
         if not _HAS_LANGCHAIN:
             raise ImportError(
                 "ArgusRecorder needs langchain-core. Install it with: pip install langchain-core"
             )
         self._validators = validators or {}
+        # What a judge declaring `expected` is handed (per node, "*" fallback), and
+        # the score under which it files a `low_judge_score` warning (None = 0.5).
+        self._expected = expected
+        self._judge_score_floor = (
+            None if judge_score_floor is None else check_floor(judge_score_floor)
+        )
         self._strict = strict
         # None = auto: on when a key/login is available, off otherwise (resolved
         # at attach). True/False force it either way regardless of key state.
         self._semantic_judge = semantic_judge
         self._max_field_size = max_field_size
+        # Field names whose values never reach the saved run file (any depth).
+        self._redact_keys = redact_keys
         # Declared `field -> [reader nodes]`; a trace cannot tell us who reads what.
         self._consumers = consumers
         # Healthy-run shape from `argus baseline` (argus.trace_rules D5/D6/D16).
@@ -582,6 +594,9 @@ class ArgusRecorder(BaseCallbackHandler):
             node_state_keys=self._inner_keys,
             baseline=self._baseline,
             reviewer=self._reviewer,
+            redact_keys=self._redact_keys,
+            expected=self._expected,
+            judge_score_floor=self._judge_score_floor,
         )
 
     def _resolve_reviewer(self) -> Reviewer | None:
@@ -779,7 +794,7 @@ class ArgusRecorder(BaseCallbackHandler):
         if run_id == root:
             with self._lock:
                 self._roots.pop(root, None)
-            self._finish(session, root)
+            self._finish(session, root, exc)
 
     def _close_step(
         self, session: ArgusSession, run_id: UUID, outputs: Any, exc: BaseException | None
@@ -1003,8 +1018,14 @@ class ArgusRecorder(BaseCallbackHandler):
 
     # ── the layer chain ─────────────────────────────────────────────────────
 
-    def _finish(self, session: ArgusSession, root: UUID) -> None:
-        """Grade one finished run (:func:`argus.grading.finish`)."""
+    def _finish(
+        self, session: ArgusSession, root: UUID, error: BaseException | None = None
+    ) -> None:
+        """Grade one finished run (:func:`argus.grading.finish`).
+
+        ``error`` is the exception the root chain ended with, if any: the graph
+        can raise outside every node, and then no step carries it.
+        """
         try:
             with self._lock:
                 # Only this run's steps. Another `.batch()` item may still be mid
@@ -1015,7 +1036,7 @@ class ArgusRecorder(BaseCallbackHandler):
                     if self._root_of.get(rid) == root
                 )
             self._blame_barren_subgraphs(session)
-            finish(session, self._consumers, unfinished)
+            finish(session, self._consumers, unfinished, error)
             self.run_ids.append(session.run_id)
         finally:
             # Exception-safe: a crashed grade must not leak this recorder into

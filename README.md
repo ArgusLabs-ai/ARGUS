@@ -94,11 +94,61 @@ argus key show           # list configured providers (masked); * marks the activ
 argus doctor             # reports BYOK provider / hosted / heuristic-only mode
 ```
 
-You pick the **provider**; ARGUS picks a sensible balanced model for each internal call (a cheap model for the frequent per-node checks, a stronger one for root-cause reasoning). Per-provider resolution order: env var (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) → saved key → (hosted proxy, if you're on the cloud tier) → heuristic-only.
+You pick the **provider**; ARGUS picks a sensible balanced model for each internal call (a cheap model for the frequent per-node checks, a stronger one for root-cause reasoning). Per-provider resolution order: env var (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) → saved key → (hosted proxy, only with `ARGUS_HOSTED_LLM=1`: the prompts carry your pipeline's real values and pass through ARGUS servers) → heuristic-only.
 
 No key? ARGUS still works — it falls back to heuristic-only detection, no crashes.
 
-Hosted cloud sync (`argus login`) is optional and only applies if a hosted backend is configured.
+Hosted cloud sync is opt-in. `argus login` alone uploads nothing; full runs (every node input and output) go up only with `ARGUS_CLOUD_SYNC=1`. To keep a field out of the run file entirely, `ArgusRecorder(redact_keys={"ssn", "api_key"})`.
+
+Telemetry is **on by default** and sends the **shape** of each run, never its data. Read [Telemetry: shapes, never values](#telemetry-shapes-never-values) before you run Argus on real data.
+
+---
+
+## Telemetry: shapes, never values
+
+> [!IMPORTANT]
+> **Argus never sends your data.** After each run it sends one anonymous **shape card**: *what kind* of thing each node returned, never *what* it returned. No prompt, model output, state value, tool input or output, exception message, node name, field name, tool name, API key, file path or email address leaves your machine through telemetry.
+
+**Why it exists:** we use these cards to measure which rules catch real failures and which fire on healthy runs. Without them, we can't tell whether Argus is right.
+
+**Example.** Your node returns:
+
+```json
+{"customer": {"email": "ana@acme.com"}, "refund_status": "scheduled"}
+```
+
+The card carries only this:
+
+```json
+{"t": "object", "keys": {
+  "k_91c2…": {"t": "object", "keys": {"k_4be0…": {"t": "string", "len": 12, "f": ["email_like"]}}},
+  "k_e11d…": {"t": "string", "len": 9, "f": ["done_word"]}}}
+```
+
+- **Values become shapes.**
+  - A string becomes its type, its length and a few features from a fixed list (`empty`, `multiline`, `json_like`, `url`, `email_like`, `numeric`, `done_word`, `pending_word`, `error_word`, `refusal`, `placeholder`). The features are computed on your machine, and the text itself is never sent.
+  - A number becomes `int` or `float`, and its value is never sent.
+  - A boolean keeps `true`/`false`, because `ok: false` is the signal we're measuring.
+- **Names become keyed hashes.** `customer` becomes `k_91c2…`. The hash uses a secret stored only on your machine (`~/.argus/telemetry.json`) that is never sent, so nobody who reads the card can check a guess such as "is this `customer`?".
+- **What else is on the card:** the verdict, the IDs of rules that fired (such as `empty_output`), which hashed node was blamed, node and edge counts, step timings, and the Argus, LangGraph and Python versions.
+
+**How you can check this:**
+
+- **Only listed fields.** The card is built field by field from a fixed list; no code copies part of the run. The server rejects any card with a field that isn't in the [published schema](src/argus/data/share_card.schema.json).
+- **Canary tests.** A test fills a pipeline with fake secrets and fails if any of them reach a card. It runs on every pull request.
+- **Read every card.** Each card is written to `.argus/outbox/` before it's sent. `argus telemetry show-last` prints the last one exactly as it was sent.
+
+**Turn it off.** Any one of these works:
+
+```bash
+argus telemetry off      # this machine
+export ARGUS_TELEMETRY=0 # this shell / CI job
+export DO_NOT_TRACK=1    # every tool that honours it
+```
+
+`argus telemetry status` shows whether telemetry is on and why. Cards are deleted after 12 months.
+
+Telemetry is separate from cloud sync: full runs, with real values, are uploaded only if you set `ARGUS_CLOUD_SYNC=1`. Every field and the full list of what is never sent: [docs/DATA.md](docs/DATA.md).
 
 ---
 
@@ -319,6 +369,8 @@ result = app.invoke(initial_state)
 | **Broken model output** | Unrendered `{{var}}`, lorem ipsum, `Dear [Customer Name]`; the model repeating itself; a generation cut at its token limit that was used anyway; JSON that did not parse, replaced by a default |
 | **Ungrounded claims** | A number in a model's output that nothing it was given supports (sums and % changes are allowed); an ID one or two characters off the one it was given (`A-1002` for `A-1001`); "I've refunded your order" or "I've processed your refund" with no refund call anywhere in the run; a loop repeating one tool call. Heuristic: with the [run reviewer](#run-reviewer) on, these fail only when it agrees |
 | **Not a failure** | A node's own verdict — `{"status": "denied"}` or a linter's `errors: [...]` — is a warning on that node's update, not a CI fail. The same shape from a **tool** response stays critical |
+| **Retry or fix?** | Every tool failure carries a retry class: `fatal` (fix the call: 401, 404, bad input), `transient` (a retry is reasonable: 5xx, timeouts, resets) or `rate_limited` (429). `argus check --format json` and `argus fix` use it. A bare `429` inside an ID or count (`order 1429 not found`) is not read as a rate limit |
+| **Runs that never finished** | A graph that raised outside every node (recursion limit, a router that raised), an abandoned stream, Ctrl-C, or a run saved at interpreter exit is recorded `complete: false` with an `end_reason`. Recorded only, never gates ([`docs/STATUS.md`](docs/STATUS.md)) |
 | **Latency degradation** | Node takes 95%+ of timeout, or suspiciously fast LLM call (likely cached/empty) |
 | **Conditional path confusion** | Unchosen branches correctly shown as "skipped" — not false "crashed" |
 
@@ -555,6 +607,47 @@ app = ArgusRecorder(validators={
 
 Validator failures cannot be overridden by the LLM judge — they are hard constraints.
 
+### Scored judges
+
+A validator can ask for what it needs by parameter name and return a **score** instead of pass/fail. It
+declares any of `output` (the node's output), `expected` (your reference value) and `metadata`
+(`{"node", "step_index", "run_id"}`) and gets exactly those:
+
+```python
+def total_close(output, expected):
+    got, want = output["total"], expected
+    return {"score": max(0.0, 1 - abs(got - want) / want), "label": "total", "explanation": f"{got} vs {want}"}
+
+app = ArgusRecorder(
+    validators={"calc": total_close},
+    expected={"calc": 142},      # per node name, or "*" as the fallback
+    judge_score_floor=0.5,       # a score under this is a warning (default 0.5)
+).attach(graph)
+```
+
+A score is a number in [0, 1], or a dict with `score` and optionally `label`, `explanation` and
+`direction` (`"maximize"` by default; `"minimize"` for "lower is better"). Scores are recorded on the run:
+`argus stats <run>` lists them and `argus diff <a> <b>` shows the change per validator and node.
+A score under the floor is a `low_judge_score` **warning** finding. It never fails the node or `argus check`.
+
+Everything else works as before: a validator that is not called by those names (below) is called with the
+output as its one argument, `fn(output)`, and `(ok, message[, severity])` still gates. Any other return from it,
+including a bare `True` / `False`, a string, `None`, or any bare number or score dict, is invalid and fails the
+node as it always did. A score only counts from a validator called by name.
+ARGUS calls a validator by name when, read from its own signature, every parameter it requires is `output`,
+`expected` or `metadata` (passable by keyword), and no positional parameter that is not passed by name comes
+before the first one that is. `def judge(output, expected, threshold=0.5)` is called by name (optional
+parameters after the names do not matter). These are still called `fn(output)` and never score: `lambda out: ...`,
+`def v(state, expected=None)`, `def v(x=None, output=None)` (the output goes to `x`), a positional-only
+`def v(output, /)`, `def v(*args)`, and a builtin. A `functools.partial` keeps the keywords it pinned
+(`partial(judge, expected="x")` is given `output` only; one that pins every name it declares is called
+`fn(output)`). A `functools.wraps` wrapper is judged by its own signature, not the function it wraps, so a
+`(*args, **kwargs)` wrapper is called `fn(output)`; set `wrapper.__signature__ = inspect.signature(judge)` to
+have it called by name.
+`output` and `expected` arrive as copies, so a judge cannot alter what is recorded. Judges are plain
+synchronous functions in your code; ARGUS does not load them from files, call an LLM for them, or time them
+out.
+
 ---
 
 ## Configuration
@@ -606,6 +699,7 @@ argus fix <id>                       # fix prompt for the root cause, ready to p
 argus replay <id> <node> --app m:fn  # re-run from a node, against the graph you pass
 argus diff <id-a> <id-b>             # compare two runs
 argus stats                          # signature hit stats, disable/enable/dispute signatures
+argus stats <id|last>                # a run's scored-judge results (see Scored judges)
 argus ingest langsmith <file.jsonl>  # grade a LangSmith export — no app, no graph needed
 argus edges mypkg.graph:build -o edges.json   # real topology for `ingest --edges`
 argus ignore <SIG-ID> [--node N]     # silence a noisy signature project-wide or on one node
@@ -620,6 +714,8 @@ argus login                          # (optional) sign in for hosted cloud sync
 argus logout                         # clear stored credentials
 argus whoami                         # show current login status
 argus update                         # check for newer release
+argus telemetry status|on|off        # anonymous shape cards (docs/DATA.md)
+argus telemetry show-last            # print the last card sent, exactly as sent
 ```
 
 ---
@@ -717,7 +813,7 @@ For AI setup prompts and integration guides, visit **[arguslabs.in](https://argu
 
 ---
 
-**v0.12.1** — [changelog](https://github.com/ArgusLabs-ai/ARGUS/releases)
+**v0.14.1** — [changelog](https://github.com/ArgusLabs-ai/ARGUS/releases)
 
 ## Contributing
 

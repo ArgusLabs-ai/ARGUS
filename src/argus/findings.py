@@ -9,9 +9,10 @@ import sys
 from typing import TYPE_CHECKING
 
 from argus.models import Finding
+from argus.tool_chain_analyzer import detect_recovered_after_transient
 
 if TYPE_CHECKING:
-    from argus.models import NodeEvent, RunRecord, ToolChainFinding
+    from argus.models import JudgeScore, NodeEvent, RunRecord, ToolChainFinding
 
 _QUIET_VALUES = frozenset({"1", "true", "yes", "on"})
 _SKIP_STATUSES = frozenset({"retried", "skipped", "pass"})
@@ -137,6 +138,7 @@ def _mk(
     field_path: str | None = None,
     origin_node: str | None = None,
     confidence: float | None = None,
+    failure_class: str | None = None,
 ) -> Finding:
     return Finding(
         id=_fid(type_, node, field_path, source),
@@ -148,6 +150,7 @@ def _mk(
         field_path=field_path,
         origin_node=origin_node,
         confidence=confidence,
+        failure_class=failure_class,
     )
 
 
@@ -235,6 +238,9 @@ def _event_findings(event: NodeEvent) -> list[Finding]:
                     reason=f"Node `{name}` output field `{tf.field_name}` shows {tf.evidence}.",
                     source="heuristic",
                     field_path=tf.field_name,
+                    # PRD-02: lets `argus check --format json` sort "retry the
+                    # run" from "fix the code" without reading the evidence.
+                    failure_class=tf.failure_class,
                 )
             )
         for sig in insp.semantic_signals:
@@ -335,18 +341,60 @@ def _event_findings(event: NodeEvent) -> list[Finding]:
 def collect_findings(
     steps: list[NodeEvent],
     tool_chain_findings: list[ToolChainFinding] | None = None,
+    judge_scores: list[JudgeScore] | None = None,
 ) -> list[Finding]:
     """Flatten every failure signal on a run into one ordered, de-duplicated list.
 
     Retried and skipped steps are excluded (they do not count against the run —
     see docs/STATUS.md). Order: critical before warning before info, then step
     order. Ids are content hashes, stable across runs of the same graph.
+
+    A ``judge_scores`` row under its floor (``severity == "warning"``, decided
+    when the run was recorded) is a ``low_judge_score`` warning on its node. It
+    stands in for the generic ``validator`` finding the same invocation would
+    otherwise file, and its id includes the step, so one judge on one node at
+    two steps keeps both. Advisory: a finding only, never a status or a gate.
+
+    Recovered-after-transient (PRD-02): a node that passed after its retried
+    steps absorbed >=2 transient or rate-limited tool failures gets an info
+    ``recovered_after_transient`` finding. It annotates a clean run that hid a
+    flaky dependency and never gates.
     """
     raw: list[tuple[int, Finding]] = []
+    inactive = {
+        ev.step_index for ev in steps if ev.status in _INACTIVE and ev.step_index is not None
+    }
+    low = [js for js in judge_scores or [] if js.severity == "warning"]
+    low = [js for js in low if js.step_index not in inactive]
+    judged = {(js.step_index, js.validator_name) for js in low}
     for ev in steps:
         if ev.status in _INACTIVE:
             continue
-        raw.extend((ev.step_index, f) for f in _event_findings(ev))
+        raw.extend(
+            (ev.step_index, f)
+            for f in _event_findings(ev)
+            if not (f.type == "validator" and (ev.step_index, f.field_path) in judged)
+        )
+    for js in low:
+        node = js.origin_node or "*"
+        said = ": ".join(t for t in (js.label, js.explanation) if t)
+        raw.append(
+            (
+                10**9 if js.step_index is None else js.step_index,
+                _mk(
+                    node=node,
+                    type_="low_judge_score",
+                    severity="warning",
+                    reason=(
+                        f"Judge `{js.validator_name}` scored `{node}` {js.score:.2f} "
+                        f"({js.direction}), under the floor" + (f": {said}" if said else "")
+                    ),
+                    source="validator",
+                    field_path=f"{js.validator_name}@{js.step_index}",
+                    origin_node=js.origin_node,
+                ),
+            )
+        )
     for tc in tool_chain_findings or []:
         node = tc.nodes_involved[0] if tc.nodes_involved else "*"
         raw.append(
@@ -359,6 +407,24 @@ def collect_findings(
                     reason=f"Across {', '.join(tc.nodes_involved) or 'the run'}: {tc.description}",
                     source="heuristic",
                     confidence=tc.confidence,
+                ),
+            )
+        )
+
+    for node, absorbed in detect_recovered_after_transient(steps):
+        raw.append(
+            (
+                10**9,
+                _mk(
+                    node=node,
+                    type_="recovered_after_transient",
+                    severity="info",
+                    reason=(
+                        f"Node `{node}` absorbed {absorbed} transient failures across retried "
+                        "steps before it passed; the run is clean, but a dependency looks flaky."
+                    ),
+                    source="heuristic",
+                    origin_node=node,
                 ),
             )
         )

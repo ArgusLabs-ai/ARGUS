@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
+from argus.failure_class import classify_failure_class, status_from_text, valid_failure_class
+
 # Closed status vocabularies. Documented in docs/STATUS.md — change both together.
 StepStatus = Literal[
     "pass",
@@ -40,6 +42,10 @@ class Finding:
     origin_node: str | None = None  # upstream culprit when known
     confidence: float | None = None
     suppressed: bool = False
+    # Retryability class of a tool-failure finding ("fatal" | "transient" |
+    # "rate_limited"); None for every other finding. Last on purpose: records
+    # saved before it existed load with the default.
+    failure_class: str | None = None
 
 
 @dataclass
@@ -53,6 +59,28 @@ class ValidatorResult:
     @property
     def is_blocking(self) -> bool:
         return (not self.is_valid) and self.severity != "warning"
+
+
+@dataclass
+class JudgeScore:
+    """One scored judgment from a name-bound validator (PRD-09), kept beside its
+    ``ValidatorResult`` on ``RunRecord.judge_scores``.
+
+    ``score`` is in [0, 1]; ``direction`` says which end is good, so runs rank
+    consistently for "maximize" and "minimize" judges. ``severity`` is ``ok`` or
+    ``warning`` only: a score below the floor is advisory and never gates. A
+    judge may return one of these directly; the session stamps ``validator_name``,
+    ``origin_node`` and ``step_index`` itself.
+    """
+
+    score: float
+    label: str = ""
+    explanation: str = ""
+    direction: Literal["maximize", "minimize"] = "maximize"
+    validator_name: str = ""  # e.g. "*:judge" — same key as ValidatorResult
+    severity: str = "ok"  # "ok" | "warning" (under the floor)
+    origin_node: str | None = None
+    step_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +134,19 @@ class ToolFailure:
     field_name: str  # which key in the output dict triggered detection
     severity: str  # "critical" | "warning"
     evidence: str  # short human-readable description of what was found
+    # Retryability class ("fatal" | "transient" | "rate_limited", see
+    # argus.failure_class). Additive: never changes failure_type or severity.
+    # The inspector passes it where the status / error text is in scope; an
+    # empty or unrecognised value is derived from failure_type + the HTTP status
+    # in the evidence, so records saved before it existed load with a class.
+    failure_class: str = ""
+
+    def __post_init__(self) -> None:
+        # Never raises: a ToolFailure is built on every graded step and on every
+        # run load, and an unknown failure_type must not make a run unreadable.
+        self.failure_class = valid_failure_class(self.failure_class) or classify_failure_class(
+            self.failure_type, status_from_text(self.evidence), self.evidence
+        )
 
 
 @dataclass(frozen=True)
@@ -373,6 +414,18 @@ class RunRecord:
     # Keys: "structural", "heuristic", "judge". Empty on old runs / when a layer
     # ran on no nodes. Distinguishes "checked, clean" from "never checked".
     coverage_summary: dict[str, float] = field(default_factory=dict)
+    # One JudgeScore per scored judge invocation (PRD-09), stamped at the end of
+    # the run. A display/ranking surface (`argus stats <run>`, `argus diff`) and
+    # the source of `low_judge_score` findings; never a gate input. Default []
+    # loads records written before the field existed.
+    judge_scores: list[JudgeScore] = field(default_factory=list)
+    # Did the run reach its natural end? False for a crash, an interrupt, a
+    # graph that raised outside every node, a stream its caller abandoned, or
+    # a run nobody ended (finalized at interpreter exit). Old run files derive
+    # it on load (storage._run_completeness). Recorded only; never gates.
+    complete: bool = True
+    # None | "finished" | "exception" | "interrupted" | "cancelled" | "unknown"
+    end_reason: str | None = None
 
 
 # ── Correlation layer dataclasses ──────────────────────────────────────────────
@@ -577,6 +630,9 @@ class ArgusConfig:
     # Latency-correlated degradation thresholds (VAR-8)
     node_timeout_ms: float | None = None  # e.g. 30000 — flag outputs at >=95% of this
     min_expected_ms: float | None = None  # e.g. 500 — flag suspiciously fast LLM nodes
+    # A judge score under this floor is `low_judge_score` (warning, never a gate);
+    # for "minimize" judges the bad end is above 1 - floor (PRD-09).
+    judge_score_floor: float = 0.5
 
     def __post_init__(self) -> None:
         """Cross-validate parameter combinations — fail fast with clear messages (VAR-73)."""
@@ -605,6 +661,11 @@ class ArgusConfig:
 
         if not (0.0 <= self.sample_rate <= 1.0):
             errors.append(f"sample_rate must be between 0.0 and 1.0, got {self.sample_rate}")
+
+        if not (0.0 <= self.judge_score_floor <= 1.0):
+            errors.append(
+                f"judge_score_floor must be between 0.0 and 1.0, got {self.judge_score_floor}"
+            )
 
         # ── Cross-parameter checks ───────────────────────────────────────
         if not self.persist_state and self.investigate == "always":

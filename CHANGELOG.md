@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.14.1 — 2026-10-14
+
+- Runs record whether they finished: `complete` and `end_reason` (`finished`, `exception`, `interrupted`, `cancelled`, `unknown`). A graph that raised outside every node, an abandoned stream, Ctrl-C or a run saved at exit is `complete: false`. Recorded only, never gates
+
+## 0.14.0 — 2026-10-14
+
+- Tool failures carry a retry class: `fatal`, `transient` or `rate_limited`. `argus fix` advises to match
+- A bare 429 inside an ID or count no longer reads as a rate limit
+- Validators can return a score; `argus stats` lists scores, `argus diff` compares them. Low scores warn, never fail
+
+## 0.13.0 — 2026-10-14
+
+Anonymous telemetry, and a sturdier semantic judge.
+
+- After each run Argus sends one anonymous shape card: types, lengths and hashed names, never values. Turn it off with `argus telemetry off`, `ARGUS_TELEMETRY=0` or `DO_NOT_TRACK=1`. See `docs/DATA.md`
+- `argus telemetry status | on | off | show-last`. Every card is saved to `.argus/outbox/` before it is sent
+- The semantic judge returns its verdict through a forced tool call (OpenAI, Anthropic, Gemini) instead of free text. A cut-off verdict no longer counts
+- Fixed: two finalizes at once could save a run without its judge verdicts
+
+## 0.12.2 — 2026-10-13
+
+Privacy fix: pipeline data no longer leaves your machine unless you opt in.
+
+- `argus login` no longer uploads every run. Full runs sync only with `ARGUS_CLOUD_SYNC=1`
+- Shared signatures carry the pattern and counts only: no evidence, reasoning, node names or email
+- The hosted LLM fallback (which sends real values in the prompt) runs only with `ARGUS_HOSTED_LLM=1`. Your own key (BYOK) works as before
+- `ArgusRecorder(redact_keys=...)` keeps chosen fields out of the run file
+
 ## 0.12.1 — 2026-10-06
 
 - README: the quickstart says how to turn on the run reviewer (a key plus node purposes); image links point at ArgusLabs-ai/ARGUS; the validators example uses `ArgusRecorder`. No code changes

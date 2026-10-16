@@ -28,6 +28,7 @@ import asyncio
 import atexit
 import functools
 import json
+import logging
 import threading
 import time
 import traceback
@@ -46,6 +47,7 @@ from argus.inspector import (
     inspect_tool_calls,
     inspect_transition,
 )
+from argus.judge_api import check_floor, coerce_judge_score, invoke_validator, is_name_bound
 from argus.ledger import build_ledger
 from argus.ledger import reducer_kinds as _reducer_kinds
 from argus.llm_tracker import create_tracker, extract_usage, install_handler, remove_handler
@@ -55,6 +57,7 @@ from argus.models import (
     BehaviorConfig,
     DisambiguationResult,
     InspectionResult,
+    JudgeScore,
     LLMInvestigationConfig,
     LLMUsage,
     NodeEvent,
@@ -104,6 +107,13 @@ _MISSING = object()
 _JUDGE_BLOCKING_STATUSES = frozenset({"fail", "crashed", "semantic_fail", "degraded_input"})
 
 _REDACTED = "__REDACTED__"
+
+logger = logging.getLogger("argus")
+
+# How long the interpreter-exit hook waits for another thread that is already
+# finalizing this session. Finalize is serialized, and a daemon thread stuck
+# mid-finalize (a hung provider call) would otherwise hold exit forever.
+_ATEXIT_FINALIZE_WAIT_S = 30.0
 
 # Built-in patterns that match common secret shapes (compiled once at import)
 import re as _re  # noqa: E402
@@ -378,6 +388,8 @@ class ArgusSession:
         config: ArgusConfig | None = None,
         node_timeout_ms: float | None = None,
         min_expected_ms: float | None = None,
+        expected: dict[str, Any] | None = None,
+        judge_score_floor: float | None = None,
     ) -> None:
         self.run_id: str = run_id or generate_run_id()
         self.max_field_size = max_field_size
@@ -391,6 +403,13 @@ class ArgusSession:
         self._sample_rate = config.sample_rate if config else 1.0
         self._persist_failures = config.persist_failures if config else True
         self._dry_run = config.dry_run if config else False
+        # A judge score under this floor is a warning finding (PRD-09); the
+        # kwarg wins over the config, the same as the two timeouts above.
+        self._judge_score_floor = (
+            check_floor(judge_score_floor)
+            if judge_score_floor is not None
+            else (config.judge_score_floor if config else 0.5)
+        )
         self.graph_node_names: list[str] = []
         # Keys the graph's state has; see RunRecord.state_keys.
         self.state_keys: list[str] = []
@@ -445,6 +464,10 @@ class ArgusSession:
 
         # validator map: key is node name or "*" (wildcard)
         self._validators: dict[str, Callable[[dict], tuple[bool, str]]] = validators or {}
+        # Per-node values for judges that declare `expected` (key: node name or
+        # "*"), and the JudgeScore rows of this run, stamped onto the record.
+        self._expected: dict[str, Any] = dict(expected or {})
+        self._judge_scores: list[JudgeScore] = []
 
         self._lock = threading.Lock()
         self._events: list[NodeEvent] = []
@@ -452,6 +475,11 @@ class ArgusSession:
         self._initial_state: dict[str, Any] = {}
         self._started_at = datetime.now(timezone.utc).isoformat()
         self._completed = False
+        # The exception the whole graph run raised outside any node (a
+        # recursion limit, a bad router), set by grading.finish and by
+        # ArgusWatcher; None otherwise. A GeneratorExit / CancelledError here
+        # means the caller abandoned the run rather than the graph failing.
+        self._root_error: BaseException | str | None = None
         # True while nested inside batch/abatch (or stream→invoke): last-node
         # auto-finalize must wait so items 2..N are not dropped after _completed.
         self._defer_auto_finalize = False
@@ -466,6 +494,12 @@ class ArgusSession:
         self._judge_pool: ThreadPoolExecutor | None = None
         self._pending_judges: list[_PendingJudge] = []
         self._pending_judges_lock = threading.Lock()
+        # One finalize at a time, held across drain + build + save. Without it
+        # a second finalize (a crash on a parallel branch) saw the first's
+        # emptied judge list, marked the run complete and saved it before the
+        # first had applied a single verdict. Re-entrant, so the exit hook can
+        # take it with a timeout and then call `_finalize`.
+        self._finalize_lock = threading.RLock()
 
         # Sync shared community signatures from Supabase in the background.
         # Non-blocking — if not logged in or network fails, silently skips.
@@ -498,10 +532,73 @@ class ArgusSession:
         """Safety net: persist at interpreter exit if invoke() never completed."""
         if self._completed:
             return
+        # Bounded: another thread mid-finalize may never finish (a daemon
+        # thread stuck in a provider call), and exit must not wait on it.
+        if not self._finalize_lock.acquire(timeout=_ATEXIT_FINALIZE_WAIT_S):
+            logger.warning(
+                "argus atexit finalize skipped: another thread is still finalizing, "
+                "gave up after %gs",
+                _ATEXIT_FINALIZE_WAIT_S,
+            )
+            return
         try:
-            self._finalize()
+            self._finalize(unknown_end=not self._reached_its_end())
         except Exception:
             pass
+        finally:
+            self._finalize_lock.release()
+
+    def _reached_its_end(self) -> bool:
+        """Did a fully known topology run to its end?
+
+        Decides whether a run nobody ended may be called finished at exit. The
+        topology is the terminal nodes of ``set_node_names`` or, when only
+        ``set_edges`` was used, the edge map (``__start__`` / ``__end__`` or
+        ``__START__`` / ``__END__`` left out: a node that leads to ``__end__`` is a leaf).
+
+        The two ways to be wrong are not equal: a run called finished by
+        mistake claims a whole trace it may not have, while one called unknown
+        by mistake only loses that claim. So every doubt answers False:
+
+        - no topology: nothing says the run got anywhere;
+        - any conditional edge (``set_conditional_sources``, which the watcher
+          and the recorder fill from the graph, a router with no path map
+          included): the edge map cannot say which branch a router took, which
+          it left unrun, or how many a ``Send`` fan-out dispatched, and a router
+          whose targets could not be read is stored with no successors, like a
+          real leaf. No rule over that map tells a finished conditional run from
+          one cut short, so none is guessed. (Last-node auto-finalize, which
+          shrinks its expected terminals to the ones that ran, is separate and
+          unchanged; this only decides what a run nobody ended is called at exit.)
+        - an edge map alone, with a node that never ran: the map lists the
+          successors a node can have, not the ones this run took, so reaching
+          every leaf proves nothing (a -> b -> d and a -> c -> d, run a, c, d:
+          ``b`` was skipped by a router the map does not show). Every node of
+          the map must have run, and the map needs a leaf (one that only cycles
+          has no end to reach). Plain linear, fan-out and cyclic runs that ran
+          every node pass.
+
+        What this cannot see: a router that was never declared conditional and
+        has no entry in a hand-written map (``{"start": ["R"], "R": []}``) looks
+        exactly like a leaf, so a run that stopped there reads as complete.
+        Declare it with ``set_conditional_sources`` (the watcher and the recorder
+        do) and the run reads as unknown. With ``set_node_names`` registered
+        (``instrument`` does) only the terminals are checked, so a skipped
+        intermediate node is not seen there either.
+        """
+        if self._has_conditional_edges:
+            return False
+        if self._terminal_nodes:
+            return self._completed_terminals >= self._terminal_nodes
+        sentinels = ("__start__", "__end__", "__START__", "__END__")
+        edges = {
+            src: [dst for dst in successors if dst not in sentinels]
+            for src, successors in self.graph_edge_map.items()
+            if src not in sentinels
+        }
+        nodes = set(edges) | {dst for successors in edges.values() for dst in successors}
+        leaves = {n for n in nodes if not edges.get(n)}
+        return bool(leaves) and nodes <= {e.node_name for e in self._events}
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
@@ -1009,6 +1106,7 @@ class ArgusSession:
                 validator_results = self._run_validators(
                     node_name,
                     output_snap,
+                    step_idx,
                 )
                 if any(r.is_blocking for r in validator_results) and status == "pass":
                     status = "semantic_fail"
@@ -1191,8 +1289,13 @@ class ArgusSession:
         if should_finalize:
             self._finalize()
 
-    def _run_validators(self, node_name: str, output_snap: dict) -> list[ValidatorResult]:
+    def _run_validators(
+        self, node_name: str, output_snap: dict, step_index: int | None = None
+    ) -> list[ValidatorResult]:
         results: list[ValidatorResult] = []
+        # `expected` is the node's entry, else the "*" one (a falsy entry is a value)
+        expected = self._expected.get(node_name, self._expected.get("*"))
+        metadata = {"node": node_name, "step_index": step_index, "run_id": self.run_id}
         # wildcard runs first, then node-specific
         for key in ("*", node_name):
             fn = self._validators.get(key)
@@ -1201,7 +1304,29 @@ class ArgusSession:
             fn_name = getattr(fn, "__name__", "lambda")
             vname = f"{key}:{fn_name}"
             try:
-                is_valid, message, severity = _parse_validator_return(fn(output_snap))
+                raw = invoke_validator(fn, output_snap, expected, metadata)
+                # Only a name-bound judge can return a score; a legacy
+                # `fn(output_snap)` validator is judged by the legacy parser alone.
+                score = (
+                    coerce_judge_score(
+                        raw,
+                        validator_name=vname,
+                        origin_node=node_name,
+                        step_index=step_index,
+                        floor=self._judge_score_floor,
+                    )
+                    if is_name_bound(fn)
+                    else None
+                )
+                if score is None:
+                    # Not a score: the legacy parser decides, so every shape it
+                    # knew (and every invalid one) gates exactly as before.
+                    is_valid, message, severity = _parse_validator_return(raw)
+                else:
+                    # Advisory: a low score is a warning, never blocking.
+                    self._judge_scores.append(score)
+                    is_valid, severity = score.severity == "ok", score.severity
+                    message = ": ".join(t for t in (score.label, score.explanation) if t)
             except Exception as ve:
                 is_valid, message, severity = False, f"Validator raised: {ve}", "critical"
             results.append(
@@ -1499,7 +1624,10 @@ class ArgusSession:
             try:
                 result = pj.future.result(timeout=15)
                 semantic_check_result, disambiguation_results = result
-            except Exception:
+            except Exception as exc:
+                pj.future.cancel()  # gave up on it: a queued verdict must not start later
+                why = str(exc) or type(exc).__name__  # a bare TimeoutError says nothing
+                logger.warning("argus semantic judge verdict for %r lost: %s", pj.node_name, why)
                 semantic_check_result, disambiguation_results = None, []
 
             new_status = self._apply_judge_verdict(
@@ -1674,7 +1802,13 @@ class ArgusSession:
 
     # ── Finalization ──────────────────────────────────────────────────────────
 
-    def _finalize(self) -> None:
+    def _finalize(self, unknown_end: bool = False) -> None:
+        """Persist the run, one caller at a time (a second waits, then finds it done)."""
+        # ``unknown_end``: finalized at interpreter exit, nobody ended the run.
+        with self._finalize_lock:
+            self._finalize_serialized(unknown_end)
+
+    def _finalize_serialized(self, unknown_end: bool = False) -> None:
         # Collect all deferred LLM judge results before aggregating status
         self._apply_deferred_judges()
 
@@ -1684,6 +1818,7 @@ class ArgusSession:
             self._completed = True
             self._apply_loop_retries()
             events_snapshot = list(self._events)
+            judge_scores = list(self._judge_scores)
 
         completed_at = datetime.now(timezone.utc).isoformat()
 
@@ -1733,6 +1868,28 @@ class ArgusSession:
             overall_status = "silent_failure"
         else:
             overall_status = "clean"
+
+        # Only a run whose graph ran to its natural end gets complete=True.
+        # A crash or interrupt means later steps may simply never have run,
+        # so absence on such a trace proves nothing. So does a graph that raised
+        # outside every node (`_root_error`) and a run that nobody ended —
+        # finalized at process exit with no known terminal node run, it may
+        # have been cut off anywhere ("unknown"). A stream its caller abandoned,
+        # or a run the user aborted with Ctrl-C, is "cancelled" (ArgusWatcher
+        # records either as the root error).
+        cancelled = isinstance(
+            self._root_error, (GeneratorExit, asyncio.CancelledError, KeyboardInterrupt)
+        )
+        if has_crash or (self._root_error is not None and not cancelled):
+            run_complete, end_reason = False, "exception"
+        elif has_interrupt:
+            run_complete, end_reason = False, "interrupted"
+        elif cancelled:
+            run_complete, end_reason = False, "cancelled"
+        elif unknown_end:
+            run_complete, end_reason = False, "unknown"
+        else:
+            run_complete, end_reason = True, "finished"
 
         # After overall_status is decided (a crashed run stays `crashed`) but
         # before first_failure — the omitter ran *before* the crash site, so it
@@ -1804,6 +1961,9 @@ class ArgusSession:
             behavior_config=self._behavior_config,
             dry_run=self._dry_run,
             coverage_summary=coverage_summary,
+            judge_scores=judge_scores,
+            complete=run_complete,
+            end_reason=end_reason,
         )
 
         # Load parent run once if this is a replay (reused by correlation + comparison)
@@ -1928,7 +2088,9 @@ class ArgusSession:
         try:
             from argus.findings import collect_findings  # noqa: PLC0415
 
-            record.findings = collect_findings(record.steps, record.tool_chain_findings)
+            record.findings = collect_findings(
+                record.steps, record.tool_chain_findings, judge_scores=record.judge_scores
+            )
         except Exception:
             pass
 
@@ -1967,7 +2129,7 @@ class ArgusSession:
             warnings.warn(
                 f"[argus] Failed to save run {record.run_id}: {exc}. "
                 "Check that the working directory is writable.",
-                stacklevel=2,
+                stacklevel=3,  # past `_finalize`, to whoever asked for the finalize
             )
 
     def finalize(self) -> None:
@@ -1998,10 +2160,12 @@ class ArgusSession:
             self.parent_run_id = None
             self.replay_from_step = None
             self._events = []
+            self._judge_scores = []
             self._step_index = 0
             self._initial_state = {}
             self._started_at = datetime.now(timezone.utc).isoformat()
             self._completed = False
+            self._root_error = None
             self._defer_auto_finalize = False
             self._node_attempt_counts = {}
             self._completed_terminals = set()
@@ -2020,10 +2184,12 @@ class ArgusSession:
             self.run_id = generate_run_id()
             self.parent_run_id = parent_run_id
             self._events = []
+            self._judge_scores = []
             self._step_index = 0
             self._initial_state = {}
             self._started_at = datetime.now(timezone.utc).isoformat()
             self._completed = False
+            self._root_error = None
             self._defer_auto_finalize = False
             self._node_attempt_counts = {}
             self._completed_terminals = set()

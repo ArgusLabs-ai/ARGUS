@@ -58,6 +58,20 @@ Rules that follow from the table:
 
 "Active" = every node event whose status is not `retried` or `skipped`.
 
+### Did the run finish? — `RunRecord.complete` / `end_reason`
+
+Separate from the status: whether the run reached its natural end. Recorded only; it never changes a status or what `argus check` gates on.
+
+| `end_reason` | `complete` | When |
+|---|---|---|
+| `finished` | `true` | The run ended normally. |
+| `exception` | `false` | A node crashed, or the graph raised outside every node (recursion limit, a router that raised). |
+| `interrupted` | `false` | A node was interrupted (human-in-the-loop pause). |
+| `cancelled` | `false` | The caller abandoned a stream, or the user hit Ctrl-C. |
+| `unknown` | `false` | Nobody ended the run; it was saved at interpreter exit and the topology cannot prove it reached its end (any conditional edge, or a node that never ran). |
+
+Run files from before these fields derive them on load: `crashed` → `exception`, `interrupted` → `interrupted`, anything else → `complete: true`.
+
 ## Roll-up: node → run
 
 Evaluated in this order; the first match wins (`session.py` `_finalize`):
@@ -98,13 +112,66 @@ failures (`has_tool_warnings` / rate limits, etc.) also fail the gate even when
 
 Exit code is `1` on failure, `0` when clean.
 
+### Which error text is a non-gating `rate_limit` warning (intended behavior change, PRD-02)
+
+An `error` field becomes a `rate_limit` **warning** (never gates) only when `failure_class.is_rate_limit_text`
+reads it as one: an HTTP 429 in context (`HTTP 429`, `status code: 429`, `429 Too Many Requests`,
+`ResourceExhausted: 429 ...`, `got a 429`, `Request failed (429)`) or the words *rate limit*, *too many
+requests*, *throttled*. The old matcher was a bare substring search (`rate.?limit|quota.?exceed|too.?many.?requests?|429`),
+so these verdicts changed on purpose (checked with a 169-string differential against the pre-PRD-02 inspector):
+
+| Error text | Before | Now | Why |
+|---|---|---|---|
+| `quota exceeded` (any `quota.?exceed`) | `rate_limit` warning | critical `error_response` | a billing / plan limit, not a rate: waiting does not help |
+| `429` inside another number or as an id, count or line: `Order 1429 not found`, `port 4290`, `Item 429 is out of stock`, `Line 429`, `KeyError: 429` | `rate_limit` warning | critical `error_response` | not an HTTP status |
+| a leading 4xx/5xx followed by a unit or count noun: `429 MB file limit exceeded`, `500 items required` | `rate_limit` warning (429) / read as a status (5xx) | critical `error_response`, class `fatal` | a quantity, not a status |
+| a leading 5xx followed by a bare time unit: `503 seconds`, `500 s elapsed` | critical `error_response` (no class) | critical `error_response`, class `fatal` | a duration, not a status, so no longer read as `transient` (retry once) |
+| a leading 429 followed by a bare time unit: `429 seconds`, `429 secs`, `429 s left` | `rate_limit` warning | `rate_limit` warning (unchanged) | after a 429 the unit is a retry hint, so it still reads as a 429 rate limit |
+| `rate` + `limit` inside a longer word: `accurate limit exceeded`, `the corporate limit is 5` | `rate_limit` warning | critical `error_response` | not about rates |
+| `too many request parameters supplied`, the singular `Too Many Request` | `rate_limit` warning | critical `error_response` | bad input, not a rate limit |
+| `throttled`, `ThrottlingException: Rate exceeded` | critical `error_response` | `rate_limit` warning | a throttle is a rate limit (the one change that makes a run more lenient) |
+
+Real rate limits are unchanged when the 429 reads as a status (`HTTP 429`, `got a 429 from the API`,
+`Request failed (429)`, `hit a 429 rate limit`) and is followed by an HTTP reason phrase (`429 Too Many Requests`),
+`from`, `rate limit`, `limit` / `limits` (`hit a 429 limit exceeded`, `got 429 limits`), a connective or
+preposition on the stoplist in `failure_class.py` (`after`, `during`, `despite`, `via`...: `got 429 during
+retries`), end of text or punctuation. The words themselves (`rate limit exceeded`, `Too Many Requests`,
+`ratelimited`) are unchanged too. What did change is the plural-noun and count cases, below.
+
+#### A number followed by a plural noun after a call verb is read as a count, including `errors` and `responses`; the failure still gates
+
+After a call verb (`got`, `received`, `returned`, `hit a`, `failed (`) a number followed by a plural noun
+(optionally one word first, as in `new messages`), `id`, or, for a 5xx, `limit`, is a count, not a status: `got 429 messages in
+queue`, `failed (429) records skipped`, `got 500 new messages`, `hit a 500 limit`, and so
+`Request failed (503) Services unavailable`. This is **deliberate for `errors` and `responses` too**: ambiguous
+wording must fail closed, because reading a count as a 429 would turn a critical failure into a non-gating
+warning, while reading a real status as a count leaves it critical (only the retry class, or the rate-limit
+warning, is lost). Every row below is still a gating `error_response`.
+
+| Error text | Before | Now | Why |
+|---|---|---|---|
+| `got 429 responses`, `got 429 responses from the API` | `rate_limit` warning | critical `error_response`, class `fatal` | a plural noun after a call verb is a count |
+| `API returned 500 errors`, `API returned 500 errors from upstream`, `got 503 errors`, `received 500 responses` | critical `error_response` (no class) | critical `error_response`, class `fatal` (a 5xx status would be `transient`) | same: `errors` and `responses` are plural nouns like any other |
+
+Words that only end in `s` are not plurals (`got 503 news`, `lens`, `always`, `series`, `this`, `status`,
+`access`), and the one word skipped before a plural is never a preposition or connective
+(`got 503 during deploys`), so those stay statuses. Pinned by `tests/test_failure_class.py`
+(`test_the_deliberate_rate_limit_verdict_changes_are_pinned`, `test_a_count_after_a_call_verb_is_not_a_status`,
+`test_a_plural_after_a_call_verb_is_a_count_even_for_responses_and_errors`,
+`test_a_429_limit_after_a_call_verb_is_a_rate_limit_not_a_count`,
+`test_a_preposition_or_connective_is_not_a_skipped_adjective`,
+`test_a_word_that_only_looks_like_a_plural_is_not_a_count`,
+`test_a_status_after_a_call_verb_is_still_a_status`).
+
 ## The findings list — `RunRecord.findings`
 
 Statuses say *whether* a node failed; `findings[]` says *why*, once per signal, in one flat
 shape (`argus.models.Finding`): `id` (stable content hash), `node`, `type`, `severity`,
 `reason` (a full sentence), `source` (`heuristic | validator | anomaly | llm | crash`),
-optional `field_path`, `origin_node`, `confidence`, `suppressed`. Built at finalize by
-`findings.collect_findings`; retried/skipped steps contribute nothing. Records written before
+optional `field_path`, `origin_node`, `confidence`, `suppressed`, `failure_class`
+(`fatal | transient | rate_limited` on tool-failure findings, else null). Built at finalize by
+`findings.collect_findings`; retried/skipped steps contribute nothing (they only feed
+the info finding `recovered_after_transient`). Records written before
 `schema_version` "2" get the list back-filled on load. Consumers should read this instead of
 walking `steps[].inspection / validator_results / anomaly_signals / semantic_check`.
 
