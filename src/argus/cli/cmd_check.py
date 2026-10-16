@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
+from argus import determinism
 from argus.check import STRICT_CHOICES, StrictMode, evaluate_run
 from argus.cli import print_footer
 from argus.findings import format_run_finding
@@ -81,6 +82,8 @@ def check_payload(
         "failing_nodes": list(result.failing_nodes),
         "reasons": list(result.reasons),
         "findings": [dataclasses.asdict(f) for f in record.findings],
+        # Audit only, never a gate input: "deterministic" | "non-deterministic" | "mixed" | null.
+        "judge_determinism": determinism.status(record),
     }
 
 
@@ -156,6 +159,9 @@ def check_run(
         console.print(f"  [dim]fail-on {', '.join(sorted(fail_on_set))}[/dim]")
     if strict_mode != "critical_only":
         console.print(f"  [dim]strict {strict_mode}[/dim]")
+    judge_line = determinism.describe(record)
+    if judge_line:  # audit only: the pass/fail outcome below never reads it
+        console.print(f"  [dim]judge determinism: {escape(judge_line)}[/dim]")
 
     # PRD-02: a flaky dependency the run absorbed. Info only; never changes the verdict.
     for f in record.findings:

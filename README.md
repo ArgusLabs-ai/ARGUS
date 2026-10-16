@@ -530,6 +530,31 @@ returns a few seconds later. Use it for CI and pre-deploy test runs, not on ever
 production request. If any reviewer call fails, the run is graded by the rules alone.
 When the reviewer runs, the per-step judge below does not.
 
+**Reproducible verdicts.** Both LLM judges (the reviewer and the per-step judge) run at
+temperature 0.0 and send no seed by default. Set `ARGUS_JUDGE_SEED=<int>` to pin
+one (for the per-step judge you can also use `ArgusConfig(judge_seed=...)`). A verdict then says
+it is *deterministic* only when the provider really took the seed (OpenAI and Gemini do,
+Anthropic and the hosted proxy do not, and OpenAI reasoning models like `o4-mini`, the default
+second model on an OpenAI key, take neither a temperature nor a seed, so a finding they
+confirmed is never deterministic). Seeds are best effort: this
+records what was asked and whether it could hold, it does not promise identical replies.
+`argus show` and `argus check` print a `judge determinism:` line, `argus check --format json`
+adds `judge_determinism`, and `argus diff` warns when two runs' verdicts came from different
+sampling. It is information only: no exit code reads it. Only verified reviewer items carry
+a stamp, so a run the reviewer cleared reports none.
+
+**Verdict cache.** With a seed set, a re-run that asks a judge the exact same question (the whole
+prompt, evidence included) reads the answer from `.argus/verdict_cache.db` instead of paying
+for the call: both the reviewer and the per-step judge use it, and a served verdict is
+recorded as `cached`. Only a request that can promise to be reproducible is ever cached (temperature 0.0,
+a seed the provider takes), so with no seed every call is live. Each row carries a signature
+made with a key that exists only on your machine (`~/.argus/verdict_cache.key`, mode 0600), so
+someone who can write to the database file cannot plant a verdict your run will believe; the
+verdict text itself is readable, like the run files next to it. `ARGUS_VERDICT_CACHE=0` turns
+it off, `ARGUS_RUN_SALT=<name>` keeps (say) CI and local verdicts apart, and
+`ARGUS_VERDICT_KEY_FILE=<path>` points at a key you restore yourself (CI). The reviewer's second
+model (`o4-mini`) takes no seed, so it is always asked live.
+
 ## Semantic Judge
 
 The rules fail the build. The judge reviews the flags they raised — that is all.
@@ -673,6 +698,7 @@ from argus import ArgusWatcher, ArgusConfig
 config = ArgusConfig(
     semantic_judge=True,           # review soft rule flags (default: on when a key is set)
     judge_model="gpt-4o",          # model for the judge
+    judge_seed=0,                  # pin the judge's seed (temperature 0): reproducible, and the verdict cache can serve them
     node_timeout_ms=30000,         # flag outputs at ≥95% of this
     min_expected_ms=500,           # flag suspiciously fast LLM nodes
     sample_rate=0.5,               # persist 50% of clean runs (save disk)
