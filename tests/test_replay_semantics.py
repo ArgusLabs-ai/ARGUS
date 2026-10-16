@@ -245,3 +245,42 @@ def test_a_watcher_run_still_replays_from_the_refs_it_recorded():
     assert step.node_name == "summarize"
     assert step.output_dict["summary"].startswith("legacy summary")
     assert step.input_state["docs"] == ["doc about refunds"], "input still from the ledger"
+
+
+# ── a failed replay must fail the shell ──────────────────────────────────────
+
+
+@pytest.mark.integration
+def test_an_unknown_node_exits_non_zero():
+    run_id = _trace_run()
+
+    with pytest.raises(typer.Exit) as exc:
+        replay_run(run_id, "no_such_node", app_module_str=None)
+    assert exc.value.exit_code == 1
+
+
+@pytest.mark.integration
+def test_a_replay_that_raises_exits_non_zero(monkeypatch, capsys):
+    """The error used to print and then exit 0 — green in CI with replay broken."""
+    run_id = _trace_run()
+    monkeypatch.setattr("argus.cli.cmd_replay._import_factory", lambda _ref: _graph)
+
+    def boom(*_a, **_kw):
+        raise ValueError("factory returned the wrong thing")
+
+    monkeypatch.setattr(ReplayEngine, "replay", boom)
+
+    with pytest.raises(typer.Exit) as exc:
+        replay_run(run_id, "summarize", app_module_str="m:f")
+    assert exc.value.exit_code == 1
+    assert "factory returned the wrong thing" in capsys.readouterr().out
+
+
+@pytest.mark.integration
+def test_a_factory_returning_a_compiled_graph_replays():
+    """langgraph 0.2+ keeps the builder on `.builder`, not `.graph`."""
+    run_id = _trace_run()
+
+    new_id = ReplayEngine().replay(run_id, "summarize", app_factory=lambda: _graph())
+
+    assert load_run(new_id).parent_run_id == run_id
