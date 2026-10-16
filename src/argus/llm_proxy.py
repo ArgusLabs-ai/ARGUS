@@ -101,6 +101,7 @@ def create_chat_completion(
     messages: list[dict[str, str]],
     max_tokens: int = 2000,
     temperature: float = 0.3,
+    seed: int | None = None,
     response_format: dict[str, str] | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
@@ -113,7 +114,9 @@ def create_chat_completion(
     on failure. Callers should check for the "error" key. ``tools``/
     ``tool_choice`` follow the OpenAI chat-completions convention; adapters
     that cannot honor them (the hosted proxy) silently drop them so the caller
-    can fall back to parsing message content.
+    can fall back to parsing message content. ``seed`` is the sampling seed: only the BYOK
+    adapters get it, and only the reply they mark ``seed_honored`` was really seeded (the
+    hosted proxy forwards no seed, so its replies never carry the mark).
     """
     provider, key = _resolve_byok(api_key)
     if key:
@@ -121,13 +124,15 @@ def create_chat_completion(
         actual_model = providers.resolve_model(
             provider, model, user_config.get_model_overrides()
         )
-        # tools/tool_choice are passed only when set so third-party adapter
+        # tools/tool_choice/seed are passed only when set so third-party adapter
         # stubs with the old signature keep working.
         extra: dict[str, Any] = {}
         if tools:
             extra["tools"] = tools
         if tool_choice:
             extra["tool_choice"] = tool_choice
+        if seed is not None:
+            extra["seed"] = seed
         return adapter(
             api_key=key,
             model=actual_model,

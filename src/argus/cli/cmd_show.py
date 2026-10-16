@@ -11,6 +11,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from argus import determinism
 from argus.cli import print_footer
 from argus.models import NodeEvent, RunRecord
 from argus.storage import last_run_id, list_runs, load_run
@@ -474,6 +475,13 @@ def _root_cause_chain_str(record: RunRecord) -> str:
     return "  →  ".join(parts)
 
 
+def _print_judge_determinism(record: RunRecord) -> None:
+    """How reproducible the run's judge verdicts are; nothing when it holds none."""
+    line = determinism.describe(record)
+    if line:
+        console.print(f"  [dim]judge determinism:[/dim] {escape(line)}")
+
+
 def _print_coverage_line(record: RunRecord) -> None:
     """Show how much of the run each detection layer actually evaluated.
 
@@ -517,6 +525,7 @@ def _print_run(record: RunRecord) -> None:
     console.print(status_line)
 
     _print_coverage_line(record)
+    _print_judge_determinism(record)
 
     if record.parent_run_id:
         console.print(

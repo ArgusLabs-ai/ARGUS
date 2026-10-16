@@ -22,6 +22,8 @@ def tmp_argus_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("argus.llm_proxy.is_available", lambda: False)
     # Our own suite never sends telemetry or touches the real ~/.argus/telemetry.json.
     monkeypatch.setenv("ARGUS_TELEMETRY", "0")
+    # Judges run unseeded in the suite unless a test sets a seed.
+    monkeypatch.delenv("ARGUS_JUDGE_SEED", raising=False)
     monkeypatch.setattr("argus.telemetry.send.SETTINGS_FILE", tmp_path / "telemetry.json")
     monkeypatch.setattr(
         "argus.session.ArgusSession._sync_shared_signatures",

@@ -8,6 +8,7 @@ from rich.markup import escape
 from rich.rule import Rule
 from rich.text import Text
 
+from argus import determinism
 from argus.cli import print_footer
 from argus.findings import _INACTIVE
 from argus.models import InspectionResult, JudgeScore, NodeEvent, RunRecord, ValidatorResult
@@ -89,6 +90,9 @@ def diff_runs(run_id_a: str, run_id_b: str | None = None) -> None:
 
     console.print()
     _print_header(before, after)
+    warning = determinism.comparability_warning(before, after)
+    if warning:  # a note on the verdicts only: the diff and its outcome are unchanged
+        console.print(f"  [yellow]{escape(warning)}[/yellow]")
     console.print()
     console.print(Rule(style="dim"))
     console.print()
