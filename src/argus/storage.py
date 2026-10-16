@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from argus import determinism
 from argus.failure_class import valid_failure_class
 from argus.findings import collect_findings
 from argus.models import (
@@ -717,7 +718,7 @@ def _deserialize_event(data: dict[str, Any]) -> NodeEvent:
             sc["evidence_considered"] = tuple(sc["evidence_considered"])
         if "overridden_signals" in sc:
             sc["overridden_signals"] = tuple(sc["overridden_signals"])
-        semantic_check = SemanticCheckResult(**sc)
+        semantic_check = SemanticCheckResult(**{**sc, **determinism.stamp_from_record(sc)})
     else:
         semantic_check = None
     usage = data.get("llm_usage")

@@ -77,6 +77,8 @@ class ArgusWatcher:
         record_http: bool = True,
         semantic_judge: bool = False,
         judge_model: str = "gpt-4o",
+        judge_temperature: float | None = None,
+        judge_seed: int | None = None,
         expected: dict[str, Any] | None = None,
     ) -> None:
         # Build config from typed object or loose kwargs (backward compat)
@@ -94,6 +96,8 @@ class ArgusWatcher:
                 record_http=record_http,
                 semantic_judge=semantic_judge,
                 judge_model=judge_model,
+                judge_temperature=judge_temperature,
+                judge_seed=judge_seed,
             )
         self._redact_functions = (config.redact_functions if config else redact_functions) or {}
         self._validators = validators or {}

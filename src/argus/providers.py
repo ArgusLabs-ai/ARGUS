@@ -9,6 +9,8 @@ and Gemini's are converted to the minimum callers read:
      "usage": {"prompt_tokens": int, "completion_tokens": int}}
 
 (``tool_calls`` only when the model made one) or {"error": "..."} on failure.
+A reply also carries ``"seed_honored": True`` when the caller's sampling seed really went to
+the model (see ``honors_seed``); a reply without the mark was not seeded, whatever was asked.
 This lets every existing caller keep reading
 ``result["choices"][0]["message"]["content"]`` and ``result["usage"]``
 regardless of which provider actually served the request.
@@ -75,6 +77,23 @@ def resolve_model(
     return overrides.get(tier) or DEFAULT_MODELS[provider][tier]
 
 
+def _is_reasoning_model(model: str) -> bool:
+    """OpenAI's o-series: no ``temperature``, no ``max_tokens``."""
+    return re.match(r"o\d", model) is not None
+
+
+def honors_seed(provider: str, model: str) -> bool:
+    """Does a request to this provider and model carry its sampling seed to the model?
+
+    OpenAI and Gemini take a seed (best effort: neither promises identical replies).
+    Anthropic has none. An OpenAI reasoning model takes no temperature, so a seed alone
+    pins nothing. The hosted proxy forwards neither, and any other route is unknown.
+    """
+    if provider == "openai":
+        return not _is_reasoning_model(model)
+    return provider == "google"
+
+
 def _post_json(
     url: str,
     headers: dict[str, str],
@@ -118,6 +137,7 @@ def _envelope(
     prompt_tokens: int,
     completion_tokens: int,
     tool_calls: list[dict[str, Any]] | None = None,
+    seed_honored: bool = False,
 ) -> dict[str, Any]:
     """Wrap provider output in the OpenAI response shape callers expect.
 
@@ -128,13 +148,16 @@ def _envelope(
     message: dict[str, Any] = {"content": content}
     if tool_calls:
         message["tool_calls"] = tool_calls
-    return {
+    reply: dict[str, Any] = {
         "choices": [{"message": message}],
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
         },
     }
+    if seed_honored:
+        reply["seed_honored"] = True
+    return reply
 
 
 def call_openai(
@@ -144,6 +167,7 @@ def call_openai(
     messages: list[dict[str, str]],
     max_tokens: int = 2000,
     temperature: float = 0.3,
+    seed: int | None = None,
     response_format: dict[str, str] | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
@@ -153,27 +177,35 @@ def call_openai(
 
     Reasoning models (``o1`` / ``o3`` / ``o4-mini`` …) reject ``temperature`` and
     ``max_tokens``; they take ``max_completion_tokens``, which also has to cover
-    their hidden reasoning.
+    their hidden reasoning. ``seed`` is sent with ``temperature`` (neither goes to a
+    reasoning model) and the reply is marked ``seed_honored``; OpenAI's own
+    ``system_fingerprint`` names the backend build that answered.
     """
     payload: dict[str, Any] = {"model": model, "messages": messages}
-    if re.match(r"o\d", model):
+    seeded = seed is not None and honors_seed("openai", model)
+    if _is_reasoning_model(model):
         payload["max_completion_tokens"] = max(max_tokens, 4000)
     else:
         payload["max_tokens"] = max_tokens
         payload["temperature"] = temperature
+        if seeded:
+            payload["seed"] = seed
     if response_format:
         payload["response_format"] = response_format
     if tools:
         payload["tools"] = tools
     if tool_choice:
         payload["tool_choice"] = tool_choice
-    return _post_json(
+    body = _post_json(
         _OPENAI_URL,
         {"Authorization": f"Bearer {api_key}"},
         payload,
         timeout,
         "OpenAI",
     )
+    if seeded and "error" not in body:
+        body["seed_honored"] = True
+    return body
 
 
 def _anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -219,6 +251,7 @@ def call_anthropic(
     messages: list[dict[str, str]],
     max_tokens: int = 2000,
     temperature: float = 0.3,
+    seed: int | None = None,
     response_format: dict[str, str] | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
@@ -230,6 +263,8 @@ def call_anthropic(
     system prompts already instruct JSON output, so response_format is ignored.
     Tool calls come back as ``tool_use`` content blocks and are re-shaped into
     OpenAI ``message.tool_calls`` so forced-tool verdicts read uniformly.
+    ``seed`` is accepted and dropped: the Messages API has no seed, so a reply is
+    never marked ``seed_honored``.
     """
     system, convo = _split_system(messages)
     payload: dict[str, Any] = {
@@ -333,6 +368,7 @@ def call_google(
     messages: list[dict[str, str]],
     max_tokens: int = 2000,
     temperature: float = 0.3,
+    seed: int | None = None,
     response_format: dict[str, str] | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
@@ -342,7 +378,8 @@ def call_google(
 
     Forced tool calls come back as ``functionCall`` parts and are re-shaped
     into OpenAI ``message.tool_calls`` (arguments serialized to a JSON string,
-    as OpenAI sends them).
+    as OpenAI sends them). ``seed`` goes in ``generationConfig.seed`` (best effort)
+    and the reply is marked ``seed_honored``.
     """
     system, convo = _split_system(messages)
     contents = [
@@ -356,6 +393,8 @@ def call_google(
         "maxOutputTokens": max_tokens,
         "temperature": temperature,
     }
+    if seed is not None:
+        generation_config["seed"] = seed
     # Gemini rejects function calling combined with a JSON response mime type
     # (HTTP 400); with tools set, the tool call is the structured channel.
     if response_format and response_format.get("type") == "json_object" and not tools:
@@ -421,6 +460,7 @@ def call_google(
         usage.get("promptTokenCount", 0),
         usage.get("candidatesTokenCount", 0),
         tool_calls or None,
+        seed_honored=seed is not None,
     )
 
 

@@ -18,10 +18,17 @@ os.environ["ARGUS_TELEMETRY"] = "0"
 @pytest.fixture(autouse=True)
 def tmp_argus_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    # The judge verdict cache is off unless a test turns it on (tests/test_verdict_cache.py):
+    # a test that judges the same content twice expects two judgments. Its install key
+    # lives outside .argus; never create one in the developer's real home.
+    monkeypatch.setenv("ARGUS_VERDICT_CACHE", "0")
+    monkeypatch.setenv("ARGUS_VERDICT_KEY_FILE", str(tmp_path / "install" / "verdict_cache.key"))
     (tmp_path / ".argus" / "runs").mkdir(parents=True)
     monkeypatch.setattr("argus.llm_proxy.is_available", lambda: False)
     # Our own suite never sends telemetry or touches the real ~/.argus/telemetry.json.
     monkeypatch.setenv("ARGUS_TELEMETRY", "0")
+    # Judges run unseeded in the suite unless a test sets a seed.
+    monkeypatch.delenv("ARGUS_JUDGE_SEED", raising=False)
     monkeypatch.setattr("argus.telemetry.send.SETTINGS_FILE", tmp_path / "telemetry.json")
     monkeypatch.setattr(
         "argus.session.ArgusSession._sync_shared_signatures",

@@ -21,6 +21,7 @@ import re
 import time
 from typing import Any
 
+from argus import determinism, verdict_cache
 from argus.models import DisambiguationResult, SemanticCheckResult, SemanticSignal
 
 _SYSTEM_PROMPT = (
@@ -483,6 +484,80 @@ def _parse_verdict_payload(result: dict[str, Any]) -> dict[str, Any] | None:
     return _extract_json_object(raw)
 
 
+def reply_is_clean(result: dict[str, Any]) -> bool:
+    """Was the verdict read exactly as the model sent it, with no repair?
+
+    The cache stores only such replies: a payload that came out of the
+    truncation repair, a code fence or a brace slice may be a fragment of what
+    the model meant (a reply cut after the first signal), and a second call
+    would then be served that fragment as if it were the whole ruling.
+    """
+    choices = result.get("choices") or []
+    message = (choices[0].get("message") or {}) if choices else {}
+    calls = message.get("tool_calls") or []
+    if calls:
+        raw = (calls[0].get("function") or {}).get("arguments")
+        if isinstance(raw, dict):
+            return True
+    else:
+        raw = message.get("content")
+        raw = raw.strip() if isinstance(raw, str) else raw
+    if not isinstance(raw, str):
+        return False
+    try:
+        return isinstance(_loads_verdict(raw), dict)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
+        return False
+
+
+def cached_reply(payload: dict[str, Any]) -> dict[str, Any]:
+    """A cached verdict payload dressed as the tool-call reply it came from.
+
+    A cache hit is replayed through the same parsing and checks as a live
+    reply, so a cached row can never be trusted more than a fresh one. No
+    ``usage``: a served verdict spent no tokens.
+    """
+    return {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {"type": "function", "function": {"arguments": json.dumps(payload)}}
+                    ],
+                }
+            }
+        ],
+        "usage": {},
+    }
+
+
+def _verdict_is_complete(parsed: dict[str, Any], amb: list[SemanticSignal]) -> bool:
+    """Is this a whole coherence ruling: every required field, a verdict per ambiguous signal?
+
+    A reply that dropped a field, or ruled on only some of the signals it was
+    asked about, is still usable once, but is not something to serve again
+    for the same question.
+    """
+    if _coerce_verdict(parsed.get("pass")) is None:
+        return False
+    confidence = parsed.get("confidence")
+    if (
+        not isinstance(parsed.get("reason"), str)
+        or isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or parsed.get("failure_kind") not in _FAILURE_KINDS
+    ):
+        return False
+    given = parsed.get("disambiguation_verdicts")
+    ruled = {
+        v.get("sig_id")
+        for v in (given if isinstance(given, list) else [])
+        if isinstance(v, dict) and _coerce_verdict(v.get("is_failure")) is not None
+    }
+    return all(s.sig_id in ruled for s in amb)
+
+
 def _coerce_failure_kind(value: Any) -> str:
     """Normalise the judge's `failure_kind`, defaulting to the cautious answer.
 
@@ -602,6 +677,9 @@ def check_semantic_coherence(
     ambiguous_signals: list[SemanticSignal] | None = None,
     prior_rows: list[Any] | None = None,
     consumers: dict[str, Any] | None = None,
+    temperature: float = 0.0,
+    seed: int | None = None,
+    cache: verdict_cache.CacheScope | None = None,
 ) -> tuple[SemanticCheckResult, list[DisambiguationResult]]:
     """Check coherence and disambiguate heuristic signals in one LLM call.
 
@@ -614,10 +692,20 @@ def check_semantic_coherence(
     emptied legitimately partway through, still needed here. Scoped to the
     fields this node reads or writes (``consumers`` declares the rest), so the
     prompt grows with the node's contract, not with the run.
+
+    ``temperature``/``seed`` are the sampling the request asks for; the verdict records them
+    and whether it was ``deterministic`` (``determinism.stamp``). No seed is sent unless set.
+
+    ``cache`` (see :mod:`argus.verdict_cache`) answers an identical request from disk: the
+    key is the whole request as sent, evidence and history included, and a served verdict
+    comes back ``cached=True`` with zero tokens. ``None`` (the default) never touches the
+    cache. The cache is only used for a request that can claim to be reproducible
+    (``determinism.gate``: temperature 0.0, a seed, and a provider that honors it); any other
+    request is judged live and never stored.
     """
     t0 = time.perf_counter()
 
-    from argus.llm_proxy import create_chat_completion, is_available
+    from argus.llm_proxy import create_chat_completion, is_available, judge_route
 
     if not is_available():
         return _skip_result("check skipped: not logged in (run: argus login)", model, 0.0), []
@@ -708,19 +796,36 @@ def check_semantic_coherence(
 
     max_tokens = 150 if not amb else 200 + 30 * len(amb)
 
+    request: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        "max_tokens": max_tokens,
+        **determinism.sampling_params(temperature, seed),
+        "response_format": {"type": "json_object"},
+        "tools": [JUDGE_VERDICT_TOOL],
+        "tool_choice": JUDGE_TOOL_CHOICE,
+    }
+    # The key is taken from the request exactly as it is sent, after the evidence and
+    # history are in the prompt: a verdict ruled with a failing validator in view is never
+    # served to a call that has none.
+    route = judge_route(model) if cache is not None else ""
+    cache = determinism.gate(cache, route, temperature, seed)
+    cache_key = ""
+    cached_payload = None
+    if cache is not None:
+        cache_key = verdict_cache.request_key(request, route=route)
+        cached_payload = verdict_cache.lookup(cache, cache_key, model)
+        if cached_payload is not None and not _verdict_is_complete(cached_payload, amb):
+            cached_payload = None  # not a whole ruling: ask again
+
     try:
-        result = create_chat_completion(
-            model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            max_tokens=max_tokens,
-            temperature=0.0,
-            response_format={"type": "json_object"},
-            tools=[JUDGE_VERDICT_TOOL],
-            tool_choice=JUDGE_TOOL_CHOICE,
-            timeout=8.0 if amb else 5.0,
+        result = (
+            cached_reply(cached_payload)
+            if cached_payload is not None
+            else create_chat_completion(**request, timeout=8.0 if amb else 5.0)
         )
         elapsed = (time.perf_counter() - t0) * 1000
 
@@ -750,6 +855,16 @@ def check_semantic_coherence(
                 elapsed,
             ), []
 
+        stamp = determinism.stamp(temperature, seed, result, cached=cached_payload is not None)
+        if (
+            cache is not None
+            and cached_payload is None
+            and stamp["deterministic"]
+            and reply_is_clean(result)
+            and _verdict_is_complete(parsed, amb)
+        ):
+            verdict_cache.store(cache, cache_key, model, parsed)
+
         usage = result.get("usage", {})
 
         sc = SemanticCheckResult(
@@ -763,6 +878,7 @@ def check_semantic_coherence(
             evidence_considered=tuple(parsed.get("evidence_considered", ())),
             overridden_signals=tuple(parsed.get("overridden_signals", ())),
             failure_kind=_coerce_failure_kind(parsed.get("failure_kind")),
+            **stamp,
         )
 
         dis_results: list[DisambiguationResult] = []
