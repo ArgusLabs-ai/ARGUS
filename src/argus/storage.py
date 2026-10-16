@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from argus.failure_class import valid_failure_class
 from argus.findings import collect_findings
 from argus.models import (
     AnomalySignal,
@@ -15,6 +16,7 @@ from argus.models import (
     FieldMismatch,
     Finding,
     InspectionResult,
+    JudgeScore,
     LLMCallInfo,
     LLMInvestigationResult,
     LLMUsage,
@@ -102,8 +104,9 @@ def _to_json_serializable(obj: Any) -> Any:
 def save_run(record: RunRecord) -> Path:
     """Write a completed RunRecord to .argus/runs/<run-id>.json atomically.
 
-    If the user is logged in to ARGUS cloud, the run is also pushed
-    to Supabase in a background thread (non-blocking).
+    The full run (every node input and output) is pushed to ARGUS cloud only
+    when the user is logged in **and** opted in with ``ARGUS_CLOUD_SYNC=1``.
+    Logging in alone uploads nothing.
     """
     path = _runs_path() / f"{record.run_id}.json"
     tmp = path.with_suffix(".tmp")
@@ -123,12 +126,20 @@ def save_run(record: RunRecord) -> Path:
 
     # Cloud sync — push synchronously so the thread isn't killed on process exit
     try:
-        from argus.cloud import is_logged_in, push_run
+        from argus.cloud import is_logged_in, push_run, run_sync_enabled
 
-        if is_logged_in():
+        if run_sync_enabled() and is_logged_in():
             push_run(data)
     except Exception:
         pass  # cloud sync is best-effort
+
+    # Telemetry: a shape card (no values, no names), on by default. docs/DATA.md
+    try:
+        from argus.telemetry.send import send_run
+
+        send_run(record)
+    except Exception:
+        pass  # telemetry is best-effort
 
     return path
 
@@ -323,6 +334,25 @@ def build_replay_tree(run_id: str, max_depth: int = 5) -> dict[str, Any]:
     return _build(run_id, 0)
 
 
+def _run_completeness(data: dict[str, Any]) -> tuple[bool, str | None]:
+    """``(complete, end_reason)`` for a run file.
+
+    Files from before the field have no ``complete``, so derive it from how the
+    run ended, with the ``end_reason`` words ``ArgusSession`` writes (a crash
+    outranks an interrupt there, too). A file that carries ``complete`` is taken
+    as written, ``end_reason="unknown"`` (finalized at process exit) included.
+    An old file that ended clean is assumed complete: nothing in it says
+    whether the process was cut off.
+    """
+    if "complete" in data:
+        return data["complete"], data.get("end_reason")
+    if data.get("overall_status") == "crashed":
+        return False, "exception"
+    if data.get("overall_status") == "interrupted" or data.get("interrupted"):
+        return False, "interrupted"
+    return True, data.get("end_reason")
+
+
 def _deserialize_run(data: dict[str, Any]) -> RunRecord:
     steps = [_deserialize_event(s) for s in data.get("steps", [])]
     bc_data = data.get("behavior_config")
@@ -340,6 +370,7 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
     else:
         # Pre-"2" record: derive the list from the per-step data it already carries.
         findings = collect_findings(steps, tool_chain_findings)
+    complete, end_reason = _run_completeness(data)
     return RunRecord(
         run_id=data["run_id"],
         argus_version=data.get("argus_version", "unknown"),
@@ -378,7 +409,49 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         findings=findings,
         dry_run=data.get("dry_run", False),
         coverage_summary=data.get("coverage_summary", {}),
+        judge_scores=_deserialize_judge_scores(data.get("judge_scores")),
+        complete=complete,
+        end_reason=end_reason,
     )
+
+
+def _deserialize_judge_scores(items: Any) -> list[JudgeScore]:
+    """JudgeScore rows, tolerant of hand edits like the rest of this loader.
+
+    A run file is user-editable JSON: anything that is not a list of dicts loads
+    as no scores, a bad row is skipped, and a bad field takes its default
+    (a score outside [0, 1] or not a number reads 0.0 or the nearest bound,
+    an unknown direction reads "maximize"). A mangled row never makes the run
+    unreadable, which would take every command down with it.
+    """
+    out: list[JudgeScore] = []
+    for row in items if isinstance(items, list) else []:
+        if not isinstance(row, dict):
+            continue
+        score = row.get("score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or score != score:
+            score = 0.0
+        step = row.get("step_index")
+        origin = row.get("origin_node")
+        direction = row.get("direction")
+        severity = row.get("severity")
+        out.append(
+            JudgeScore(
+                score=float(min(1.0, max(0.0, score))),
+                label=_str_or(row.get("label")),
+                explanation=_str_or(row.get("explanation")),
+                direction=direction if direction in ("maximize", "minimize") else "maximize",
+                validator_name=_str_or(row.get("validator_name")),
+                severity=severity if severity in ("ok", "warning") else "ok",
+                origin_node=origin if isinstance(origin, str) else None,
+                step_index=step if isinstance(step, int) and not isinstance(step, bool) else None,
+            )
+        )
+    return out
+
+
+def _str_or(value: Any) -> str:
+    return value if isinstance(value, str) else ""
 
 
 def _deserialize_correlation(data: dict[str, Any]) -> CorrelationReport:
@@ -580,6 +653,7 @@ def _deserialize_findings(items: list[dict[str, Any]]) -> list[Finding]:
             origin_node=f.get("origin_node"),
             confidence=f.get("confidence"),
             suppressed=f.get("suppressed", False),
+            failure_class=valid_failure_class(f.get("failure_class")),
         )
         for f in items
     ]

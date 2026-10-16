@@ -84,6 +84,16 @@ _TOOL_FAILURE_CONDITION = {
 }
 
 
+# PRD-02 -- one static retry-guidance line per failure class (no LLM spend), for
+# the external-call failure types. The class names stay out of the prompt
+# (jargon-free); an unknown cause is fatal.
+_CLASS_ADVICE = {
+    "rate_limited": "re-queue with backoff; no code change expected",
+    "transient": "retry once before debugging",
+    "fatal": "nothing suggests a retry would help; fix the call",
+}
+
+
 class FixPromptError(Exception):
     """Raised when a run cannot produce a meaningful fix prompt."""
 
@@ -747,6 +757,9 @@ def _what_went_wrong(
             f"While producing `{_inline(tf.field_name, 80)}`, {plain}{detail}. The "
             "result was kept and passed on as if the call had succeeded."
         )
+        advice = _CLASS_ADVICE.get(tf.failure_class)
+        if advice and (tf.failure_type in _TOOL_FAILURE_PLAIN or tf.failure_type == "tool_error"):
+            paras.append(f"Retry guidance: {advice}.")
 
     if insp.missing_fields:
         # missing_fields is a union over every successor's schema and the

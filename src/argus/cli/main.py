@@ -34,6 +34,7 @@ from argus.cli.cmd_open_ui import open_ui
 from argus.cli.cmd_replay import inspect_step, replay_run
 from argus.cli.cmd_show import show_last, show_list, show_run
 from argus.cli.cmd_stats import stats
+from argus.cli.cmd_telemetry import telemetry_set, telemetry_show_last, telemetry_status
 from argus.cli.cmd_update import check_for_update
 from argus.storage import list_runs, load_run_text
 
@@ -58,6 +59,36 @@ ingest_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(ingest_app, name="ingest")
+
+telemetry_app = typer.Typer(
+    help="See or change the anonymous run shapes Argus sends (docs/DATA.md).",
+    no_args_is_help=True,
+)
+app.add_typer(telemetry_app, name="telemetry")
+
+
+@telemetry_app.command("on")
+def cmd_telemetry_on() -> None:
+    """Send a shape card after each run (the default)."""
+    telemetry_set(True)
+
+
+@telemetry_app.command("off")
+def cmd_telemetry_off() -> None:
+    """Stop sending anything from this machine."""
+    telemetry_set(False)
+
+
+@telemetry_app.command("status")
+def cmd_telemetry_status() -> None:
+    """Whether telemetry is on, and which setting decided it."""
+    telemetry_status()
+
+
+@telemetry_app.command("show-last")
+def cmd_telemetry_show_last() -> None:
+    """Print the last card this project sent, exactly as sent."""
+    telemetry_show_last()
 
 
 @ingest_app.command("langsmith")
@@ -769,6 +800,11 @@ def cmd_stats(
         bool,
         typer.Option("--prune", help="Remove stale signatures that haven't proven useful"),
     ] = False,
+    # Default-value style, not Annotated: on Python 3.9 Typer cannot read Annotated
+    # metadata under `from __future__ import annotations`, and this must stay an Argument.
+    run: Optional[str] = typer.Argument(
+        None, help="Run ID, 8-char prefix, or 'last': show that run's judge scores."
+    ),
 ) -> None:
     """Show signature effectiveness stats and manage learned patterns."""
     stats(
@@ -779,4 +815,5 @@ def cmd_stats(
         dispute=dispute,
         run_id=run_id,
         prune=prune,
+        judge_run=_resolve_selector(run) if run else None,
     )

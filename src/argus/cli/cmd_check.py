@@ -10,6 +10,7 @@ from typing import Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.text import Text
 
 from argus.check import STRICT_CHOICES, StrictMode, evaluate_run
@@ -101,6 +102,7 @@ def check_run(
 
     ``output_format="json"`` prints one JSON object to stdout and nothing else;
     exit codes are unchanged (0 pass, 1 fail, 2 usage error).
+
     """
     as_json = output_format == "json"
     if output_format not in ("text", "json"):
@@ -154,6 +156,11 @@ def check_run(
         console.print(f"  [dim]fail-on {', '.join(sorted(fail_on_set))}[/dim]")
     if strict_mode != "critical_only":
         console.print(f"  [dim]strict {strict_mode}[/dim]")
+
+    # PRD-02: a flaky dependency the run absorbed. Info only; never changes the verdict.
+    for f in record.findings:
+        if f.type == "recovered_after_transient":
+            console.print(f"  [dim]note[/dim]  {escape(f.reason)}")
 
     if passed:
         console.print("  [bold green]✓[/bold green]  pass")

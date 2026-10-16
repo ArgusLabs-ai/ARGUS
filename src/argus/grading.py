@@ -16,6 +16,7 @@ from functools import partial
 from typing import Any
 
 from argus.contextual import GUESS_CONFIDENCE, ConsumerMap, contextual_findings, readers_of
+from argus.judge_api import coerce_judge_score
 from argus.ledger import build_ledger
 from argus.models import Finding, InspectionResult, LLMInvestigationConfig, ToolFailure
 from argus.review import (
@@ -29,7 +30,7 @@ from argus.review import (
 from argus.session import ArgusSession
 from argus.trace_rules import PRODUCED_NOTHING, Hit, run_rules
 
-__all__ = ["IncompleteTraceError", "finish", "new_session"]
+__all__ = ["IncompleteTraceError", "coerce_judge_score", "finish", "new_session"]
 
 
 class IncompleteTraceError(RuntimeError):
@@ -80,6 +81,9 @@ def new_session(
     node_state_keys: dict[str, list[str]] | None = None,
     baseline: dict[str, Any] | None = None,
     reviewer: Reviewer | None = None,
+    redact_keys: set[str] | list[str] | None = None,
+    expected: dict[str, Any] | None = None,
+    judge_score_floor: float | None = None,
 ) -> ArgusSession:
     """A session for one graph run, ready for ``on_node_start`` / ``on_node_end``.
 
@@ -97,11 +101,19 @@ def new_session(
     baseline``; without one the baseline rules in :mod:`argus.trace_rules` are off.
     ``reviewer`` settles the rules' heuristic calls (:mod:`argus.review`); without
     one the rules alone decide.
+
+    ``expected`` (per node name, ``"*"`` as the fallback) is what a judge that
+    declares ``expected`` is handed; ``judge_score_floor`` is where a judge score
+    becomes a ``low_judge_score`` warning (default 0.5). Both are local data, no
+    LLM call (:mod:`argus.judge_api`).
     """
     session = ArgusSession(
         max_field_size=max_field_size,
         validators=validators,
         strict=strict,
+        redact_keys=redact_keys,
+        expected=expected,
+        judge_score_floor=judge_score_floor,
         # Explicit config (never None) so the session does not fall back to
         # its own auto-enable logic — the caller owns the decision here.
         llm_investigation=LLMInvestigationConfig(
@@ -130,11 +142,15 @@ def finish(
     session: ArgusSession,
     consumers: ConsumerMap | None,
     unfinished: Iterable[str] = (),
+    root_error: BaseException | str | None = None,
 ) -> None:
     """Ledger → reviewer → rules → contextual → reviewer verdicts → verdict.
 
     ``unfinished`` names steps that started but never reported an update; any
-    at all refuses the run.
+    at all refuses the run. ``root_error`` is what the graph run itself raised,
+    outside any node — the steps may all be clean and the run still did not
+    finish, so it is saved as ``complete=False`` (it does not change a step's
+    grade).
     """
     unfinished = list(unfinished)
     if unfinished:
@@ -206,6 +222,7 @@ def finish(
     # Everything after this is the existing ARGUS brain: per-step structure,
     # tool and semantic checks already ran inside on_node_end; finalize rolls
     # them up, applies the judge last, collects findings and saves the run.
+    session._root_error = root_error
     session.finalize()
 
     # Do not write ARGUS_RUN_ID here (#90). One attach serves many runs

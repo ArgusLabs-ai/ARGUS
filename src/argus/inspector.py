@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 from statistics import median
 from typing import Any
 
+from argus.failure_class import classify_failure_class, is_rate_limit_text
 from argus.heuristic_engine import scan_execution_output as _scan_execution_output
 from argus.models import FieldMismatch, InspectionResult, SemanticSignal, ToolFailure
 from argus.utils.type_introspection import extract_fields, get_node_state_type
@@ -161,10 +162,6 @@ def _is_result_name(key: str) -> bool:
     return bool(words) and words[-1].lower() in _RESULT_NOUNS
 
 
-_RATE_LIMIT_RE = re.compile(
-    r"rate.?limit|quota.?exceed|too.?many.?requests?|429",
-    re.IGNORECASE,
-)
 _ERROR_STR_RE = re.compile(
     r"^(error|failed?|exception|timeout|unauthorized|forbidden"
     r"|not[ _]found|service[ _]unavailable)",
@@ -406,6 +403,7 @@ def _add_http_status_failure(
                 field_name=field_path,
                 severity="warning",
                 evidence=f"{prefix}HTTP 429 rate limit".strip(),
+                failure_class=classify_failure_class("rate_limit", status),
             )
         )
     else:
@@ -415,6 +413,7 @@ def _add_http_status_failure(
                 field_name=field_path,
                 severity="critical",
                 evidence=f"{prefix}HTTP {status} error response".strip(),
+                failure_class=classify_failure_class("error_response", status),
             )
         )
 
@@ -484,7 +483,7 @@ def _apply_tool_shape_rules(
     if key in _ERROR_KEYS:
         if value:
             as_str = str(value)
-            if _RATE_LIMIT_RE.search(as_str):
+            if is_rate_limit_text(as_str):
                 add(
                     ToolFailure(
                         failure_type="rate_limit",
@@ -505,6 +504,7 @@ def _apply_tool_shape_rules(
                             f"{'nested error field' if nested else 'error field set'}: "
                             f"{as_str[:120]!r}"
                         ),
+                        failure_class=classify_failure_class("error_response", text=as_str),
                     )
                 )
         return
@@ -528,6 +528,7 @@ def _apply_tool_shape_rules(
                 field_name=field_path,
                 severity=status_sev,
                 evidence=(f"{'nested ' if nested else ''}status field '{key}' is {value!r}"),
+                failure_class=classify_failure_class("error_response", text=value),
             )
         )
         return
@@ -595,6 +596,7 @@ def _apply_tool_shape_rules(
                 field_name=field_path,
                 severity="warning",
                 evidence=f"field contains error-like string: {value[:80]!r}",
+                failure_class=classify_failure_class("error_in_data", text=value),
             )
         )
         return
@@ -1177,6 +1179,7 @@ def inspect_tool_outputs(
                     field_name=tf.field_name,
                     severity="critical",
                     evidence=tf.evidence,
+                    failure_class=tf.failure_class,
                 )
 
     tool_failures = list(by_field.values())
@@ -1235,6 +1238,7 @@ def inspect_tool_calls(
                     field_name=name,
                     severity="critical",
                     evidence=f"tool `{name}` raised {error}",
+                    failure_class=classify_failure_class("tool_error", text=str(error)),
                 )
             )
             continue
@@ -1254,6 +1258,7 @@ def inspect_tool_calls(
                     field_name=f"{name}.{tf.field_name}" if tf.field_name else name,
                     severity=tf.severity,
                     evidence=f"tool `{name}`: {tf.evidence}",
+                    failure_class=tf.failure_class,
                 )
             )
     return out

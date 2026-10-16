@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import zip_longest
 from typing import Any
 
 from rich.console import Console
@@ -8,7 +9,8 @@ from rich.rule import Rule
 from rich.text import Text
 
 from argus.cli import print_footer
-from argus.models import InspectionResult, NodeEvent, RunRecord, ValidatorResult
+from argus.findings import _INACTIVE
+from argus.models import InspectionResult, JudgeScore, NodeEvent, RunRecord, ValidatorResult
 from argus.storage import load_run
 
 console = Console()
@@ -125,6 +127,7 @@ def diff_runs(run_id_a: str, run_id_b: str | None = None) -> None:
     console.print(Rule(style="dim"))
     console.print()
     _print_summary(stats)
+    _print_judge_score_deltas(before, after)
     console.print()
     print_footer()
 
@@ -465,3 +468,69 @@ def _print_summary(stats: dict[str, int]) -> None:
     if not parts:
         parts.append("[dim]no changes detected[/dim]")
     console.print("  " + "  ·  ".join(parts))
+
+
+# ── Judge score deltas (PRD-09) ───────────────────────────────────────────────
+
+
+def _scores_by_node(record: RunRecord) -> dict[tuple[str, str], list[JudgeScore]]:
+    """Scores keyed by (validator, node): a wildcard judge scores every node, and a
+    node in a loop scores once per pass, so name alone would collapse them."""
+    grouped: dict[tuple[str, str], list[JudgeScore]] = {}
+    # a retried / skipped pass does not count against the run, as in the findings
+    inactive = {
+        ev.step_index
+        for ev in record.steps
+        if ev.status in _INACTIVE and ev.step_index is not None
+    }
+    for js in record.judge_scores:
+        if js.step_index in inactive:
+            continue
+        grouped.setdefault((js.validator_name, js.origin_node or "-"), []).append(js)
+    return grouped
+
+
+def _print_judge_score_deltas(before: RunRecord, after: RunRecord) -> None:
+    """Print each judge's score change per node between two runs.
+
+    Reads the persisted ``judge_scores`` only. The signed delta is
+    direction-normalized, so positive is better for "maximize" and "minimize"
+    alike; scores whose direction changed are not comparable and get no delta.
+    Display only: never an exit code.
+    """
+    b_scores = _scores_by_node(before)
+    a_scores = _scores_by_node(after)
+    if not b_scores and not a_scores:
+        return
+
+    console.print()
+    console.print(Text("  judge scores", style="bold italic"))
+    for key in sorted(set(b_scores) | set(a_scores)):
+        name, node = key
+        passes = list(zip_longest(b_scores.get(key, []), a_scores.get(key, [])))
+        for i, (b, a) in enumerate(passes):
+            pass_no = f" #{i + 1}" if len(passes) > 1 else ""
+            label = f"{escape(name)} [dim]@ {escape(node)}{pass_no}[/dim]"
+            if a is None or b is None:
+                side = "new" if b is None else "removed"
+                icon = "[bold green]✓[/bold green]" if b is None else "[dim]−[/dim]"
+                console.print(f"  {icon}  {label}  [dim]{side}[/dim]")
+            elif a.direction != b.direction:
+                console.print(
+                    f"  [dim]■[/dim]  {label}  {b.score:.2f} → {a.score:.2f}  "
+                    f"[dim]direction changed ({b.direction} → {a.direction}), not compared[/dim]"
+                )
+            else:
+                # Positive is better: for "minimize" a lower score is the gain.
+                delta = (a.score - b.score) if a.direction == "maximize" else (b.score - a.score)
+                marker = (
+                    "[bold green]▲[/bold green]"
+                    if delta > 0
+                    else "[bold red]▼[/bold red]"
+                    if delta < 0
+                    else "[dim]■[/dim]"
+                )
+                console.print(
+                    f"  {marker}  {label}  {b.score:.2f} → {a.score:.2f}  "
+                    f"Δ {delta:+.2f}  [dim]({a.direction})[/dim]"
+                )

@@ -1,7 +1,8 @@
 """Cross-node tool call chain analysis — detects usage anti-patterns.
 
 Runs at finalize time, deterministic, always-on, fail-open.
-Detects: retry storms, ordering anomalies, unused results, argument degradation.
+Detects: retry storms, ordering anomalies, unused results, argument degradation,
+and (PRD-02) nodes that absorbed transient failures by retrying and then passed.
 """
 
 from __future__ import annotations
@@ -12,6 +13,10 @@ from difflib import SequenceMatcher
 from argus.models import NodeEvent, RunRecord, ToolChainFinding
 
 _SENTINEL_NODES = frozenset({"__start__", "__end__"})
+
+# PRD-02 classes a retry can cure. A fatal failure on a retried step is a
+# different story (the loop worked around a bug), not a flaky dependency.
+_RECOVERABLE_CLASSES = frozenset({"transient", "rate_limited"})
 
 
 def analyze_tool_chains(record: RunRecord) -> list[ToolChainFinding]:
@@ -271,3 +276,36 @@ def _detect_argument_degradation(
                 confidence=0.6,
             ))
     return findings
+
+
+def detect_recovered_after_transient(events: list[NodeEvent]) -> list[tuple[str, int]]:
+    """PRD-02: ``(node, n)`` for each node whose retries absorbed >=2 transient failures.
+
+    A failure counts only on a step ARGUS marked ``retried`` (a superseded
+    attempt of a looping node): that is the evidence something was run again.
+    Failures on steps that merely passed carry no such evidence, so a healthy
+    run that kept a payload error (or two) is never reported as "recovered".
+    Every real step the node kept must be ``pass``: a node that ended failed (or
+    kept a crashed step, which still fails the run) did not recover, and its
+    failures are already loud. Grouping is by node name only.
+    """
+    by_name: dict[str, list[NodeEvent]] = defaultdict(list)
+    for e in events:
+        if e.node_name not in _SENTINEL_NODES:
+            by_name[e.node_name].append(e)
+
+    out: list[tuple[str, int]] = []
+    for node_name, node_events in by_name.items():
+        absorbed = sum(
+            1
+            for e in node_events
+            if e.status == "retried" and e.inspection is not None
+            for tf in e.inspection.tool_failures
+            if tf.failure_class in _RECOVERABLE_CLASSES
+        )
+        if absorbed < 2:
+            continue  # a single blip is noise
+        final = [e for e in node_events if e.status != "skipped" and e.status != "retried"]
+        if final and all(e.status == "pass" for e in final):
+            out.append((node_name, absorbed))
+    return out
