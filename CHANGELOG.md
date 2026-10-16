@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.0 — 2026-10-16
+
+- Judge verdicts record the temperature, seed and `system_fingerprint` they were made with, plus whether they are `deterministic` (temperature 0, and a seed the provider honored). Set `ARGUS_JUDGE_SEED` or `ArgusConfig(judge_seed=)`. `argus show` / `check` / `diff` report it. Audit only, never gates
+- With a seed set, the run reviewer and the semantic judge cache their verdicts in `.argus/verdict_cache.db`, so a re-run with the same input skips the LLM call. Rows are HMAC-signed with a per-install key. Turn it off with `ARGUS_VERDICT_CACHE=0`
+- GitHub Action: the job summary names the root-cause node and carries a sanitized `argus fix` prompt for each failed run. The failed runs are uploaded as an `argus-runs-*` artifact (`upload-runs: "false"` to skip). A gate that graded nothing now says so
+- `argus replay` exits 1 on every error
+- `argus fix` no longer describes `return {}` as a failed external call or tells you to retry it
+
 ## 0.14.1 — 2026-10-14
 
 - Runs record whether they finished: `complete` and `end_reason` (`finished`, `exception`, `interrupted`, `cancelled`, `unknown`). A graph that raised outside every node, an abandoned stream, Ctrl-C or a run saved at exit is `complete: false`. Recorded only, never gates
