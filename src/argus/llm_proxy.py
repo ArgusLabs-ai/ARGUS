@@ -155,6 +155,24 @@ def create_chat_completion(
     )
 
 
+def judge_route(model: str, api_key: str | None = None) -> str:
+    """Which provider and model a judge request really goes to, as ``provider:model``.
+
+    The configured name is a tier hint: ``providers.resolve_model`` maps it to a different
+    model for Anthropic or Google, and the user's overrides change it again. A verdict from
+    one route must never answer a question put to another, so the route is part of the
+    verdict cache key. ``hosted:<model>`` is the proxy (no key resolved).
+    """
+    try:
+        provider, key = _resolve_byok(api_key)
+        if key:
+            resolved = providers.resolve_model(provider, model, user_config.get_model_overrides())
+            return f"{provider}:{resolved}"
+    except Exception:  # a label must never cost the judge its verdict
+        pass
+    return f"hosted:{model}"
+
+
 def is_available() -> bool:
     """True if any LLM path is usable: a BYOK key, or the logged-in proxy."""
     if user_config.configured_providers():

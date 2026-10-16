@@ -51,7 +51,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from argus import determinism
+from argus import determinism, verdict_cache
 from argus.models import NodeEvent, ToolFailure
 
 __all__ = [
@@ -198,6 +198,16 @@ class _ReviewError(RuntimeError):
     pass
 
 
+def _is_checker_reply(data: dict[str, Any]) -> bool:
+    """A whole checker answer: a ``failures`` list (empty is a real answer: the run is sound)."""
+    return isinstance(data.get("failures"), list)
+
+
+def _is_verifier_reply(data: dict[str, Any]) -> bool:
+    """A whole verifier answer: it ruled ``real_defect`` true or false."""
+    return isinstance(data.get("real_defect"), bool)
+
+
 class _Reply(dict):  # type: ignore[type-arg]
     """A parsed JSON reply that remembers the sampling stamp of the call that produced it.
 
@@ -221,23 +231,41 @@ def _complete(
     *,
     temperature: float = 0.0,
     seed: int | None = None,
+    cache: verdict_cache.CacheScope | None = None,
+    whole: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, Any]:
     """One JSON completion through ``llm_proxy`` (BYOK first, then the hosted proxy).
 
     The reply carries its sampling stamp (:class:`_Reply`): temperature 0.0 and no seed
     unless the caller set them.
+
+    ``cache`` answers an identical request from :mod:`argus.verdict_cache`, but only one that
+    can claim to be reproducible (``determinism.gate``). ``whole`` says whether a reply is a
+    complete answer to this kind of question: an incomplete reply is used once, never stored,
+    and a stored one that fails it is asked again.
     """
-    from argus.llm_proxy import create_chat_completion  # noqa: PLC0415
+    from argus.llm_proxy import create_chat_completion, judge_route  # noqa: PLC0415
+
+    request: dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "max_tokens": max_tokens,
+        **determinism.sampling_params(temperature, seed),
+        "response_format": {"type": "json_object"},
+    }
+    route = judge_route(model) if cache is not None else ""
+    cache = determinism.gate(cache, route, temperature, seed)
+    key = ""
+    if cache is not None:
+        key = verdict_cache.request_key(request, route=route)
+        hit = verdict_cache.lookup(cache, key, model)
+        if hit is not None and (whole is None or whole(hit)):
+            served = _Reply(hit)
+            served.stamp = determinism.stamp(temperature, seed, {}, cached=True)
+            return served
 
     for attempt in range(3):
-        r = create_chat_completion(
-            model=model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=max_tokens,
-            **determinism.sampling_params(temperature, seed),
-            response_format={"type": "json_object"},
-            timeout=90.0,
-        )
+        r = create_chat_completion(**request, timeout=90.0)
         if "error" not in r:
             try:
                 data = json.loads(r["choices"][0]["message"]["content"] or "{}")
@@ -247,6 +275,12 @@ def _complete(
                 raise _ReviewError("reply is not a JSON object")
             reply = _Reply(data)
             reply.stamp = determinism.stamp(temperature, seed, r)
+            if (
+                cache is not None
+                and reply.stamp["deterministic"]
+                and (whole is None or whole(data))
+            ):
+                verdict_cache.store(cache, key, model, data)
             return reply
         err = str(r["error"])
         wait = re.search(r"try again in ([\d.]+)(ms|s)", err)
@@ -370,6 +404,9 @@ class Reviewer:
     # unless set. Each verified item is stamped with whether its calls were deterministic.
     temperature: float = 0.0
     seed: int | None = None
+    # Where the reviewer's calls are cached (argus.verdict_cache; None = never). Only a call
+    # that can claim to be reproducible is read from or written to it.
+    cache: verdict_cache.CacheScope | None = None
 
     def __call__(self, rows: list[Any], events: list[NodeEvent]) -> Review:
         try:
@@ -388,6 +425,7 @@ class Reviewer:
             _ledger_text(rows, text),
             1500,
             **sampling,
+            **self._cache_kwargs(_is_checker_reply),
         )
         nodes = {r.node for r in rows}
         reported = [
@@ -413,7 +451,14 @@ class Reviewer:
                 "report": {k: f.get(k) for k in ("kind", "claim", "evidence", "why")},
             }
             user = json.dumps(ctx, default=str)
-            verdict = _complete(self.model, _VERIFIER, user, 700, **sampling)
+            verdict = _complete(
+                self.model,
+                _VERIFIER,
+                user,
+                700,
+                **sampling,
+                **self._cache_kwargs(_is_verifier_reply),
+            )
             real, how = _decide(verdict)
             stamps = [_stamp_of(reply), _stamp_of(verdict)]
             both = False
@@ -439,12 +484,23 @@ class Reviewer:
                     )
         return Review(ok=True, verified=verified, reported=len(reported))
 
+    def _cache_kwargs(self, whole: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+        """``cache=`` for a call, only when the cache is on (a stubbed transport keeps working)."""
+        return {} if self.cache is None else {"cache": self.cache, "whole": whole}
+
     def _second_opinion(self, user: str, **sampling: Any) -> tuple[bool, dict[str, Any]]:
         """Does the second model verify it too, and the stamp of that call? An error is a
         no, never a failed review: this path can only add a fail, so losing it must not
         cost the rules' verdict."""
         try:
-            reply = _complete(self.second_model, _VERIFIER, user, 4000, **sampling)
+            reply = _complete(
+                self.second_model,
+                _VERIFIER,
+                user,
+                4000,
+                **sampling,
+                **self._cache_kwargs(_is_verifier_reply),
+            )
             return _decide(reply)[0], _stamp_of(reply)
         except Exception as exc:  # noqa: BLE001
             logger.info("argus: second verifier unavailable (%s); finding stays advisory", exc)

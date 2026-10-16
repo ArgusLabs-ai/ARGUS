@@ -20,11 +20,24 @@ The two LLM judges that rule on a run carry the stamp: the per-step coherence ju
 Every verdict records the sampling it was asked under and whether it was deterministic;
 ``argus show`` / ``check`` / ``diff`` report it.
 
+Two things hang off that claim, and nothing else:
+
+* the verdict cache (``gate``): only a request that can make the claim is read from or
+  written to the cache, so a verdict that could roll the dice is never served as if it were
+  a ruling, and never poisons a later run;
+* the audit trail (``stamp``, ``describe``, ``comparability_warning``): every verdict records
+  the sampling it was asked under and whether it was deterministic.
+
+A verdict served from the cache is deterministic by construction (only a deterministic one
+is ever stored) and carries no ``system_fingerprint``: the cache keeps the verdict, not the
+reply.
+
 Reviewer-not-gate: ``deterministic`` is metadata. ``evaluate_run`` and every exit code
 never read it.
 
 Defaults: temperature 0.0, no seed (so no seed is ever sent unless the user set one).
-Set ``ArgusConfig(judge_seed=N)`` or ``ARGUS_JUDGE_SEED=N`` to opt in.
+Set ``ArgusConfig(judge_seed=N)`` or ``ARGUS_JUDGE_SEED=N`` to opt in (the cache stays off
+until they do).
 
 Limits: temperature 0.0-2.0 (Anthropic stops at 1.0, OpenAI and Gemini at 2.0);
 a seed is a 64-bit integer (Gemini documents 32 bits). A value a provider
@@ -38,6 +51,8 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
+
+from argus import providers
 
 logger = logging.getLogger("argus")
 
@@ -122,14 +137,30 @@ def sampling_params(temperature: float, seed: int | None) -> dict[str, Any]:
     return params
 
 
-def stamp(temperature: float, seed: int | None, result: dict[str, Any]) -> dict[str, Any]:
+def gate(cache: Any, route: str, temperature: float, seed: int | None) -> Any:
+    """``cache`` when this request can make a reproducibility claim, else None (no read, no write).
+
+    ``route`` is ``llm_proxy.judge_route``'s ``provider:model``.
+    """
+    provider, _, model = route.partition(":")
+    if is_pinned(temperature, seed) and providers.honors_seed(provider, model):
+        return cache
+    return None
+
+
+def stamp(
+    temperature: float, seed: int | None, result: dict[str, Any], *, cached: bool = False
+) -> dict[str, Any]:
     """The audit fields of a verdict: the sampling it was asked under, and whether it held.
 
-    ``result`` is the live reply; the ``seed_honored`` mark is the adapter's.
+    ``result`` is the live reply (the ``seed_honored`` mark is the adapter's); a verdict
+    served from the cache (``cached=True``) is deterministic by construction.
     """
     fingerprint = result.get("system_fingerprint")
     return {
-        "deterministic": is_pinned(temperature, seed) and result.get("seed_honored") is True,
+        "cached": cached,
+        "deterministic": cached
+        or (is_pinned(temperature, seed) and result.get("seed_honored") is True),
         "temperature": float(temperature),
         "seed": seed,
         "system_fingerprint": fingerprint if isinstance(fingerprint, str) else "",
@@ -146,6 +177,7 @@ def combine(stamps: list[dict[str, Any]]) -> dict[str, Any]:
         return stamp_from_record({})
     prints = sorted({s["system_fingerprint"] for s in stamps if s.get("system_fingerprint")})
     return {
+        "cached": all(s.get("cached") is True for s in stamps),
         "deterministic": all(s.get("deterministic") is True for s in stamps),
         "temperature": stamps[0].get("temperature"),
         "seed": stamps[0].get("seed"),
@@ -167,6 +199,7 @@ def stamp_from_record(data: dict[str, Any]) -> dict[str, Any]:
     if validate_sampling(0.0, seed):
         seed = None
     return {
+        "cached": data.get("cached") is True,
         "deterministic": data.get("deterministic") is True and is_pinned(temperature, seed),
         "temperature": temperature,
         "seed": seed,

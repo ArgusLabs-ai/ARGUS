@@ -121,6 +121,9 @@ class SemanticCheckResult:
     temperature: float | None = None
     seed: int | None = None
     system_fingerprint: str = ""
+    # True when this verdict was served from the verdict cache (no LLM call; token fields
+    # are 0). Default False keeps older records honest on load.
+    cached: bool = False
 
 
 # Kept so older records and tests can name the kinds. None of them gate CI.

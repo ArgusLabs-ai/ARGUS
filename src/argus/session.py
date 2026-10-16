@@ -73,6 +73,7 @@ from argus.storage import save_run
 from argus.utils.cycle_detection import has_cycles
 from argus.utils.ids import generate_run_id
 from argus.utils.serializer import safe_serialize
+from argus.verdict_cache import current_scope
 
 
 @dataclass
@@ -413,6 +414,8 @@ class ArgusSession:
         # The judge's (temperature, seed), resolved once: ArgusConfig where set, else
         # $ARGUS_JUDGE_SEED, else (0.0, no seed).
         self._sampling = determinism.resolve_sampling(config)
+        # Where judge verdicts are cached (verdict_cache; None = switched off).
+        self._cache_scope = current_scope()
         self.graph_node_names: list[str] = []
         # Keys the graph's state has; see RunRecord.state_keys.
         self.state_keys: list[str] = []
@@ -1375,6 +1378,7 @@ class ArgusSession:
                     prior_rows=prior_rows or None,
                     consumers=self.consumers or None,
                     **determinism.sampling_kwargs(*self._sampling),
+                    **self._cache_kwargs(),
                 )
                 return result, dis_results
             except Exception as _e:
@@ -1394,6 +1398,16 @@ class ArgusSession:
                     _judge_exc,
                 )
         return None, []
+
+    def _cache_kwargs(self) -> dict[str, Any]:
+        """``cache=`` for a judge call, only when it could be used (old stubs keep working).
+
+        Only a pinned request (temperature 0.0 and a seed) is ever cached, so an unseeded
+        session passes nothing.
+        """
+        if self._cache_scope is None or not determinism.is_pinned(*self._sampling):
+            return {}
+        return {"cache": self._cache_scope}
 
     @staticmethod
     def _corroborating_signal(
