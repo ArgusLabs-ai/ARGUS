@@ -761,12 +761,12 @@ ARGUS records every LangGraph run in the test session through LangChain's public
 Add the gate to any workflow, after your dependencies are installed:
 
 ```yaml
-      - uses: ArgusLabs-ai/ARGUS/.github/actions/argus-gate@v0.12.0
+      - uses: ArgusLabs-ai/ARGUS/.github/actions/argus-gate@v0.15.0
         with:
           pytest-args: tests/          # runs: pytest --argus tests/
 ```
 
-The job fails when a run was not clean. The job summary on the PR names the root-cause node for each failed run and carries its `argus fix` prompt (sanitized: the page shows failure types and field names, never recorded values). The failed runs are uploaded as an `argus-runs-*` artifact, which holds raw recorded state (inputs, outputs, tool I/O) and is readable by anyone who can read the repo; set `upload-runs: "false"` to keep it on the runner. Unzip it into your project and run `argus ui`, `argus fix <run-id>` or `argus replay <run-id> <node>`. If your tests never invoked a graph, the summary says the gate checked nothing instead of showing a quiet pass. To grade one saved run instead of your tests, pass `run-id:` (or set `ARGUS_RUN_ID`); it runs `argus check <id>`, never `last`. Other inputs: `strict: warn_as_fail`, `version: "==0.12.0"`, `install: "false"` when your requirements already install `argus-agents`, `working-directory`, `upload-runs`.
+The job fails when a run was not clean. The job summary on the PR names the root-cause node for each failed run and carries its `argus fix` prompt (sanitized: the page shows failure types and field names, never recorded values). The failed runs are uploaded as an `argus-runs-*` artifact, which holds raw recorded state (inputs, outputs, tool I/O) and is readable by anyone who can read the repo; set `upload-runs: "false"` to keep it on the runner. Unzip it into your project and run `argus ui`, `argus fix <run-id>` or `argus replay <run-id> <node>`. If your tests never invoked a graph, the summary says the gate checked nothing instead of showing a quiet pass. To grade one saved run instead of your tests, pass `run-id:` (or set `ARGUS_RUN_ID`); it runs `argus check <id>`, never `last`. Other inputs: `strict: warn_as_fail`, `version: "==0.15.0"`, `install: "false"` when your requirements already install `argus-agents`, `working-directory`, `upload-runs`.
 
 ---
 
@@ -839,7 +839,7 @@ For AI setup prompts and integration guides, visit **[arguslabs.in](https://argu
 
 ---
 
-**v0.14.1** — [changelog](https://github.com/ArgusLabs-ai/ARGUS/releases)
+**v0.15.0** — [changelog](https://github.com/ArgusLabs-ai/ARGUS/releases)
 
 ## Contributing
 

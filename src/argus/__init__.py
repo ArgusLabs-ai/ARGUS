@@ -35,7 +35,7 @@ Framework-agnostic usage (Prefect, Temporal, raw Python, etc.):
     session.finalize()
 """
 
-__version__ = "0.14.1"
+__version__ = "0.15.0"
 
 # Hosted/enterprise activation: when the proprietary `cloud/` package is present
 # (full-repo deployment), wire its Supabase config into the environment before
