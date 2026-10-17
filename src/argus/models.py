@@ -438,6 +438,11 @@ class RunRecord:
     complete: bool = True
     # None | "finished" | "exception" | "interrupted" | "cancelled" | "unknown"
     end_reason: str | None = None
+    # Which pipeline this run belongs to (argus.utils.ids.resolve_agent), set on the recorder
+    # path; None elsewhere. Where it ran: "ci", "local", or $ARGUS_ENVIRONMENT, set by every
+    # finalize. Last, with defaults, so run files from before these fields still load.
+    agent: str | None = None
+    environment: str | None = None
 
 
 # ── Correlation layer dataclasses ──────────────────────────────────────────────

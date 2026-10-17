@@ -413,7 +413,14 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
         judge_scores=_deserialize_judge_scores(data.get("judge_scores")),
         complete=complete,
         end_reason=end_reason,
+        agent=_str_or_none(data.get("agent")),
+        environment=_str_or_none(data.get("environment")),
     )
+
+
+def _str_or_none(value: Any) -> str | None:
+    """Text as written, else None: a hand-edited run file never makes the run unreadable."""
+    return value if isinstance(value, str) else None
 
 
 def _deserialize_judge_scores(items: Any) -> list[JudgeScore]:

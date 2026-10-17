@@ -25,6 +25,7 @@ import hmac
 import json
 import re
 import sys
+from collections.abc import Callable
 from importlib import metadata
 from typing import Any
 
@@ -101,12 +102,25 @@ def _is_number(text: str) -> bool:
 
 def shape(value: Any, secret: str, depth: int = 0) -> dict[str, Any]:
     """Type, length and features of ``value``; keys hashed, nothing copied."""
+    return value_shape(value, lambda key: _h(key, secret), True, depth)
+
+
+def value_shape(
+    value: Any, name: Callable[[Any], str] | None, bools: bool, depth: int = 0
+) -> dict[str, Any]:
+    """Type, length and features of ``value``, and never the value: the one function that
+    turns data into a shape, shared by this card and the run card (``argus.cloud_card``).
+
+    ``name`` maps a dict key to what is sent in its place (here: a keyed hash). ``None``
+    sends no key at all, only how many there are, for a caller whose nested keys can
+    themselves be values. ``bools`` keeps a boolean's value (``ok: false`` is the signal).
+    """
     if depth >= MAX_DEPTH:
         return {"t": "truncated"}
     if value is None:
         return {"t": "null"}
     if isinstance(value, bool):
-        return {"t": "bool", "v": value}
+        return {"t": "bool", "v": value} if bools else {"t": "bool"}
     if isinstance(value, int):
         return {"t": "int"}
     if isinstance(value, float):
@@ -117,12 +131,16 @@ def shape(value: Any, secret: str, depth: int = 0) -> dict[str, Any]:
         return {**out, "f": features} if features else out
     if isinstance(value, (list, tuple)):
         out = {"t": "array", "len": len(value)}
-        return {**out, "item": shape(value[0], secret, depth + 1)} if value else out
+        if not value:
+            return out
+        return {**out, "item": value_shape(value[0], name, bools, depth + 1)}
     if isinstance(value, dict):
         items = list(value.items())
+        if name is None:
+            return {"t": "object", "len": len(items)}
         out = {
             "t": "object",
-            "keys": {_h(k, secret): shape(v, secret, depth + 1) for k, v in items[:MAX_KEYS]},
+            "keys": {name(k): value_shape(v, name, bools, depth + 1) for k, v in items[:MAX_KEYS]},
         }
         return {**out, "more": len(items) - MAX_KEYS} if len(items) > MAX_KEYS else out
     return {"t": "other"}

@@ -97,3 +97,82 @@ Cards are deleted after 12 months.
 Team plans can turn telemetry on or off for the whole organization in the
 team agreement. Full runs (real values) are uploaded only with
 `ARGUS_CLOUD_SYNC=1`, into your own team workspace, never into this telemetry.
+
+## What a team workspace receives
+
+A project that sends its runs to a team workspace sends a **run card**, not the run. The
+card carries the verdict, the findings and the *shape* of the data, and never a value.
+Values never leave your machine unless the project explicitly opts into full payloads.
+
+> Status: `build_card` (`src/argus/cloud_card.py`) and its tests are in the tree; no
+> release uploads a card yet.
+
+A card, abridged (all values here are synthetic):
+
+```json
+{
+  "schema": 1,
+  "run": {
+    "run_id": "20261017-101010-a1b2c3", "argus_version": "0.15.0",
+    "overall_status": "silent_failure", "complete": true, "end_reason": "finished",
+    "duration_ms": 840.5, "started_at": "2026-10-17T10:10:10.123456+00:00",
+    "agent": "refund-agent", "environment": "ci", "test_id": null
+  },
+  "topology": {"graph_node_names": ["lookup", "reply"], "graph_edge_map": {"lookup": ["reply"], "reply": []}},
+  "steps": [{
+    "node": "lookup", "status": "fail", "superstep": "#1", "duration_ms": 312.4,
+    "update": {"t": "object", "len": 2, "keys": {
+      "account": {"t": "object", "len": 3},
+      "refund_status": {"t": "string", "len": 9, "f": ["done_word"]}}},
+    "tools": [{"name": "crm_lookup", "status": 503, "failure_class": "transient", "error": false}]
+  }],
+  "findings": [{
+    "id": "d17fb5a321", "type": "status_overstated", "node": "lookup",
+    "field_path": "refund_status", "origin_node": null, "severity": "critical",
+    "source": "heuristic", "confidence": null, "failure_class": "fatal", "suppressed": false
+  }],
+  "llm_usage": [{"model": "gpt-4o", "calls": 2, "prompt_tokens": 1300, "completion_tokens": 230, "total_tokens": 1530}],
+  "root_cause_chain": ["lookup"],
+  "fix_prompt": "# Fix: `lookup` returns a result even though …"
+}
+```
+
+### The naming rule
+
+Unlike the shape card above, a run card keeps names readable, so the rule is about what a
+name may be:
+
+- **Node and tool names** are chosen in your code and are sent as written. So are the **agent**
+  and **environment** of a run: names you set (`ArgusRecorder(agent=)`, `ARGUS_AGENT`,
+  `ARGUS_ENVIRONMENT`), else the compiled graph's name, else a hash of the node names;
+  `ci` on GitHub Actions and `local` otherwise.
+- **Top-level update keys** and **each dot-separated segment of a finding's field path**
+  are sent only if they look like an identifier (`^[A-Za-z_][A-Za-z0-9_]{0,63}$`, or a
+  list index such as `[0]`). Anything else is sent as `?`: a dict can be keyed by the
+  very value being kept out (`{"123-45-6789": …}`).
+- **Keys nested inside a value** are never sent. A value is its shape only:
+  `{t, len, f}`, the type, the length and features from the fixed list above. A
+  boolean carries no value and a number is only "an int".
+
+### Also never sent
+
+- Any value from node inputs, outputs, state, tool inputs, tool outputs or tool errors
+  (a tool call is its name, an HTTP status and a retry class)
+- A finding's `reason`, exception messages, reviewer claims, judge and validator explanations
+- Initial state, prompts and model outputs (LLM usage is call and token counts per model)
+- Free-text rule names: a learned signature's category or an LLM review kind that is not a
+  short snake_case word is sent as `other`
+
+The fix prompt is the `argus fix --sanitized` one, for a failing run only: the node to
+fix, the file and function to edit, field names by the rule above, shapes and exception
+*types*, no values.
+
+### How we keep it that way
+
+`src/argus/cloud_card.py` builds every field by name, and
+`src/argus/data/cloud_card.schema.json` lists every field it may carry
+(`additionalProperties: false` throughout, and a pattern on every update key and field
+path). `tests/test_data_leaks.py` plants a canary value in the initial state, a node
+update, a nested key, a tool output, a tool error, a sentinel finding, a field path and a
+judge explanation, and fails if it reaches the card or the sanitized fix prompt. It runs
+on every pull request.
