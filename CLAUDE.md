@@ -106,7 +106,6 @@ Every wrapped node executes through this pipeline:
 | `src/argus/storage.py` | Persist/load `RunRecord` to `.argus/runs/<run-id>.json`. Old files without `complete` derive it on load (`_run_completeness`) |
 | `src/argus/patcher.py` | Patch LangGraph node functions; handle LG 0.2+ and legacy formats |
 | `src/argus/llm_tracker.py` | Extract token usage from node output metadata |
-| `cloud/pricing.py` | Cost calculation per model (enterprise) |
 | `src/argus/http_recorder.py` | HTTP recording/playback for deterministic reruns — patches urllib3 (requests) and httpcore (httpx ≥0.28); warns if a record session captures zero interactions |
 | `src/argus/replay.py` | Rerun engine with reducer-aware state merging. Every path takes the node's input from the **ledger row**, never from `record.steps` directly. `replay_live(run_id, node, app=...)` is the pivot-path rerun: input from the notebook, function off the caller's compiled graph (`app.nodes[n].bound`, read not wrapped). No app → refuses and points at `argus check`; a trace holds state, not code |
 | `src/argus/llm_proxy.py` | Shared LLM transport — all chat completion calls go through here. Resolves BYOK (OpenAI/Anthropic/Google) first, falls back to hosted Supabase proxy; `judge_route(model)` names the `provider:model` a request really goes to (part of the verdict cache key) |
