@@ -102,8 +102,7 @@ team agreement. Full runs (real values) are uploaded only with
 
 A project that sends its runs to a team workspace sends a **run card**, not the run. The
 card carries the verdict, the findings and the *shape* of the data, and never a value.
-Values never leave your machine unless the project explicitly opts into full payloads
-(`ARGUS_CLOUD_SYNC=1`, above).
+Values never leave your machine unless the project explicitly opts into full payloads.
 
 > Status: `build_card` (`src/argus/cloud_card.py`) and its tests are in the tree; no
 > release uploads a card yet.
