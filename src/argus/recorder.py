@@ -53,6 +53,7 @@ from argus.llm_tracker import call_from_llm_outputs, usage_from_calls
 from argus.models import LLMCallInfo, ToolFailure
 from argus.review import Reviewer
 from argus.session import ArgusSession
+from argus.utils.ids import resolve_agent
 
 # Metadata an attached recorder puts on its runs, so `pytest --argus` (#78) does
 # not record them a second time.
@@ -446,6 +447,7 @@ class ArgusRecorder(BaseCallbackHandler):
         redact_keys: set[str] | list[str] | None = None,
         expected: dict[str, Any] | None = None,
         judge_score_floor: float | None = None,
+        agent: str | None = None,
     ) -> None:
         if not _HAS_LANGCHAIN:
             raise ImportError(
@@ -459,6 +461,10 @@ class ArgusRecorder(BaseCallbackHandler):
             None if judge_score_floor is None else check_floor(judge_score_floor)
         )
         self._strict = strict
+        # Which pipeline this is. `agent` wins; `bind` resolves the rest of the order
+        # (argus.utils.ids.resolve_agent) once it has read the graph.
+        self._agent = agent
+        self._agent_name: str | None = None
         # None = auto: on when a key/login is available, off otherwise (resolved
         # at attach). True/False force it either way regardless of key state.
         self._semantic_judge = semantic_judge
@@ -564,6 +570,9 @@ class ArgusRecorder(BaseCallbackHandler):
         self._ambiguous = _ambiguous(app)
         names, edges, conditionals, self._subgraphs = _topology(app, self._ambiguous)
         self._topology = (names, edges, conditionals)
+        self._agent_name = resolve_agent(
+            explicit=self._agent, graph_name=getattr(app, "name", None), node_names=names
+        )
         (
             self._subgraph_nodes,
             self._subgraphs_with_successors,
@@ -598,6 +607,7 @@ class ArgusRecorder(BaseCallbackHandler):
             redact_keys=self._redact_keys,
             expected=self._expected,
             judge_score_floor=self._judge_score_floor,
+            agent=self._agent_name,
         )
 
     def _resolve_reviewer(self) -> Reviewer | None:

@@ -71,7 +71,7 @@ from argus.models import (
 )
 from argus.storage import save_run
 from argus.utils.cycle_detection import has_cycles
-from argus.utils.ids import generate_run_id
+from argus.utils.ids import generate_run_id, resolve_environment
 from argus.utils.serializer import safe_serialize
 from argus.verdict_cache import current_scope
 
@@ -521,6 +521,9 @@ class ArgusSession:
 
         # frozen outputs for replay — maps node_name → list of saved output dicts (FIFO)
         self.frozen_outputs: dict[str, list[Any]] | None = None
+
+        # which pipeline this is (grading.new_session sets it on the recorder path)
+        self.agent: str | None = None
 
         # auto-captured for zero-config replay (set by ArgusWatcher)
         self.app_factory_ref: str | None = None
@@ -1982,6 +1985,8 @@ class ArgusSession:
             judge_scores=judge_scores,
             complete=run_complete,
             end_reason=end_reason,
+            agent=self.agent,
+            environment=resolve_environment(),
         )
 
         # Load parent run once if this is a replay (reused by correlation + comparison)

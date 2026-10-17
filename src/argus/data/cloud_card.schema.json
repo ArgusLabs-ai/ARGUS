@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ArgusLabs-ai/ARGUS/blob/master/src/argus/data/cloud_card.schema.json",
+  "title": "Argus run card",
+  "description": "What a team workspace receives about one run: the verdict, the findings without their reason, and the shape of the data. No value a pipeline produced can be expressed here. Values become {t, len, f}; booleans carry no value; keys nested inside a value are not sent. A top-level update key or a field path segment is named only when it looks like an identifier (otherwise \"?\"). Node and tool names are chosen in code and are sent as written. See docs/DATA.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run", "topology", "steps", "findings", "llm_usage", "root_cause_chain", "fix_prompt"],
+  "properties": {
+    "schema": {"type": "integer", "enum": [1]},
+    "run": {"$ref": "#/$defs/run"},
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["graph_node_names", "graph_edge_map"],
+      "properties": {
+        "graph_node_names": {"type": "array", "maxItems": 500, "items": {"$ref": "#/$defs/name"}},
+        "graph_edge_map": {
+          "type": "object",
+          "maxProperties": 500,
+          "propertyNames": {"$ref": "#/$defs/name"},
+          "additionalProperties": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/name"}}
+        }
+      }
+    },
+    "steps": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/$defs/step"}},
+    "findings": {"type": "array", "maxItems": 500, "items": {"$ref": "#/$defs/finding"}},
+    "llm_usage": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/usage"}},
+    "root_cause_chain": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/name"}},
+    "fix_prompt": {"type": ["string", "null"], "maxLength": 50000}
+  },
+  "$defs": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "key": {"type": "string", "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]{0,63}|\\?)$"},
+    "field_path": {
+      "type": "string",
+      "pattern": "^(?:\\?|[A-Za-z_][A-Za-z0-9_]{0,63}(?:\\[[0-9]{1,6}\\])*|(?:\\[[0-9]{1,6}\\])+)(?:\\.(?:\\?|[A-Za-z_][A-Za-z0-9_]{0,63}(?:\\[[0-9]{1,6}\\])*|(?:\\[[0-9]{1,6}\\])+)){0,7}$"
+    },
+    "word": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,47}$"},
+    "finding_type": {"type": "string", "pattern": "^(?:[a-z][a-z0-9_]{0,47}|[A-Z]{2}-[0-9]{3})$"},
+    "version": {"type": "string", "pattern": "^[0-9A-Za-z.+-]{1,32}$"},
+    "model": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$"},
+    "failure_class": {"enum": ["fatal", "transient", "rate_limited"]},
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "argus_version", "overall_status", "complete", "end_reason", "duration_ms", "started_at", "agent", "environment", "test_id"],
+      "properties": {
+        "run_id": {"$ref": "#/$defs/name"},
+        "argus_version": {"$ref": "#/$defs/version"},
+        "overall_status": {"$ref": "#/$defs/word"},
+        "complete": {"type": "boolean"},
+        "end_reason": {"anyOf": [{"$ref": "#/$defs/word"}, {"type": "null"}]},
+        "duration_ms": {"type": ["number", "null"], "minimum": 0},
+        "started_at": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.]{1,20}(?:Z|[+-][0-9:]{1,6})?$"},
+        "agent": {"anyOf": [{"$ref": "#/$defs/name"}, {"type": "null"}]},
+        "environment": {"anyOf": [{"$ref": "#/$defs/name"}, {"type": "null"}]},
+        "test_id": {"type": ["string", "null"], "maxLength": 200}
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "status", "superstep", "duration_ms", "update", "tools"],
+      "properties": {
+        "node": {"$ref": "#/$defs/name"},
+        "status": {"$ref": "#/$defs/word"},
+        "superstep": {"type": ["string", "null"], "maxLength": 256},
+        "duration_ms": {"type": "number", "minimum": 0},
+        "update": {"anyOf": [{"$ref": "#/$defs/update"}, {"type": "null"}]},
+        "tools": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/tool"}}
+      }
+    },
+    "update": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "len", "keys"],
+      "properties": {
+        "t": {"enum": ["object"]},
+        "len": {"type": "integer", "minimum": 0},
+        "keys": {
+          "type": "object",
+          "maxProperties": 50,
+          "propertyNames": {"$ref": "#/$defs/key"},
+          "additionalProperties": {"$ref": "#/$defs/shape"}
+        }
+      }
+    },
+    "shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t"],
+      "properties": {
+        "t": {"enum": ["null", "bool", "int", "float", "string", "array", "object", "other", "truncated"]},
+        "len": {"type": "integer", "minimum": 0},
+        "f": {
+          "type": "array",
+          "maxItems": 11,
+          "items": {"enum": ["empty", "multiline", "json_like", "url", "email_like", "numeric", "done_word", "pending_word", "error_word", "refusal", "placeholder"]}
+        },
+        "item": {"$ref": "#/$defs/shape"}
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "failure_class", "error"],
+      "properties": {
+        "name": {"$ref": "#/$defs/name"},
+        "status": {"type": ["integer", "null"], "minimum": 100, "maximum": 599},
+        "failure_class": {"anyOf": [{"$ref": "#/$defs/failure_class"}, {"type": "null"}]},
+        "error": {"type": "boolean"}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "node", "field_path", "origin_node", "severity", "source", "confidence", "failure_class", "suppressed"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[0-9a-f]{10}$"},
+        "type": {"$ref": "#/$defs/finding_type"},
+        "node": {"$ref": "#/$defs/name"},
+        "field_path": {"anyOf": [{"$ref": "#/$defs/field_path"}, {"type": "null"}]},
+        "origin_node": {"anyOf": [{"$ref": "#/$defs/name"}, {"type": "null"}]},
+        "severity": {"$ref": "#/$defs/word"},
+        "source": {"$ref": "#/$defs/word"},
+        "confidence": {"type": ["number", "null"]},
+        "failure_class": {"anyOf": [{"$ref": "#/$defs/failure_class"}, {"type": "null"}]},
+        "suppressed": {"type": "boolean"}
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "calls", "prompt_tokens", "completion_tokens", "total_tokens"],
+      "properties": {
+        "model": {"$ref": "#/$defs/model"},
+        "calls": {"type": "integer", "minimum": 0},
+        "prompt_tokens": {"type": "integer", "minimum": 0},
+        "completion_tokens": {"type": "integer", "minimum": 0},
+        "total_tokens": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

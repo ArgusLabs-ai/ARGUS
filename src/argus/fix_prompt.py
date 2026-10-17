@@ -24,6 +24,7 @@ from typing import Any, Optional
 
 from argus.models import NodeEvent, RunRecord
 from argus.storage import load_run
+from argus.utils.names import safe_key, safe_path
 
 __all__ = [
     "FixPromptError",
@@ -524,7 +525,7 @@ def _render_state(
         present = list(state.keys())[:6]
 
     if sanitized:
-        lines = [f"{_inline(k, 80)}: {_describe_shape(state[k])}" for k in present]
+        lines = [f"{safe_key(k)}: {_describe_shape(state[k])}" for k in present]
         block = _fence("\n".join(lines))
     else:
         subset = {k: state[k] for k in present}
@@ -536,7 +537,7 @@ def _render_state(
 
     remaining = [k for k in state.keys() if k not in present]
     if remaining:
-        keys = ", ".join(_inline(k, 80) for k in remaining)
+        keys = ", ".join(safe_key(k) if sanitized else _inline(k, 80) for k in remaining)
         block += f"\n\nOther keys present: {keys}"
     return block
 
@@ -571,6 +572,15 @@ def _inline(text: Any, limit: int = 200) -> str:
     return flat.replace("`", "'")
 
 
+def _field(name: Any, limit: int, sanitized: bool) -> str:
+    """A recorded field name or dotted path, for the prose.
+
+    Sanitized, each segment that does not look like an identifier is shown as ``?``: a dict
+    can be keyed by the very value being kept out (``{"123-45-6789": ...}``).
+    """
+    return _inline((safe_path(name) or "") if sanitized else name, limit)
+
+
 def _dumps(value: Any) -> tuple[str, bool]:
     """Deterministic JSON rendering. Returns (text, was_truncated)."""
     try:
@@ -595,8 +605,7 @@ def _describe_shape(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return f"{type(value).__name__} ({len(value)} items)"
     if isinstance(value, dict):
-        keys = ", ".join(_inline(k, 40) for k in list(value.keys())[:8])
-        return f"dict (keys: {keys})" if keys else "dict (empty)"
+        return f"dict ({len(value)} keys)" if value else "dict (empty)"
     return type(value).__name__
 
 
@@ -669,28 +678,28 @@ def _headline(record: RunRecord, target: str, event: NodeEvent, *, sanitized: bo
             return f"`{target}` returns a result even though {_failure_plain(tf.failure_type)}"
         if insp.missing_fields:
             succ = _successors(record, target)
-            field = _inline(insp.missing_fields[0], 80)
+            field = _field(insp.missing_fields[0], 80, sanitized)
             if len(succ) == 1:
                 return f"`{target}` does not produce the `{field}` field that `{succ[0]}` needs"
             return f"`{target}` does not produce the `{field}` field"
         if insp.empty_fields:
-            return f"`{target}` produces an empty `{_inline(insp.empty_fields[0], 80)}`"
+            return f"`{target}` produces an empty `{_field(insp.empty_fields[0], 80, sanitized)}`"
         if insp.type_mismatches:
             m = insp.type_mismatches[0]
             return (
-                f"`{target}` produces `{_inline(m.field_name, 80)}` as "
+                f"`{target}` produces `{_field(m.field_name, 80, sanitized)}` as "
                 f"{_inline(m.actual_type, 60)} instead of "
                 f"{_inline(m.expected_type, 60)}"
             )
         if insp.semantic_signals:
             ss = insp.semantic_signals[0]
-            where = _inline(ss.dotted_path, 80) or "its output"
+            where = _field(ss.dotted_path, 80, sanitized) or "its output"
             return f"`{target}` produces unusable content in `{where}`"
         if insp.degraded_fields:
             upstream = insp.degraded_upstream_node or "an earlier node"
             return (
                 f"`{target}` runs without the "
-                f"`{_inline(insp.degraded_fields[0], 80)}` field from `{upstream}`"
+                f"`{_field(insp.degraded_fields[0], 80, sanitized)}` field from `{upstream}`"
             )
 
     if event.anomaly_signals:
@@ -761,7 +770,9 @@ def _what_went_wrong(
         paras.append(f"`{target}` raised an error and stopped. {below}")
     elif event.status == "degraded_input" and insp is not None:
         upstream = insp.degraded_upstream_node or "an earlier node"
-        fields = ", ".join(f"`{_inline(f, 80)}`" for f in insp.degraded_fields) or "a field"
+        fields = (
+            ", ".join(f"`{_field(f, 80, sanitized)}`" for f in insp.degraded_fields) or "a field"
+        )
         paras.append(
             f"`{target}` ran without {fields}, because `{upstream}` never "
             "produced it. It did not raise an error — it carried on with "
@@ -781,7 +792,7 @@ def _what_went_wrong(
             else "The result was passed on to the next node as if it were complete."
         )
         paras.append(
-            f"While producing `{_inline(tf.field_name, 80)}`, "
+            f"While producing `{_field(tf.field_name, 80, sanitized)}`, "
             f"{_failure_plain(tf.failure_type)}{detail}. {passed_on}"
         )
         advice = _CLASS_ADVICE.get(tf.failure_class)
@@ -798,27 +809,27 @@ def _what_went_wrong(
             if len(succ) == 1:
                 paras.append(
                     f"The next node (`{succ[0]}`) reads "
-                    f"`state['{_inline(field, 80)}']`, but this node's output "
-                    f"has no `{_inline(field, 80)}` key."
+                    f"`state['{_field(field, 80, sanitized)}']`, but this node's output "
+                    f"has no `{_field(field, 80, sanitized)}` key."
                 )
             else:
                 paras.append(
-                    f"A later node reads `state['{_inline(field, 80)}']`, but "
-                    f"this node's output has no `{_inline(field, 80)}` key."
+                    f"A later node reads `state['{_field(field, 80, sanitized)}']`, but "
+                    f"this node's output has no `{_field(field, 80, sanitized)}` key."
                 )
 
     for field in insp.empty_fields:
-        paras.append(f"`{_inline(field, 80)}` is present in the output but empty.")
+        paras.append(f"`{_field(field, 80, sanitized)}` is present in the output but empty.")
 
     for field in insp.suspicious_empty_keys:
         paras.append(
-            f"`{_inline(field, 80)}` was written as an empty value, which will degrade "
+            f"`{_field(field, 80, sanitized)}` was written as an empty value, which will degrade "
             "whatever reads it downstream."
         )
 
     for m in insp.type_mismatches:
         head = (
-            f"`{_inline(m.field_name, 80)}` should be {_inline(m.expected_type, 60)}, "
+            f"`{_field(m.field_name, 80, sanitized)}` should be {_inline(m.expected_type, 60)}, "
             f"but it is {_inline(m.actual_type, 60)}"
         )
         if sanitized:
@@ -827,7 +838,7 @@ def _what_went_wrong(
             paras.append(f"{head} ({_inline(m.actual_value_repr)}).")
 
     for ss in insp.semantic_signals:
-        where = _inline(ss.dotted_path, 80) or "the output"
+        where = _field(ss.dotted_path, 80, sanitized) or "the output"
         evidence = (
             "" if sanitized else (f' Example: "{_inline(ss.evidence)}".' if ss.evidence else "")
         )
@@ -872,22 +883,26 @@ def _done_when(
             if tf.failure_type not in _TOOL_FAILURE_CONDITION:
                 conds.append(
                     f"`{target}` no longer produces a `{_inline(tf.failure_type, 40)}` failure "
-                    f"on `{_inline(tf.field_name, 80)}`."
+                    f"on `{_field(tf.field_name, 80, sanitized)}`."
                 )
                 continue
             plain = _TOOL_FAILURE_CONDITION[tf.failure_type]
             conds.append(
                 f"When {plain}, `{target}` either raises or retries — it never "
-                f"returns `{_inline(tf.field_name, 80)}` as a successful empty result."
+                f"returns `{_field(tf.field_name, 80, sanitized)}` as a successful empty result."
             )
         for field in insp.missing_fields:
-            conds.append(f"`{target}`'s output dict contains a `{_inline(field, 80)}` key.")
+            conds.append(
+                f"`{target}`'s output dict contains a `{_field(field, 80, sanitized)}` key."
+            )
         for field in insp.empty_fields:
-            conds.append(f"`{target}`'s `{_inline(field, 80)}` value is non-empty.")
+            conds.append(f"`{target}`'s `{_field(field, 80, sanitized)}` value is non-empty.")
         for m in insp.type_mismatches:
-            conds.append(f"`{_inline(m.field_name, 80)}` is {_inline(m.expected_type, 60)}.")
+            conds.append(
+                f"`{_field(m.field_name, 80, sanitized)}` is {_inline(m.expected_type, 60)}."
+            )
         for ss in insp.semantic_signals:
-            where = _inline(ss.dotted_path, 80) or "the output"
+            where = _field(ss.dotted_path, 80, sanitized) or "the output"
             # ss.description is registry prose; the raw category slug is an
             # internal enum and reads as broken grammar in a success criterion.
             conds.append(f"`{where}` no longer shows this problem: {_inline(ss.description)}.")

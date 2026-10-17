@@ -1905,3 +1905,23 @@ Nothing a pipeline produced leaves without an explicit opt-in.
 
 `tests/test_data_leaks.py` plants canary values and fails if any reaches an
 outbound payload or (for `redact_keys`) the saved run.
+
+## Which pipeline a run belongs to: `agent` and `environment`
+
+`RunRecord` gains two fields, last and defaulted, so run files from before them still load.
+The run card (`argus.cloud_card`, `docs/DATA.md`) carries both.
+
+- **`environment`**: `$ARGUS_ENVIRONMENT`, else `ci` when `GITHUB_ACTIONS=true`, else `local`.
+  Set in the shared `ArgusSession._finalize_serialized`, so the recorder, the wrap path and trace
+  ingest all get it.
+- **`agent`**, recorder path only: `ArgusRecorder(agent=)`, then `$ARGUS_AGENT`, then the
+  compiled graph's `.name` (not LangGraph's default `"LangGraph"`), then the module part of
+  `app_factory_ref`, then `g_` + a hash of the sorted node names
+  (`argus.utils.ids.resolve_agent`). It is resolved once in `ArgusRecorder.bind`, which `attach()`
+  and the `pytest --argus` hook (#78) both call, so the hook names a run exactly as an explicit
+  attach does. `grading.new_session(agent=)` puts it on the session.
+- Nothing on the recorder path sets `app_factory_ref` (only `ArgusWatcher` does), so a recorder run
+  goes from the graph name straight to the hash. The wrap path and trace ingest pass no agent and
+  save `None`.
+
+`tests/test_run_identity.py` has one test per precedence level, for `attach` and for `bind`.

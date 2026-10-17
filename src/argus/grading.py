@@ -84,6 +84,7 @@ def new_session(
     redact_keys: set[str] | list[str] | None = None,
     expected: dict[str, Any] | None = None,
     judge_score_floor: float | None = None,
+    agent: str | None = None,
 ) -> ArgusSession:
     """A session for one graph run, ready for ``on_node_start`` / ``on_node_end``.
 
@@ -106,6 +107,9 @@ def new_session(
     declares ``expected`` is handed; ``judge_score_floor`` is where a judge score
     becomes a ``low_judge_score`` warning (default 0.5). Both are local data, no
     LLM call (:mod:`argus.judge_api`).
+
+    ``agent`` is which pipeline the run belongs to, already resolved
+    (:func:`argus.utils.ids.resolve_agent`); it is stamped on the saved run.
     """
     session = ArgusSession(
         max_field_size=max_field_size,
@@ -122,6 +126,7 @@ def new_session(
             semantic_check=judge,
         ),
     )
+    session.agent = agent
     session.set_node_names(node_names)
     session.set_edges(edge_map)
     session.set_conditional_sources(conditional_sources)
