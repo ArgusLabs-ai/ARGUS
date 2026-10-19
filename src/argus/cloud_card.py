@@ -38,7 +38,7 @@ from argus.fix_prompt import FixPromptError, build_fix_prompt_for_record
 from argus.inspector import _STATUS_KEYS, _as_json_payload
 from argus.models import Finding, NodeEvent, RunRecord
 from argus.telemetry.card import _word, value_shape
-from argus.utils.names import safe_key, safe_path
+from argus.utils.names import safe_key, safe_path, step_roots
 
 logger = logging.getLogger("argus")
 
@@ -185,14 +185,23 @@ def _step(event: NodeEvent) -> dict[str, Any]:
     }
 
 
-def _finding(finding: Finding) -> dict[str, Any]:
+def _roots_by_node(record: RunRecord) -> dict[str, list[Any]]:
+    """The data each node's field paths point into: every step of the node, as ``step_roots``."""
+    roots: dict[str, list[Any]] = {}
+    for event in record.steps or []:
+        roots.setdefault(event.node_name, []).extend(step_roots(event))
+    return roots
+
+
+def _finding(finding: Finding, roots: list[Any]) -> dict[str, Any]:
     """No ``reason``. The id is recomputed from what is sent: the local one hashes the raw
     path, so anyone could test a guess at a masked segment against it. Where nothing was
-    masked the two are equal."""
+    masked the two are equal. ``roots`` is the data of the finding's node, which the path is
+    read against."""
     kind = _type(finding.type)
     node = _text(finding.node)
     source = _word(finding.source)
-    path = safe_path(finding.field_path)
+    path = safe_path(finding.field_path, *roots)
     confidence = _number(finding.confidence)
     return {
         "id": _fid(kind, node, path, source),
@@ -251,12 +260,15 @@ def _fix_prompt(record: RunRecord) -> str | None:
 def build_card(record: RunRecord) -> dict[str, Any]:
     """The run card for ``record``. Pure but for the fix prompt, which reads source files to
     name the function to edit (``argus fix`` does the same)."""
+    roots = _roots_by_node(record)
     return {
         "schema": SCHEMA_VERSION,
         "run": _run(record),
         "topology": _topology(record),
         "steps": [_step(e) for e in (record.steps or [])[:MAX_STEPS]],
-        "findings": [_finding(f) for f in (record.findings or [])[:MAX_FINDINGS]],
+        "findings": [
+            _finding(f, roots.get(f.node, [])) for f in (record.findings or [])[:MAX_FINDINGS]
+        ],
         "llm_usage": _llm_usage(record),
         "root_cause_chain": [_text(n) for n in (record.root_cause_chain or [])[:MAX_CHAIN]],
         "fix_prompt": _fix_prompt(record),

@@ -8,6 +8,7 @@ the card and the prompt text).
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, TypedDict
 
 import pytest
@@ -21,6 +22,7 @@ from argus.models import (
     InspectionResult,
     JudgeScore,
     SemanticCheckResult,
+    SemanticSignal,
     ToolFailure,
     ValidatorResult,
 )
@@ -28,6 +30,11 @@ from argus.models import (
 CANARY = "CANARY-SSN-123-45-6789"
 CANARY_EMAIL = "canary@leak.test"
 CANARY_NODE = "canary_node"
+# A key with a dot in it. Each half looks like an identifier alone; only the whole is a value.
+DOTTED = ("canary_first", "canary_second")
+DOTTED_KEY = ".".join(DOTTED)
+# What an LLM wrote about a pattern it saw in real outputs (learned and shared signatures).
+CANARY_DESCRIPTION = "replies that quote the acme-refund-ledger"
 
 
 @pytest.fixture
@@ -156,6 +163,53 @@ PLANTS: dict[str, dict[str, Any]] = {
     "judge_explanation": {"judge_explanation": CANARY},
     "validator_message": {"validator_message": CANARY},
     "exception_message": {"exception": f"KeyError: '{CANARY}'"},
+    # A dict key that contains a dot, and a finding whose path runs through it.
+    "dotted_key_in_update": {
+        "update": {"accounts": {DOTTED_KEY: {"balance": -1}}},
+        "field": f"accounts.{DOTTED_KEY}.balance",
+    },
+    "dotted_top_level_key_in_update": {
+        "update": {DOTTED_KEY: {"balance": -1}},
+        "field": f"{DOTTED_KEY}.balance",
+    },
+    "dotted_key_in_input_state": {
+        "input_state": {"accounts": {DOTTED_KEY: 1}},
+        "field": f"accounts.{DOTTED_KEY}",
+    },
+    "dotted_key_in_tool_output": {
+        "tool_calls": [
+            {
+                "name": "crm",
+                "input": "x",
+                "output": {"status": 200, "accounts": {DOTTED_KEY: {"error": "x"}}},
+                "error": None,
+            }
+        ],
+        "field": f"crm.accounts.{DOTTED_KEY}.error",
+    },
+    "dotted_key_in_a_list_item": {
+        "update": {"rows": [{DOTTED_KEY: 1}]},
+        "field": f"rows[0].{DOTTED_KEY}",
+    },
+    # A signature the project or the community added: its description is text an LLM wrote.
+    "learned_signature_description": {
+        "signal": SemanticSignal(
+            "CS-001", "learned_pattern", "critical", CANARY_DESCRIPTION, ("note",), "ev"
+        )
+    },
+    "shared_signature_description": {
+        "signal": SemanticSignal(
+            "CS-014", "shared_pattern", "warning", CANARY_DESCRIPTION, ("note",), "ev"
+        )
+    },
+    "bundled_id_with_other_text": {  # a learned signature cannot borrow a bundled id
+        "signal": SemanticSignal(
+            "PH-001", "placeholder_outputs", "warning", CANARY_DESCRIPTION, ("note",), "ev"
+        )
+    },
+    "signature_no_longer_known": {
+        "signal": SemanticSignal("ZZ-999", "gone", "warning", CANARY_DESCRIPTION, ("note",), "ev")
+    },
 }
 KITCHEN_SINK: dict[str, Any] = {
     "initial_state": {"customer": CANARY, CANARY: CANARY},
@@ -173,6 +227,7 @@ KITCHEN_SINK: dict[str, Any] = {
     "judge_explanation": CANARY,
     "validator_message": CANARY,
     "exception": f"KeyError: '{CANARY}'",
+    "signal": PLANTS["learned_signature_description"]["signal"],
 }
 # Where the unsanitized prompt prints the value, so the sanitized assertion is not vacuous.
 PRINTED_BY_THE_PLAIN_PROMPT = [
@@ -185,7 +240,19 @@ PRINTED_BY_THE_PLAIN_PROMPT = [
     "sentinel_reason",
     "finding_field_path",
     "exception_message",
+    "dotted_key_in_update",
+    "dotted_top_level_key_in_update",
+    "dotted_key_in_input_state",
+    "dotted_key_in_tool_output",
+    "dotted_key_in_a_list_item",
+    "learned_signature_description",
+    "shared_signature_description",
+    "bundled_id_with_other_text",
+    "signature_no_longer_known",
 ]
+BUNDLED_SIGNATURE = json.loads(
+    (Path(__file__).parent.parent / "src/argus/data/signatures.json").read_text(encoding="utf-8")
+)["signatures"][0]
 
 
 def _canary_record(**planted: Any):
@@ -211,6 +278,7 @@ def _canary_record(**planted: Any):
             message="sentinel",
             tool_failures=[tool_failure],
             has_tool_failure=True,
+            semantic_signals=[planted["signal"]] if "signal" in planted else [],
         ),
         validator_results=[
             ValidatorResult("*:check", False, planted.get("validator_message", "bad"))
@@ -252,7 +320,8 @@ def _canary_record(**planted: Any):
 
 
 def _leaks(text: str) -> list[str]:
-    return [piece for piece in (CANARY, "123-45-6789") if piece.lower() in text.lower()]
+    pieces = (CANARY, "123-45-6789", *DOTTED, CANARY_DESCRIPTION)
+    return [piece for piece in pieces if piece.lower() in text.lower()]
 
 
 @pytest.mark.parametrize("place", sorted(PLANTS))
@@ -359,5 +428,149 @@ def test_run_card_from_a_real_pipeline_leaks_nothing():
     assert sentinel and sentinel[0]["field_path"] == "customer.?"
     assert any(CANARY in f.reason for f in record.findings)  # the local record quotes the path
     assert {t["name"] for t in card["steps"][0]["tools"]} == {"crm", "mailer"}
+    assert card["fix_prompt"]
+    assert _leaks(json.dumps(card)) == []
+
+
+# ── a key that contains a dot, and the description of a signature the project added ──
+
+
+def test_a_dotted_key_is_masked_whole_in_the_card_and_the_sanitized_prompt():
+    record = _canary_record(**PLANTS["dotted_key_in_update"])
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.?.?.?"
+    prompt = build_fix_prompt_for_record(record, sanitized=True).prompt
+    assert "accounts.?.?.?" in prompt
+    assert _leaks(prompt) == [] and _leaks(json.dumps(build_card(record))) == []
+
+
+def test_a_dotted_key_the_data_does_not_hold_is_masked_too():
+    # The path names a key the update no longer has (a baseline's "lost" key): nothing to walk.
+    record = _canary_record(field=DOTTED_KEY)
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "?.?"
+    assert _leaks(build_fix_prompt_for_record(record, sanitized=True).prompt) == []
+
+
+def test_a_names_that_are_real_keys_are_still_shown():
+    # Not vacuous: the rule masks dotted keys, not every nested name.
+    record = _canary_record(
+        update={"accounts": {"ana": {"balance": -1}}}, field="accounts.ana.balance"
+    )
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.ana.balance"
+    assert "accounts.ana.balance" in build_fix_prompt_for_record(record, sanitized=True).prompt
+
+
+def test_a_bundled_signatures_description_stays_in_the_sanitized_prompt():
+    text = BUNDLED_SIGNATURE["description"]
+    signal = SemanticSignal(
+        BUNDLED_SIGNATURE["id"], BUNDLED_SIGNATURE["category"], "warning", text, ("note",), "ev"
+    )
+    prompt = build_fix_prompt_for_record(_canary_record(signal=signal), sanitized=True).prompt
+    assert text in prompt
+
+
+def test_a_signature_the_project_added_is_named_in_the_prompt_without_its_description():
+    signal = PLANTS["learned_signature_description"]["signal"]
+    prompt = build_fix_prompt_for_record(_canary_record(signal=signal), sanitized=True).prompt
+    assert CANARY_DESCRIPTION not in prompt
+    assert prompt.count("a signature added to this project") == 2  # what went wrong, done when
+
+
+def test_run_card_from_a_real_pipeline_with_a_dotted_key_leaks_nothing():
+    pytest.importorskip("langchain_core")
+    from langgraph.graph import END, START, StateGraph
+
+    from argus.recorder import ArgusRecorder
+
+    class S(TypedDict, total=False):
+        accounts: dict
+        note: str
+
+    def lookup(state: S) -> dict:
+        return {"accounts": {DOTTED_KEY: "N/A"}}  # D6: healthy runs held data here
+
+    def reply(state: S) -> dict:
+        return {"note": "done"}
+
+    graph = StateGraph(S)
+    graph.add_node("lookup", lookup)
+    graph.add_node("reply", reply)
+    graph.add_edge(START, "lookup")
+    graph.add_edge("lookup", "reply")
+    graph.add_edge("reply", END)
+    baseline = {
+        "version": 1,
+        "nodes": {
+            "lookup": {
+                "keys": ["accounts"],
+                "types": {"accounts": "dict"},
+                "paths": {"accounts": "object", f"accounts.{DOTTED_KEY}": "text"},
+            }
+        },
+    }
+
+    recorder = ArgusRecorder(semantic_judge=False, baseline=baseline)
+    recorder.attach(graph.compile()).invoke({"accounts": {DOTTED_KEY: "Ana"}})
+    record = storage.load_run(recorder.run_ids[-1])
+    card = build_card(record)
+
+    sentinel = [f for f in card["findings"] if f["type"] == "sentinel_value"]
+    assert sentinel and sentinel[0]["field_path"] == "accounts.?.?"
+    assert any(DOTTED_KEY in f.reason for f in record.findings)  # the local record quotes the path
+    assert card["fix_prompt"] and "accounts.?.?" in card["fix_prompt"]
+    assert _leaks(json.dumps(card)) == []
+
+
+def test_run_card_from_a_real_pipeline_with_a_learned_signature_leaks_nothing():
+    pytest.importorskip("langchain_core")
+    from langgraph.graph import END, START, StateGraph
+
+    from argus.recorder import ArgusRecorder
+    from argus.registry import reload_registry
+
+    custom = {
+        "signatures": [
+            {
+                "id": "CS-001",
+                "category": "learned_pattern",
+                "pattern": "needle-phrase",
+                "match_strategy": "contains_ci",
+                "severity": "critical",
+                "description": CANARY_DESCRIPTION,
+                "source": "learned",
+                "metadata": {"approval_status": "approved"},
+            }
+        ]
+    }
+    (Path(".argus") / "custom_signatures.json").write_text(json.dumps(custom), encoding="utf-8")
+    reload_registry()
+
+    class S(TypedDict, total=False):
+        note: str
+
+    def lookup(state: S) -> dict:
+        return {"note": "the needle-phrase is in this reply"}
+
+    def reply(state: S) -> dict:
+        return {"note": "done"}
+
+    graph = StateGraph(S)
+    graph.add_node("lookup", lookup)
+    graph.add_node("reply", reply)
+    graph.add_edge(START, "lookup")
+    graph.add_edge("lookup", "reply")
+    graph.add_edge("reply", END)
+
+    recorder = ArgusRecorder(semantic_judge=False)
+    recorder.attach(graph.compile()).invoke({"note": "hi"})
+    record = storage.load_run(recorder.run_ids[-1])
+    signals = [s for e in record.steps if e.inspection for s in e.inspection.semantic_signals]
+    assert [s.sig_id for s in signals] == ["CS-001"]  # the learned signature fired
+    assert (
+        CANARY_DESCRIPTION in build_fix_prompt_for_record(record).prompt
+    )  # and the plain prompt says it
+    card = build_card(record)
     assert card["fix_prompt"]
     assert _leaks(json.dumps(card)) == []

@@ -1925,3 +1925,30 @@ The run card (`argus.cloud_card`, `docs/DATA.md`) carries both.
   save `None`.
 
 `tests/test_run_identity.py` has one test per precedence level, for `attach` and for `bind`.
+
+## Two things a sanitized form must not carry: a dotted key, a learned description
+
+`argus fix --sanitized` and the run card (`argus.cloud_card`) name a field path by the rule in
+`argus.utils.names`. Two gaps in it are closed.
+
+- **A key that contains a dot.** `{"accounts": {"john.smith": {...}}}` gives the path
+  `accounts.john.smith.balance`, which no segment rule can tell from three nested keys, and
+  each half looks like an identifier. `safe_path(path, *roots)` now reads the path against the
+  data it points into (`step_roots(step)`: the update, the input state and each tool call's
+  output under the tool's name, read as the inspector reads a tool payload). A segment is shown
+  only if it looks like an identifier and is a real key, or an index in range, at its level;
+  the first one that is not, and every one after it, is `?`. A real key that is not an
+  identifier is `?` and the walk goes on under it (`customer.?.balance`). The first segment may
+  be absent from the data (a field nobody wrote, or a key a baseline says the node stopped
+  writing), so it is shown only when it is the whole path: with more segments after it, it
+  could be the start of a dotted key. Detection output is unchanged (`Finding.field_path` and
+  the saved run still hold the raw path), so neither matrix moves. The card reads a finding's
+  path against every step of `finding.node`; the prompt reads it against the step it is about.
+- **A learned signature's description.** It is written by an LLM from real outputs. The
+  sanitized prompt keeps a description only when id and text both equal a signature in
+  `data/signatures.json` (`registry.bundled_descriptions`) or the scanner's depth-limit signal;
+  a signature from `custom_signatures.json`, one pulled from the community, one that borrows a
+  bundled id with other text, and an id nobody knows any more are named as "a signature added
+  to this project".
+
+`tests/test_data_leaks.py` has a canary for each, including two real pipelines.
