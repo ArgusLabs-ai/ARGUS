@@ -14,7 +14,8 @@ from argus.telemetry import send
 ROOT = Path(__file__).parent.parent
 PUBLISHED = ROOT / "src/argus/data/share_card.schema.json"
 FUNCTION = ROOT / "supabase/telemetry/functions/telemetry-intake"
-MIGRATION = ROOT / "supabase/telemetry/migration.sql"
+# migration.sql, then permissions.sql: every file applied to the telemetry project.
+SQL = "\n".join(f.read_text() for f in sorted((ROOT / "supabase/telemetry").glob("*.sql")))
 
 
 def test_function_schema_is_the_published_schema():
@@ -22,14 +23,13 @@ def test_function_schema_is_the_published_schema():
 
 
 def test_every_table_has_row_level_security():
-    sql = MIGRATION.read_text()
-    tables = set(re.findall(r"create table public\.(\w+)", sql))
-    secured = set(re.findall(r"alter table public\.(\w+)\s+enable row level security", sql))
+    tables = set(re.findall(r"create table public\.(\w+)", SQL))
+    secured = set(re.findall(r"alter table public\.(\w+)\s+enable row level security", SQL))
     assert tables and tables == secured
 
 
 def test_no_policy_grants_anything_to_anon():
-    policies = re.findall(r"create policy[^;]*;", MIGRATION.read_text().lower())
+    policies = re.findall(r"create policy[^;]*;", SQL.lower())
     assert policies
     for policy in policies:
         assert re.search(r"\bto authenticated\b", policy), policy
