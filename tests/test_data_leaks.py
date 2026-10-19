@@ -59,6 +59,51 @@ def test_logged_in_save_run_uploads_nothing_without_opt_in(logged_in, tmp_path, 
     assert len(logged_in) == 1  # opted in: the full run goes up, as documented
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param({"ARGUS_REPORT_ONLY": "1"}, id="report-only env"),
+        pytest.param({"ARGUS_REPORT_ONLY": "true"}, id="report-only env, spelled out"),
+        pytest.param({"ARGUS_CLOUD_URL": "https://workspace.example.com"}, id="workspace url"),
+        pytest.param({"plugin": "report-only"}, id="pytest --argus-report-only"),
+    ],
+)
+def test_full_run_sync_never_runs_while_reporting_to_a_workspace(
+    logged_in, tmp_path, monkeypatch, mode
+):
+    """A workspace gets run cards (argus cloud upload), never the run: not even from a user who
+    is logged in and set ARGUS_CLOUD_SYNC=1 for their own machine."""
+    from argus import run_context
+
+    monkeypatch.setattr(storage, "_runs_path", lambda: tmp_path)
+    monkeypatch.setenv("ARGUS_CLOUD_SYNC", "1")
+    storage.save_run(make_run_record(run_id="control"))
+    assert len(logged_in) == 1  # not vacuous: with the opt-in and no workspace, the run goes up
+
+    for name, value in mode.items():
+        if name == "plugin":
+            run_context.set_report_only(True)
+        else:
+            monkeypatch.setenv(name, value)
+    try:
+        storage.save_run(make_run_record(run_id="in-workspace-mode"))
+    finally:
+        run_context.set_report_only(False)
+    assert len(logged_in) == 1
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", " "])
+def test_a_switch_that_is_off_leaves_the_opted_in_sync_alone(
+    logged_in, tmp_path, monkeypatch, value
+):
+    monkeypatch.setattr(storage, "_runs_path", lambda: tmp_path)
+    monkeypatch.setenv("ARGUS_CLOUD_SYNC", "1")
+    monkeypatch.setenv("ARGUS_REPORT_ONLY", value)
+    monkeypatch.setenv("ARGUS_CLOUD_URL", " ")  # a blank URL is no URL
+    storage.save_run(make_run_record(run_id="r1"))
+    assert len(logged_in) == 1
+
+
 def test_shared_signature_carries_no_evidence_nodes_or_email(logged_in):
     sig = {
         "id": "sig1",

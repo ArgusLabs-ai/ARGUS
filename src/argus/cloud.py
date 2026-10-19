@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from argus import run_context
+
 # ── Supabase config (hosted deployments set these via cloud/config.py) ────
 SUPABASE_URL = os.environ.get("ARGUS_SUPABASE_URL")
 SUPABASE_ANON_KEY = os.environ.get("ARGUS_SUPABASE_ANON_KEY")
@@ -72,9 +74,18 @@ def _opted_in(var: str) -> bool:
     return os.environ.get(var, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def reports_to_workspace() -> bool:
+    """True while this process records for a team workspace: ``pytest --argus-report-only`` /
+    ``ARGUS_REPORT_ONLY=1``, or ``ARGUS_CLOUD_URL`` is set. A workspace receives run cards
+    (``argus cloud upload``, docs/DATA.md), never the run itself."""
+    return run_context.report_only() or bool(os.environ.get("ARGUS_CLOUD_URL", "").strip())
+
+
 def run_sync_enabled() -> bool:
-    """Uploading full runs (real node inputs / outputs) is opt-in: ``ARGUS_CLOUD_SYNC=1``."""
-    return _opted_in("ARGUS_CLOUD_SYNC")
+    """Uploading full runs (real node inputs / outputs) is opt-in: ``ARGUS_CLOUD_SYNC=1``.
+
+    Never while reporting to a team workspace, whatever else is set."""
+    return _opted_in("ARGUS_CLOUD_SYNC") and not reports_to_workspace()
 
 
 def hosted_llm_enabled() -> bool:

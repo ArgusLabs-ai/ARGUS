@@ -1952,3 +1952,26 @@ The run card (`argus.cloud_card`, `docs/DATA.md`) carries both.
   to this project".
 
 `tests/test_data_leaks.py` has a canary for each, including two real pipelines.
+
+## Report-only mode and the session list
+
+`pytest --argus-report-only` (or `ARGUS_REPORT_ONLY=1`: `1`, `true`, `yes`, `on`) records, grades
+and saves runs exactly as `--argus` does and never changes a test's outcome, a failing test
+included. Alone it turns recording on; with `--argus` it wins. A job whose runs are judged
+elsewhere (`argus cloud upload`) must not also go red here. The state is
+`run_context.set_report_only`, set in `pytest_configure` and cleared in `pytest_unconfigure`
+(an in-process `pytester` session would otherwise leave it on).
+
+- **The session list.** `run_context` holds per-test captures in memory, and they end with the
+  test; `argus cloud upload` is another process. So either switch also makes the session write
+  every run id it saves to `.argus/session_runs.txt` (`storage.session_path()`), one line per
+  `save_run` (`record_run_id` appends whether or not a test is capturing). The process that
+  starts the session empties the list, so a shared self-hosted workspace never uploads an earlier
+  job's runs; an xdist worker (`config.workerinput`) only adds to it. No list means the session
+  never ran; an empty one means it saved nothing. A list that cannot be written logs a warning
+  and never fails the save.
+- **No full-run sync.** `cloud.run_sync_enabled()` is false in report-only mode and whenever
+  `ARGUS_CLOUD_URL` is set, even for a logged-in user with `ARGUS_CLOUD_SYNC=1`.
+
+`tests/test_report_only.py` (one test needs pytest-xdist and skips without it) and the sync cases
+in `tests/test_data_leaks.py`.
