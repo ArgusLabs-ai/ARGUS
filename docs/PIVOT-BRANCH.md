@@ -1999,3 +1999,28 @@ outside GitHub Actions it exits 1 with one line. Laptop uploads are not built.
 
 `tests/test_cloud_upload.py` runs the command through the CLI against `tests/fake_workspace.py`;
 `tests/test_data_leaks.py` checks the body equals `build_card` for every canary place.
+
+## The Action's cloud mode
+
+`.github/actions/argus-gate` gains `cloud` (default `"false"`) and `cloud-url`. With `cloud: "true"`
+the gate step runs `pytest --argus-report-only` instead of `pytest --argus`, then
+`argus cloud upload --final`, and exports `ARGUS_CLOUD_URL` and `ARGUS_TELEMETRY=0` first. The
+job fails only for the tests' own exit code, or when the upload fails (the tests' code wins when
+both do; a failed upload also writes an `::error::`). The workspace's policy decides red or
+green, so a run that was not clean never reaches the exit code. The README and the input docs
+show `permissions: id-token: write`.
+
+- **Telemetry.** The step exports `ARGUS_TELEMETRY=0` before pytest, so an uploaded run is not
+  also sent as an anonymous shape card (`docs/DATA.md`). The library does not enforce it: it is
+  the Action's switch, so a hand-run `pytest --argus-report-only` still follows the machine's
+  telemetry setting. The old full-run sync, by contrast, is off in the library itself
+  (`cloud.run_sync_enabled`).
+- **Refused up front** (exit 2, before pytest): `cloud` without `cloud-url`, and `cloud` with
+  `run-id`. Cloud mode reports the pytest session; an inherited `ARGUS_RUN_ID` is unset so it
+  cannot turn the step into an `argus check`.
+- **Unchanged.** `cloud: "false"` runs the same commands in the same order, and the summary and
+  the failed-run artifact are untouched. In cloud mode the artifact still uploads only when the
+  step's code is non-zero.
+
+`tests/test_argus_gate_action.py` extracts the gate step's script from the YAML and runs it with
+stand-in `python` and `argus` commands that log their calls.
