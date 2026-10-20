@@ -9,6 +9,7 @@ _DEFAULT_MAX_DEPTH = 10
 _DEFAULT_MAX_FIELDS = 100
 _DEFAULT_MAX_VALUE_LEN = 10_000
 _DEPTH_LIMIT_SIG_ID = "DEPTH-LIMIT"
+DEPTH_LIMIT_DESCRIPTION = "max scan depth reached — subtree not scanned"
 
 
 class HeuristicEngine:
@@ -60,7 +61,7 @@ class HeuristicEngine:
                         sig_id=_DEPTH_LIMIT_SIG_ID,
                         category="structural_anomaly",
                         severity="warning",
-                        description="max scan depth reached — subtree not scanned",
+                        description=DEPTH_LIMIT_DESCRIPTION,
                         field_path=path,
                         evidence=f"depth={depth}",
                     )

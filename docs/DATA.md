@@ -101,6 +101,8 @@ Cards are deleted after 12 months.
 Team plans can turn telemetry on or off for the whole organization in the
 team agreement. Full runs (real values) are uploaded only with
 `ARGUS_CLOUD_SYNC=1`, into your own team workspace, never into this telemetry.
+A run whose card is uploaded to a team workspace is not also sent as telemetry:
+[how the action ensures it](#a-run-sent-to-a-workspace-is-not-also-telemetry).
 
 ## What a team workspace receives
 
@@ -108,8 +110,8 @@ A project that sends its runs to a team workspace sends a **run card**, not the 
 card carries the verdict, the findings and the *shape* of the data, and never a value.
 Values never leave your machine unless the project explicitly opts into full payloads.
 
-> Status: `build_card` (`src/argus/cloud_card.py`) and its tests are in the tree; no
-> release uploads a card yet.
+> Status: `build_card` (`src/argus/cloud_card.py`), `argus cloud upload` and their tests are
+> in the tree; no release uploads a card yet.
 
 A card, abridged (all values here are synthetic):
 
@@ -150,10 +152,16 @@ name may be:
   and **environment** of a run: names you set (`ArgusRecorder(agent=)`, `ARGUS_AGENT`,
   `ARGUS_ENVIRONMENT`), else the compiled graph's name, else a hash of the node names;
   `ci` on GitHub Actions and `local` otherwise.
-- **Top-level update keys** and **each dot-separated segment of a finding's field path**
-  are sent only if they look like an identifier (`^[A-Za-z_][A-Za-z0-9_]{0,63}$`, or a
-  list index such as `[0]`). Anything else is sent as `?`: a dict can be keyed by the
+- **Top-level update keys** are sent only if they look like an identifier
+  (`^[A-Za-z_][A-Za-z0-9_]{0,63}$`). Anything else is sent as `?`: a dict can be keyed by the
   very value being kept out (`{"123-45-6789": …}`).
+- **Each dot-separated segment of a finding's field path** is sent only if it looks like an
+  identifier (or is a list index such as `[0]`) **and** is a real key, or an index in range, at
+  its level in that node's update, input state or tool output. A path is written with dots and
+  a key can contain one (`{"john.smith": …}`), so the first segment that is not a real key,
+  and every segment after it, is sent as `?`: `accounts.john.smith.balance` is
+  `accounts.?.?.?`. A path of one segment is a field name, not a place inside a value, and is
+  sent when it looks like an identifier.
 - **Keys nested inside a value** are never sent. A value is its shape only:
   `{t, len, f}`, the type, the length and features from the fixed list above. A
   boolean carries no value and a number is only "an int".
@@ -166,6 +174,9 @@ name may be:
 - Initial state, prompts and model outputs (LLM usage is call and token counts per model)
 - Free-text rule names: a learned signature's category or an LLM review kind that is not a
   short snake_case word is sent as `other`
+- The description of a signature your project added or took from the community: an LLM
+  writes it from real outputs, so the fix prompt says that such a signature matched and leaves
+  its text out. The descriptions of the signatures Argus ships stay.
 
 The fix prompt is the `argus fix --sanitized` one, for a failing run only: the node to
 fix, the file and function to edit, field names by the rule above, shapes and exception
@@ -177,6 +188,35 @@ fix, the file and function to edit, field names by the rule above, shapes and ex
 `src/argus/data/cloud_card.schema.json` lists every field it may carry
 (`additionalProperties: false` throughout, and a pattern on every update key and field
 path). `tests/test_data_leaks.py` plants a canary value in the initial state, a node
-update, a nested key, a tool output, a tool error, a sentinel finding, a field path and a
-judge explanation, and fails if it reaches the card or the sanitized fix prompt. It runs
-on every pull request.
+update, a nested key, a key that contains a dot, a tool output, a tool error, a sentinel
+finding, a field path, a judge explanation and the description of a learned signature, and
+fails if it reaches the card or the sanitized fix prompt. It runs on every pull request.
+
+### How a job sends it
+
+`argus cloud upload [--final]` posts `{"schema": 1, "final": <bool>, "cards": [...]}` to
+`$ARGUS_CLOUD_URL/api/v1/runs`: one card for each run the pytest session saved
+(`pytest --argus-report-only` lists them in `.argus/session_runs.txt`). The job proves who it is
+with the OIDC token GitHub Actions issues for it (audience `argus-cloud`; the job needs
+`permissions: id-token: write`), so there is no secret to store and the body names no
+repository, ref or commit: the workspace reads those from the token.
+
+The command exits 1 with one line on anything but a 2xx answer, on a timeout, and when the
+token, the list of runs or a run is missing, so a job that could not report never looks like
+one that did. It never prints a card, a response body or the token, follows no redirect (the
+token is not passed on to another host), sends the token only to an `https` URL, and uses
+nothing beyond the Python standard library. `tests/test_data_leaks.py` checks that the body it
+sends is exactly `build_card`'s output for every canary above.
+
+### A run sent to a workspace is not also telemetry
+
+A run whose card goes to a team workspace is not also sent as the anonymous shape card
+described at the top of this page. The gate action ensures it: with `cloud: "true"` it exports
+`ARGUS_TELEMETRY=0` before it runs your tests, so nothing those tests record can be sent as
+telemetry, and the card goes only to the workspace. If you run `pytest --argus-report-only` and
+`argus cloud upload` yourself, set `ARGUS_TELEMETRY=0` (or `DO_NOT_TRACK=1`) for the test
+step to get the same result.
+
+The opt-in full-run sync (`ARGUS_CLOUD_SYNC=1`) is off whenever a run is recorded in
+report-only mode (`--argus-report-only`, `ARGUS_REPORT_ONLY=1`) or `ARGUS_CLOUD_URL` is set:
+a workspace receives run cards, never the run.

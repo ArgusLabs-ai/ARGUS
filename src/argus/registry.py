@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import importlib.resources
 import json
 import re
@@ -97,6 +98,19 @@ def _load_registry() -> list[dict[str, Any]]:
 
 
 _REGISTRY: list[dict[str, Any]] = _load_registry()
+
+
+@functools.lru_cache(maxsize=1)
+def bundled_descriptions() -> dict[str, str]:
+    """``{id: description}`` of the signatures Argus ships (``data/signatures.json``).
+
+    Never what a project, a user or the community added: the description of one of those is
+    text somebody, or an LLM looking at real outputs, wrote. Read from the package file, not
+    from the live registry, so a signature removed since a run was recorded is not "bundled".
+    """
+    ref = importlib.resources.files("argus").joinpath("data/signatures.json")
+    data = json.loads(ref.read_text(encoding="utf-8"))
+    return {sig["id"]: sig["description"] for sig in data["signatures"]}
 
 
 def get_registry() -> list[dict[str, Any]]:

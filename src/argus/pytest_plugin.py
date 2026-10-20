@@ -1,9 +1,15 @@
 """Pytest plugin: ``pytest --argus`` fails tests whose ARGUS run was not clean.
 
-Loaded via the ``pytest11`` entry point. Without ``--argus`` the plugin is
-inert. Recording every LangGraph run during tests lives in
+Loaded via the ``pytest11`` entry point. Without ``--argus`` or ``--argus-report-only`` the
+plugin is inert. Recording every LangGraph run during tests lives in
 ``argus.pytest_instrument``: a LangChain configure hook routes each graph run to
 an ``ArgusRecorder`` bound to that graph. Nothing in LangGraph is patched (#78).
+
+``--argus-report-only`` (or ``ARGUS_REPORT_ONLY=1``) records, grades and saves runs exactly as
+``--argus`` does but never changes a test's outcome: a team workspace applies its own policy to
+the runs a job uploads (``argus cloud upload``), so the job must not fail on a run that was not
+clean. Either switch also lists the run ids the session saves (``.argus/session_runs.txt``) for
+that upload.
 """
 
 from __future__ import annotations
@@ -16,13 +22,18 @@ import pytest
 from argus.check import evaluate_run
 from argus.run_context import (
     begin_run_capture,
+    begin_session,
     captured_run_ids,
     end_run_capture,
+    end_session,
+    report_only_from_env,
+    set_report_only,
 )
-from argus.storage import load_run
+from argus.storage import load_run, session_path
 
 _ITEM_RUN_CAPTURE = "_argus_run_capture"
 _ARGUS_ENABLED = pytest.StashKey[bool]()
+_REPORT_ONLY = pytest.StashKey[bool]()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -34,12 +45,26 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Fail tests whose ARGUS-instrumented invoke was not clean "
         "(crash, silent failure, missing fields, semantic fail).",
     )
+    group.addoption(
+        "--argus-report-only",
+        action="store_true",
+        default=False,
+        help="Record, grade and save ARGUS runs like --argus, but never fail or change a test "
+        "because of one. For a job whose verdict is decided elsewhere (ARGUS_REPORT_ONLY=1 "
+        "does the same).",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    if not config.getoption("--argus"):
+    report_only = bool(config.getoption("--argus-report-only")) or report_only_from_env()
+    if not (config.getoption("--argus") or report_only):
         return
     config.stash[_ARGUS_ENABLED] = True
+    config.stash[_REPORT_ONLY] = report_only
+    if report_only:
+        set_report_only(True)
+    # The process that starts the session empties the list; a pytest-xdist worker adds to it.
+    begin_session(session_path(), fresh=not hasattr(config, "workerinput"))
     _maybe_install_auto_instrumentation()
 
 
@@ -51,6 +76,8 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     """
     if not _argus_enabled(config):
         return
+    end_session()
+    set_report_only(False)
     try:
         from argus.pytest_instrument import uninstall_auto_instrumentation
     except ImportError:
@@ -60,6 +87,10 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
 def _argus_enabled(config: pytest.Config) -> bool:
     return bool(config.stash.get(_ARGUS_ENABLED, False))
+
+
+def _report_only(config: pytest.Config) -> bool:
+    return bool(config.stash.get(_REPORT_ONLY, False))
 
 
 def _maybe_install_auto_instrumentation() -> None:
@@ -117,7 +148,7 @@ def pytest_runtest_makereport(
     if call.when != "call":
         return
     try:
-        if not _argus_enabled(item.config):
+        if not _argus_enabled(item.config) or _report_only(item.config):
             return
         report = outcome.get_result()
         if report.outcome != "passed":
