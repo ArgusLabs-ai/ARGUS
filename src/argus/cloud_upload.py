@@ -188,7 +188,7 @@ def _send(request: urllib.request.Request, timeout: float, where: str, *, read: 
     """Make one request; anything but a 2xx answer is an ``UploadError`` naming ``where``."""
     try:
         with _OPENER.open(request, timeout=timeout) as response:
-            return response.read(read)
+            return bytes(response.read(read))
     except urllib.error.HTTPError as exc:
         status = " ".join(filter(None, [f"HTTP {exc.code}", _printable(exc.reason)]))
         exc.close()
