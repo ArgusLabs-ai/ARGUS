@@ -53,12 +53,42 @@ def safe_path(path: Any, *roots: Any) -> str | None:
     if path is None or path == "":
         return None
     parts = (path if isinstance(path, str) else str(path)).split(".")[:MAX_SEGMENTS]
-    nodes = [root for root in roots if isinstance(root, (dict, list, tuple))]
+    containers = [root for root in roots if isinstance(root, (dict, list, tuple))]
+    best: list[str] | None = None
+    best_verified = -1
+    cap = len(parts)
+    for root in containers or [{}]:
+        shown, verified, clash = _read(parts, [root])
+        if verified > best_verified:
+            best, best_verified = shown, verified
+        if clash:
+            cap = min(cap, verified)
+    result = list(best or [])
+    return ".".join(result[:cap] + [UNKNOWN] * (len(result) - cap))
+
+
+def _read(parts: list[str], nodes: list[Any]) -> tuple[list[str], int, bool]:
+    """Walk ``parts`` through ONE root: the text of each, how many were real keys, and whether
+    the first one that was not is the start of a dotted key in that root (``john`` beside
+    ``john.smith``). Roots are never mixed between segments: a path is read against one
+    root at a time."""
     shown: list[str] = []
+    verified = 0
+    clash = False
     for part in parts:
+        before = nodes
         text, nodes = _walk(part, nodes, whole=len(parts) == 1)
         shown.append(text)
-    return ".".join(shown)
+        if nodes:
+            verified += 1
+        elif not clash and part:
+            clash = any(
+                isinstance(k, str) and k.startswith(part + ".")
+                for n in before
+                if isinstance(n, dict)
+                for k in n
+            )
+    return shown, verified, clash
 
 
 def _walk(part: str, nodes: list[Any], *, whole: bool) -> tuple[str, list[Any]]:

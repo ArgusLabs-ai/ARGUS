@@ -259,3 +259,17 @@ def test_the_shape_is_bounded_in_both_modes():
         nested_dicts = {"k": nested_dicts}
     assert "truncated" in json.dumps(value_shape(nested_lists, None, False))
     assert "truncated" in json.dumps(value_shape(nested_dicts, lambda key: key, True))
+
+
+@pytest.mark.unit
+def test_roots_are_read_one_at_a_time_and_a_dotted_key_in_any_of_them_caps_the_path():
+    dotted = {"accounts": {"john.smith": {"balance": 1}}}
+    nested = {"accounts": {"john": {"smith": {"balance": 2}}}}
+    assert names.safe_path("accounts.john.smith.balance", nested) == "accounts.john.smith.balance"
+    assert names.safe_path("accounts.john.smith.balance", dotted, nested) == "accounts.?.?.?"
+    assert names.safe_path("accounts.john.smith.balance", nested, dotted) == "accounts.?.?.?"
+    # no clash, no cap: another root merely lacking a key does not hide it
+    other = {"accounts": {"ana": 1}}
+    assert names.safe_path("accounts.john.smith.balance", other, nested) == (
+        "accounts.john.smith.balance"
+    )

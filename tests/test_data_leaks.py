@@ -676,3 +676,20 @@ def test_what_the_runner_saved_to_disk_is_not_what_the_upload_carries(workspace)
     assert CANARY in json.dumps(storage._to_json_serializable(record))
     text, _ = _uploaded_cards(workspace, record)
     assert CANARY not in text and CANARY_EMAIL not in text
+
+
+def test_a_dotted_key_in_one_iteration_is_not_shown_because_another_iteration_has_nested_keys():
+    """A node that ran twice: one update has the dotted key, the other has the same words as
+    nested keys. The path must not be read against the second to show the first's key."""
+    first, second = DOTTED
+    path = f"accounts.{DOTTED_KEY}.balance"
+    dotted = make_event(node_name="lookup", output={"accounts": {DOTTED_KEY: {"balance": -1}}})
+    nested = make_event(
+        node_name="lookup", step_index=1, output={"accounts": {first: {second: {"balance": 2}}}}
+    )
+    reply = make_event(node_name="reply", step_index=2, output={"answer": "ok"})
+    record = _canary_record(field=path)
+    record.steps = [dotted, nested, reply]
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.?.?.?"
+    assert _leaks(json.dumps(build_card(record))) == []
