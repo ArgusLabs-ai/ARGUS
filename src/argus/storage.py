@@ -37,7 +37,7 @@ from argus.models import (
     ToolFailure,
     ValidatorResult,
 )
-from argus.run_context import record_run_id
+from argus.run_context import SESSION_FILE, record_run_id
 
 _ARGUS_DIR = ".argus"
 _RUNS_DIR = "runs"
@@ -73,6 +73,12 @@ def resolve_project_root(start: Path | None = None) -> Path:
 def argus_dir(start: Path | None = None) -> Path:
     """``<project-root>/.argus`` — does not create the directory."""
     return resolve_project_root(start) / _ARGUS_DIR
+
+
+def session_path() -> Path:
+    """``<project-root>/.argus/session_runs.txt``: the ids a pytest session saved (see
+    ``argus.run_context``)."""
+    return argus_dir() / SESSION_FILE
 
 
 def runs_dir(*, create: bool = False) -> Path:

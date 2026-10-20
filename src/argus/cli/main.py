@@ -19,6 +19,7 @@ except ImportError:
 
 from argus.cli.cmd_baseline import baseline_for_runs
 from argus.cli.cmd_check import check_run
+from argus.cli.cmd_cloud import cloud_upload
 from argus.cli.cmd_consumers import propose_for_run
 from argus.cli.cmd_diff import diff_runs
 from argus.cli.cmd_doctor import doctor
@@ -65,6 +66,30 @@ telemetry_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(telemetry_app, name="telemetry")
+
+cloud_app = typer.Typer(
+    help="Send this job's run cards to a team workspace (docs/DATA.md).",
+    no_args_is_help=True,
+)
+app.add_typer(cloud_app, name="cloud")
+
+
+@cloud_app.command("upload")
+def cmd_cloud_upload(
+    final: bool = typer.Option(
+        False,
+        "--final",
+        help="Say this is the job's last upload, so the workspace can complete it.",
+    ),
+) -> None:
+    """Upload the run cards of this pytest session to $ARGUS_CLOUD_URL.
+
+    Runs in GitHub Actions with `permissions: id-token: write`; the job proves who it is with
+    GitHub's OIDC token. Exits 1, with one line, on anything but a 2xx answer. Needs
+    `pytest --argus-report-only` (or `--argus`) to have run first. What is sent is the run
+    card: the verdict, the findings and the shape of the data, never a value.
+    """
+    cloud_upload(final)
 
 
 @telemetry_app.command("on")

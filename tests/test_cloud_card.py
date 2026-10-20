@@ -71,7 +71,7 @@ def _failing_record():
         output={"docs": [], "ok": False, "customer": {"email": "ana@acme.com"}},
         inspection=_inspection(
             ToolFailure("empty_result", "docs", "critical", "empty `docs`"),
-            ToolFailure("error_response", "crm.status", "critical", "HTTP 503 from crm"),
+            ToolFailure("error_response", "crm.status_code", "critical", "HTTP 503 from crm"),
         ),
     )
     fetch.tool_calls = [
@@ -399,7 +399,7 @@ def test_a_finding_carries_the_allowlisted_fields_and_no_reason():
             severity="critical",
             reason="HTTP 503 from crm; the customer is ana@acme.com",
             source="heuristic",
-            field_path="crm.status",
+            field_path="crm.status_code",
             origin_node="fetch",
             confidence=0.85,
             suppressed=True,
@@ -423,7 +423,7 @@ def test_a_finding_carries_the_allowlisted_fields_and_no_reason():
         "id": None,
         "type": "error_response",
         "node": "fetch",
-        "field_path": "crm.status",
+        "field_path": "crm.status_code",
         "origin_node": "fetch",
         "severity": "critical",
         "source": "heuristic",
@@ -443,6 +443,7 @@ def test_a_findings_id_is_the_local_one_when_nothing_was_masked():
 def test_a_findings_id_is_recomputed_from_the_masked_path():
     # The local id is a hash of the raw path: it would let anyone test a guess at the value.
     record = _failing_record()
+    record.steps[0].output_dict = {"customer": {CANARY: {"balance": -1}}}
     raw = f"customer.{CANARY}.balance"
     record.findings = [
         Finding(
@@ -459,6 +460,72 @@ def test_a_findings_id_is_recomputed_from_the_masked_path():
     assert finding["field_path"] == "customer.?.balance"
     assert finding["id"] == _fid("sentinel_value", "fetch", "customer.?.balance", "heuristic")
     assert finding["id"] != _fid("sentinel_value", "fetch", raw, "heuristic")
+
+
+def test_a_path_the_nodes_data_does_not_hold_is_masked_after_its_first_segment():
+    record = _failing_record()
+    record.findings = [
+        Finding(
+            id="x",
+            node="fetch",
+            type="sentinel_value",
+            severity="critical",
+            reason="r",
+            source="heuristic",
+            field_path=f"customer.{CANARY}.balance",
+        ),
+        Finding(
+            id="y",
+            node="elsewhere",  # a node with no steps: nothing to read the path against
+            type="sentinel_value",
+            severity="critical",
+            reason="r",
+            source="heuristic",
+            field_path="customer.email",
+        ),
+        Finding(
+            id="z",
+            node="fetch",
+            type="missing_field",
+            severity="critical",
+            reason="r",
+            source="heuristic",
+            field_path="summary",  # a field nobody wrote is named from the code
+        ),
+    ]
+    card = build_card(record)
+    validate(card, SCHEMA)
+    assert [f["field_path"] for f in card["findings"]] == ["customer.?.?", "?.?", "summary"]
+
+
+def test_a_path_is_read_against_every_step_of_its_node_and_its_tool_outputs():
+    record = _failing_record()
+    second = make_event(node_name="fetch", step_index=2, output={"customer": {"plan": "pro"}})
+    second.tool_calls = [{"name": "mail", "output": '{"queued": false}', "error": None}]
+    record.steps.append(second)
+    record.findings = [
+        Finding(
+            id=str(i),
+            node="fetch",
+            type="t",
+            severity="info",
+            reason="r",
+            source="heuristic",
+            field_path=path,
+        )
+        for i, path in enumerate(
+            ["customer.email", "customer.plan", "mail.queued", "crm.status_code", "crm.other"]
+        )
+    ]
+    card = build_card(record)
+    validate(card, SCHEMA)
+    assert [f["field_path"] for f in card["findings"]] == [
+        "customer.email",
+        "customer.plan",
+        "mail.queued",
+        "crm.status_code",
+        "crm.?",
+    ]
 
 
 @pytest.mark.parametrize(

@@ -1925,3 +1925,102 @@ The run card (`argus.cloud_card`, `docs/DATA.md`) carries both.
   save `None`.
 
 `tests/test_run_identity.py` has one test per precedence level, for `attach` and for `bind`.
+
+## Two things a sanitized form must not carry: a dotted key, a learned description
+
+`argus fix --sanitized` and the run card (`argus.cloud_card`) name a field path by the rule in
+`argus.utils.names`. Two gaps in it are closed.
+
+- **A key that contains a dot.** `{"accounts": {"john.smith": {...}}}` gives the path
+  `accounts.john.smith.balance`, which no segment rule can tell from three nested keys, and
+  each half looks like an identifier. `safe_path(path, *roots)` now reads the path against the
+  data it points into (`step_roots(step)`: the update, the input state and each tool call's
+  output under the tool's name, read as the inspector reads a tool payload). A segment is shown
+  only if it looks like an identifier and is a real key, or an index in range, at its level;
+  the first one that is not, and every one after it, is `?`. A real key that is not an
+  identifier is `?` and the walk goes on under it (`customer.?.balance`). The first segment may
+  be absent from the data (a field nobody wrote, or a key a baseline says the node stopped
+  writing), so it is shown only when it is the whole path: with more segments after it, it
+  could be the start of a dotted key. Detection output is unchanged (`Finding.field_path` and
+  the saved run still hold the raw path), so neither matrix moves. The card reads a finding's
+  path against every step of `finding.node`; the prompt reads it against the step it is about.
+- **A learned signature's description.** It is written by an LLM from real outputs. The
+  sanitized prompt keeps a description only when id and text both equal a signature in
+  `data/signatures.json` (`registry.bundled_descriptions`) or the scanner's depth-limit signal;
+  a signature from `custom_signatures.json`, one pulled from the community, one that borrows a
+  bundled id with other text, and an id nobody knows any more are named as "a signature added
+  to this project".
+
+`tests/test_data_leaks.py` has a canary for each, including two real pipelines.
+
+## Report-only mode and the session list
+
+`pytest --argus-report-only` (or `ARGUS_REPORT_ONLY=1`: `1`, `true`, `yes`, `on`) records, grades
+and saves runs exactly as `--argus` does and never changes a test's outcome, a failing test
+included. Alone it turns recording on; with `--argus` it wins. A job whose runs are judged
+elsewhere (`argus cloud upload`) must not also go red here. The state is
+`run_context.set_report_only`, set in `pytest_configure` and cleared in `pytest_unconfigure`
+(an in-process `pytester` session would otherwise leave it on).
+
+- **The session list.** `run_context` holds per-test captures in memory, and they end with the
+  test; `argus cloud upload` is another process. So either switch also makes the session write
+  every run id it saves to `.argus/session_runs.txt` (`storage.session_path()`), one line per
+  `save_run` (`record_run_id` appends whether or not a test is capturing). The process that
+  starts the session empties the list, so a shared self-hosted workspace never uploads an earlier
+  job's runs; an xdist worker (`config.workerinput`) only adds to it. No list means the session
+  never ran; an empty one means it saved nothing. A list that cannot be written logs a warning
+  and never fails the save.
+- **No full-run sync.** `cloud.run_sync_enabled()` is false in report-only mode and whenever
+  `ARGUS_CLOUD_URL` is set, even for a logged-in user with `ARGUS_CLOUD_SYNC=1`.
+
+`tests/test_report_only.py` (one test needs pytest-xdist and skips without it) and the sync cases
+in `tests/test_data_leaks.py`.
+
+## `argus cloud upload`
+
+`src/argus/cloud_upload.py` (the CLI glue is `cli/cmd_cloud.py`) sends the run cards of one pytest
+session to a team workspace. The runs are the ids in `.argus/session_runs.txt`; each card is
+`build_card` of the loaded run file, so the body is the card and nothing else. The job proves
+who it is with GitHub Actions' OIDC token (`ACTIONS_ID_TOKEN_REQUEST_URL` + `&audience=argus-cloud`,
+bearer `ACTIONS_ID_TOKEN_REQUEST_TOKEN`), which is only there with `permissions: id-token: write`;
+outside GitHub Actions it exits 1 with one line. Laptop uploads are not built.
+
+- **Loud.** The old full-run sync swallowed its errors. Here anything but a 2xx answer, a timeout,
+  an unreachable host or a missing precondition is `UploadError`, one line on stderr, exit 1. A run
+  in the list that cannot be read (or is only a prefix match of the id), or whose card cannot be
+  built, stops the whole upload before anything is sent: a workspace that judges half a job judges
+  it wrong. A line names the status or the error class and never a body, a card or the token.
+- **The token goes one place.** A redirect is an error (urllib would repeat the request, header
+  included, at the new host), and the URL must be https (http only on loopback, for the local fake
+  in the tests). `ARGUS_CLOUD_URL` with credentials in it is refused.
+- **No runs still posts.** An empty `cards` list with `final` is how the workspace learns the job
+  ended; a missing list (pytest never ran with a switch) is an error.
+- **Order.** Cheap checks first, then the cards, then the token (it expires), then the post.
+
+`tests/test_cloud_upload.py` runs the command through the CLI against `tests/fake_workspace.py`;
+`tests/test_data_leaks.py` checks the body equals `build_card` for every canary place.
+
+## The Action's cloud mode
+
+`.github/actions/argus-gate` gains `cloud` (default `"false"`) and `cloud-url`. With `cloud: "true"`
+the gate step runs `pytest --argus-report-only` instead of `pytest --argus`, then
+`argus cloud upload --final`, and exports `ARGUS_CLOUD_URL` and `ARGUS_TELEMETRY=0` first. The
+job fails only for the tests' own exit code, or when the upload fails (the tests' code wins when
+both do; a failed upload also writes an `::error::`). The workspace's policy decides red or
+green, so a run that was not clean never reaches the exit code. The README and the input docs
+show `permissions: id-token: write`.
+
+- **Telemetry.** The step exports `ARGUS_TELEMETRY=0` before pytest, so an uploaded run is not
+  also sent as an anonymous shape card (`docs/DATA.md`). The library does not enforce it: it is
+  the Action's switch, so a hand-run `pytest --argus-report-only` still follows the machine's
+  telemetry setting. The old full-run sync, by contrast, is off in the library itself
+  (`cloud.run_sync_enabled`).
+- **Refused up front** (exit 2, before pytest): `cloud` without `cloud-url`, and `cloud` with
+  `run-id`. Cloud mode reports the pytest session; an inherited `ARGUS_RUN_ID` is unset so it
+  cannot turn the step into an `argus check`.
+- **Unchanged.** `cloud: "false"` runs the same commands in the same order, and the summary and
+  the failed-run artifact are untouched. In cloud mode the artifact still uploads only when the
+  step's code is non-zero.
+
+`tests/test_argus_gate_action.py` extracts the gate step's script from the YAML and runs it with
+stand-in `python` and `argus` commands that log their calls.

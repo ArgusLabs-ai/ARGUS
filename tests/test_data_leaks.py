@@ -8,12 +8,16 @@ the card and the prompt text).
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, TypedDict
 
 import pytest
 from conftest import make_event, make_run_record
+from fake_workspace import FakeWorkspace, point_at, serve
+from typer.testing import CliRunner
 
-from argus import cloud, llm_proxy, storage
+from argus import cloud, llm_proxy, run_context, storage
+from argus.cli.main import app
 from argus.cloud_card import build_card
 from argus.findings import collect_findings
 from argus.fix_prompt import build_fix_prompt_for_record
@@ -21,6 +25,7 @@ from argus.models import (
     InspectionResult,
     JudgeScore,
     SemanticCheckResult,
+    SemanticSignal,
     ToolFailure,
     ValidatorResult,
 )
@@ -28,6 +33,11 @@ from argus.models import (
 CANARY = "CANARY-SSN-123-45-6789"
 CANARY_EMAIL = "canary@leak.test"
 CANARY_NODE = "canary_node"
+# A key with a dot in it. Each half looks like an identifier alone; only the whole is a value.
+DOTTED = ("canary_first", "canary_second")
+DOTTED_KEY = ".".join(DOTTED)
+# What an LLM wrote about a pattern it saw in real outputs (learned and shared signatures).
+CANARY_DESCRIPTION = "replies that quote the acme-refund-ledger"
 
 
 @pytest.fixture
@@ -50,6 +60,51 @@ def test_logged_in_save_run_uploads_nothing_without_opt_in(logged_in, tmp_path, 
     monkeypatch.setenv("ARGUS_CLOUD_SYNC", "1")
     storage.save_run(make_run_record(run_id="r2"))
     assert len(logged_in) == 1  # opted in: the full run goes up, as documented
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param({"ARGUS_REPORT_ONLY": "1"}, id="report-only env"),
+        pytest.param({"ARGUS_REPORT_ONLY": "true"}, id="report-only env, spelled out"),
+        pytest.param({"ARGUS_CLOUD_URL": "https://workspace.example.com"}, id="workspace url"),
+        pytest.param({"plugin": "report-only"}, id="pytest --argus-report-only"),
+    ],
+)
+def test_full_run_sync_never_runs_while_reporting_to_a_workspace(
+    logged_in, tmp_path, monkeypatch, mode
+):
+    """A workspace gets run cards (argus cloud upload), never the run: not even from a user who
+    is logged in and set ARGUS_CLOUD_SYNC=1 for their own machine."""
+    from argus import run_context
+
+    monkeypatch.setattr(storage, "_runs_path", lambda: tmp_path)
+    monkeypatch.setenv("ARGUS_CLOUD_SYNC", "1")
+    storage.save_run(make_run_record(run_id="control"))
+    assert len(logged_in) == 1  # not vacuous: with the opt-in and no workspace, the run goes up
+
+    for name, value in mode.items():
+        if name == "plugin":
+            run_context.set_report_only(True)
+        else:
+            monkeypatch.setenv(name, value)
+    try:
+        storage.save_run(make_run_record(run_id="in-workspace-mode"))
+    finally:
+        run_context.set_report_only(False)
+    assert len(logged_in) == 1
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", " "])
+def test_a_switch_that_is_off_leaves_the_opted_in_sync_alone(
+    logged_in, tmp_path, monkeypatch, value
+):
+    monkeypatch.setattr(storage, "_runs_path", lambda: tmp_path)
+    monkeypatch.setenv("ARGUS_CLOUD_SYNC", "1")
+    monkeypatch.setenv("ARGUS_REPORT_ONLY", value)
+    monkeypatch.setenv("ARGUS_CLOUD_URL", " ")  # a blank URL is no URL
+    storage.save_run(make_run_record(run_id="r1"))
+    assert len(logged_in) == 1
 
 
 def test_shared_signature_carries_no_evidence_nodes_or_email(logged_in):
@@ -156,6 +211,53 @@ PLANTS: dict[str, dict[str, Any]] = {
     "judge_explanation": {"judge_explanation": CANARY},
     "validator_message": {"validator_message": CANARY},
     "exception_message": {"exception": f"KeyError: '{CANARY}'"},
+    # A dict key that contains a dot, and a finding whose path runs through it.
+    "dotted_key_in_update": {
+        "update": {"accounts": {DOTTED_KEY: {"balance": -1}}},
+        "field": f"accounts.{DOTTED_KEY}.balance",
+    },
+    "dotted_top_level_key_in_update": {
+        "update": {DOTTED_KEY: {"balance": -1}},
+        "field": f"{DOTTED_KEY}.balance",
+    },
+    "dotted_key_in_input_state": {
+        "input_state": {"accounts": {DOTTED_KEY: 1}},
+        "field": f"accounts.{DOTTED_KEY}",
+    },
+    "dotted_key_in_tool_output": {
+        "tool_calls": [
+            {
+                "name": "crm",
+                "input": "x",
+                "output": {"status": 200, "accounts": {DOTTED_KEY: {"error": "x"}}},
+                "error": None,
+            }
+        ],
+        "field": f"crm.accounts.{DOTTED_KEY}.error",
+    },
+    "dotted_key_in_a_list_item": {
+        "update": {"rows": [{DOTTED_KEY: 1}]},
+        "field": f"rows[0].{DOTTED_KEY}",
+    },
+    # A signature the project or the community added: its description is text an LLM wrote.
+    "learned_signature_description": {
+        "signal": SemanticSignal(
+            "CS-001", "learned_pattern", "critical", CANARY_DESCRIPTION, ("note",), "ev"
+        )
+    },
+    "shared_signature_description": {
+        "signal": SemanticSignal(
+            "CS-014", "shared_pattern", "warning", CANARY_DESCRIPTION, ("note",), "ev"
+        )
+    },
+    "bundled_id_with_other_text": {  # a learned signature cannot borrow a bundled id
+        "signal": SemanticSignal(
+            "PH-001", "placeholder_outputs", "warning", CANARY_DESCRIPTION, ("note",), "ev"
+        )
+    },
+    "signature_no_longer_known": {
+        "signal": SemanticSignal("ZZ-999", "gone", "warning", CANARY_DESCRIPTION, ("note",), "ev")
+    },
 }
 KITCHEN_SINK: dict[str, Any] = {
     "initial_state": {"customer": CANARY, CANARY: CANARY},
@@ -173,6 +275,7 @@ KITCHEN_SINK: dict[str, Any] = {
     "judge_explanation": CANARY,
     "validator_message": CANARY,
     "exception": f"KeyError: '{CANARY}'",
+    "signal": PLANTS["learned_signature_description"]["signal"],
 }
 # Where the unsanitized prompt prints the value, so the sanitized assertion is not vacuous.
 PRINTED_BY_THE_PLAIN_PROMPT = [
@@ -185,7 +288,19 @@ PRINTED_BY_THE_PLAIN_PROMPT = [
     "sentinel_reason",
     "finding_field_path",
     "exception_message",
+    "dotted_key_in_update",
+    "dotted_top_level_key_in_update",
+    "dotted_key_in_input_state",
+    "dotted_key_in_tool_output",
+    "dotted_key_in_a_list_item",
+    "learned_signature_description",
+    "shared_signature_description",
+    "bundled_id_with_other_text",
+    "signature_no_longer_known",
 ]
+BUNDLED_SIGNATURE = json.loads(
+    (Path(__file__).parent.parent / "src/argus/data/signatures.json").read_text(encoding="utf-8")
+)["signatures"][0]
 
 
 def _canary_record(**planted: Any):
@@ -211,6 +326,7 @@ def _canary_record(**planted: Any):
             message="sentinel",
             tool_failures=[tool_failure],
             has_tool_failure=True,
+            semantic_signals=[planted["signal"]] if "signal" in planted else [],
         ),
         validator_results=[
             ValidatorResult("*:check", False, planted.get("validator_message", "bad"))
@@ -252,7 +368,8 @@ def _canary_record(**planted: Any):
 
 
 def _leaks(text: str) -> list[str]:
-    return [piece for piece in (CANARY, "123-45-6789") if piece.lower() in text.lower()]
+    pieces = (CANARY, "123-45-6789", *DOTTED, CANARY_DESCRIPTION)
+    return [piece for piece in pieces if piece.lower() in text.lower()]
 
 
 @pytest.mark.parametrize("place", sorted(PLANTS))
@@ -361,3 +478,254 @@ def test_run_card_from_a_real_pipeline_leaks_nothing():
     assert {t["name"] for t in card["steps"][0]["tools"]} == {"crm", "mailer"}
     assert card["fix_prompt"]
     assert _leaks(json.dumps(card)) == []
+
+
+# ── a key that contains a dot, and the description of a signature the project added ──
+
+
+def test_a_dotted_key_is_masked_whole_in_the_card_and_the_sanitized_prompt():
+    record = _canary_record(**PLANTS["dotted_key_in_update"])
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.?.?.?"
+    prompt = build_fix_prompt_for_record(record, sanitized=True).prompt
+    assert "accounts.?.?.?" in prompt
+    assert _leaks(prompt) == [] and _leaks(json.dumps(build_card(record))) == []
+
+
+def test_a_dotted_key_the_data_does_not_hold_is_masked_too():
+    # The path names a key the update no longer has (a baseline's "lost" key): nothing to walk.
+    record = _canary_record(field=DOTTED_KEY)
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "?.?"
+    assert _leaks(build_fix_prompt_for_record(record, sanitized=True).prompt) == []
+
+
+def test_a_names_that_are_real_keys_are_still_shown():
+    # Not vacuous: the rule masks dotted keys, not every nested name.
+    record = _canary_record(
+        update={"accounts": {"ana": {"balance": -1}}}, field="accounts.ana.balance"
+    )
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.ana.balance"
+    assert "accounts.ana.balance" in build_fix_prompt_for_record(record, sanitized=True).prompt
+
+
+def test_a_bundled_signatures_description_stays_in_the_sanitized_prompt():
+    text = BUNDLED_SIGNATURE["description"]
+    signal = SemanticSignal(
+        BUNDLED_SIGNATURE["id"], BUNDLED_SIGNATURE["category"], "warning", text, ("note",), "ev"
+    )
+    prompt = build_fix_prompt_for_record(_canary_record(signal=signal), sanitized=True).prompt
+    assert text in prompt
+
+
+def test_a_signature_the_project_added_is_named_in_the_prompt_without_its_description():
+    signal = PLANTS["learned_signature_description"]["signal"]
+    prompt = build_fix_prompt_for_record(_canary_record(signal=signal), sanitized=True).prompt
+    assert CANARY_DESCRIPTION not in prompt
+    assert prompt.count("a signature added to this project") == 2  # what went wrong, done when
+
+
+def test_run_card_from_a_real_pipeline_with_a_dotted_key_leaks_nothing():
+    pytest.importorskip("langchain_core")
+    from langgraph.graph import END, START, StateGraph
+
+    from argus.recorder import ArgusRecorder
+
+    class S(TypedDict, total=False):
+        accounts: dict
+        note: str
+
+    def lookup(state: S) -> dict:
+        return {"accounts": {DOTTED_KEY: "N/A"}}  # D6: healthy runs held data here
+
+    def reply(state: S) -> dict:
+        return {"note": "done"}
+
+    graph = StateGraph(S)
+    graph.add_node("lookup", lookup)
+    graph.add_node("reply", reply)
+    graph.add_edge(START, "lookup")
+    graph.add_edge("lookup", "reply")
+    graph.add_edge("reply", END)
+    baseline = {
+        "version": 1,
+        "nodes": {
+            "lookup": {
+                "keys": ["accounts"],
+                "types": {"accounts": "dict"},
+                "paths": {"accounts": "object", f"accounts.{DOTTED_KEY}": "text"},
+            }
+        },
+    }
+
+    recorder = ArgusRecorder(semantic_judge=False, baseline=baseline)
+    recorder.attach(graph.compile()).invoke({"accounts": {DOTTED_KEY: "Ana"}})
+    record = storage.load_run(recorder.run_ids[-1])
+    card = build_card(record)
+
+    sentinel = [f for f in card["findings"] if f["type"] == "sentinel_value"]
+    assert sentinel and sentinel[0]["field_path"] == "accounts.?.?"
+    assert any(DOTTED_KEY in f.reason for f in record.findings)  # the local record quotes the path
+    assert card["fix_prompt"] and "accounts.?.?" in card["fix_prompt"]
+    assert _leaks(json.dumps(card)) == []
+
+
+def test_run_card_from_a_real_pipeline_with_a_learned_signature_leaks_nothing():
+    pytest.importorskip("langchain_core")
+    from langgraph.graph import END, START, StateGraph
+
+    from argus.recorder import ArgusRecorder
+    from argus.registry import reload_registry
+
+    custom = {
+        "signatures": [
+            {
+                "id": "CS-001",
+                "category": "learned_pattern",
+                "pattern": "needle-phrase",
+                "match_strategy": "contains_ci",
+                "severity": "critical",
+                "description": CANARY_DESCRIPTION,
+                "source": "learned",
+                "metadata": {"approval_status": "approved"},
+            }
+        ]
+    }
+    (Path(".argus") / "custom_signatures.json").write_text(json.dumps(custom), encoding="utf-8")
+    reload_registry()
+
+    class S(TypedDict, total=False):
+        note: str
+
+    def lookup(state: S) -> dict:
+        return {"note": "the needle-phrase is in this reply"}
+
+    def reply(state: S) -> dict:
+        return {"note": "done"}
+
+    graph = StateGraph(S)
+    graph.add_node("lookup", lookup)
+    graph.add_node("reply", reply)
+    graph.add_edge(START, "lookup")
+    graph.add_edge("lookup", "reply")
+    graph.add_edge("reply", END)
+
+    recorder = ArgusRecorder(semantic_judge=False)
+    recorder.attach(graph.compile()).invoke({"note": "hi"})
+    record = storage.load_run(recorder.run_ids[-1])
+    signals = [s for e in record.steps if e.inspection for s in e.inspection.semantic_signals]
+    assert [s.sig_id for s in signals] == ["CS-001"]  # the learned signature fired
+    assert (
+        CANARY_DESCRIPTION in build_fix_prompt_for_record(record).prompt
+    )  # and the plain prompt says it
+    card = build_card(record)
+    assert card["fix_prompt"]
+    assert _leaks(json.dumps(card)) == []
+
+
+# ── the upload: the body is the card and nothing else ────────────────────────
+
+
+@pytest.fixture
+def workspace(monkeypatch):
+    fake = FakeWorkspace()
+    with serve(fake):
+        point_at(monkeypatch, fake)
+        yield fake
+
+
+def _uploaded_cards(workspace, *records):
+    """Save ``records`` as one pytest session does, run ``argus cloud upload`` and return the
+    raw request body and the cards in it."""
+    run_context.begin_session(storage.session_path(), fresh=True)
+    try:
+        for record in records:
+            storage.save_run(record)
+    finally:
+        run_context.end_session()
+    result = CliRunner().invoke(app, ["cloud", "upload", "--final"])
+    assert result.exit_code == 0, result.output
+    (post,) = workspace.posts()
+    return post["body"].decode("utf-8"), json.loads(post["body"])["cards"]
+
+
+@pytest.mark.parametrize("place", sorted(PLANTS))
+def test_the_uploaded_body_is_the_card_and_carries_no_canary(workspace, place):
+    record = _canary_record(**PLANTS[place])
+    text, cards = _uploaded_cards(workspace, record)
+    assert cards == [build_card(storage.load_run(record.run_id))]
+    assert _leaks(text) == []
+
+
+def test_the_uploaded_body_carries_no_canary_from_all_places_at_once(workspace):
+    record = _canary_record(**KITCHEN_SINK)
+    text, cards = _uploaded_cards(workspace, record)
+    assert cards == [build_card(storage.load_run(record.run_id))]
+    assert _leaks(text) == []
+    # not vacuous: the verdict and the pipeline's own names did go up
+    (card,) = cards
+    assert card["run"]["overall_status"] == "silent_failure"
+    assert [s["node"] for s in card["steps"]] == ["lookup", "reply"] and card["fix_prompt"]
+
+
+def test_what_the_runner_saved_to_disk_is_not_what_the_upload_carries(workspace):
+    # The run file holds every value (that is what `argus ui` shows). The upload reads the file
+    # and still sends the card, so a canary in the file is the proof the card is built, not copied.
+    record = _canary_record(**KITCHEN_SINK)
+    assert CANARY in json.dumps(storage._to_json_serializable(record))
+    text, _ = _uploaded_cards(workspace, record)
+    assert CANARY not in text and CANARY_EMAIL not in text
+
+
+def test_a_dotted_key_in_one_iteration_is_not_shown_because_another_iteration_has_nested_keys():
+    """A node that ran twice: one update has the dotted key, the other has the same words as
+    nested keys. The path must not be read against the second to show the first's key."""
+    first, second = DOTTED
+    path = f"accounts.{DOTTED_KEY}.balance"
+    dotted = make_event(node_name="lookup", output={"accounts": {DOTTED_KEY: {"balance": -1}}})
+    nested = make_event(
+        node_name="lookup", step_index=1, output={"accounts": {first: {second: {"balance": 2}}}}
+    )
+    reply = make_event(node_name="reply", step_index=2, output={"answer": "ok"})
+    record = _canary_record(field=path)
+    record.steps = [dotted, nested, reply]
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.?.?.?"
+    assert _leaks(json.dumps(build_card(record))) == []
+
+
+def test_a_real_key_beside_a_dotted_key_with_the_same_start_is_not_shown():
+    first, _ = DOTTED
+    update = {"accounts": {first: 1, DOTTED_KEY: {"balance": -1}}}
+    record = _canary_record(update=update, field=f"accounts.{DOTTED_KEY}.balance")
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.?.?.?"
+    assert _leaks(json.dumps(build_card(record))) == []
+    assert _leaks(build_fix_prompt_for_record(record, sanitized=True).prompt) == []
+
+
+def test_a_sibling_key_and_a_nested_iteration_together_still_hide_the_dotted_key():
+    first, second = DOTTED
+    record = _canary_record(
+        update={"accounts": {first: 1, DOTTED_KEY: {"balance": -1}}},
+        field=f"accounts.{DOTTED_KEY}.balance",
+    )
+    other = make_event(
+        node_name="lookup", step_index=1, output={"accounts": {first: {second: {"balance": 2}}}}
+    )
+    record.steps.insert(1, other)
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.?.?.?"
+
+
+def test_a_plain_nested_path_with_no_dotted_key_anywhere_still_reads_in_clear():
+    record = _canary_record(
+        update={"accounts": {"ana": {"balance": -1}}}, field="accounts.ana.balance"
+    )
+    other = make_event(
+        node_name="lookup", step_index=1, output={"accounts": {"bo": {"balance": 2}}}
+    )
+    record.steps.insert(1, other)
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.ana.balance"

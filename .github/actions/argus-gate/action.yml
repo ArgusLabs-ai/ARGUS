@@ -49,6 +49,24 @@ inputs:
       leave the runner.
     required: false
     default: "true"
+  cloud:
+    description: >-
+      Send this job's run cards to a team workspace, and let its policy decide red or
+      green. Runs `pytest --argus-report-only` (every run is still recorded and graded,
+      but no test fails because of one), with telemetry off for that step, then
+      `argus cloud upload --final`. The job fails only if a test fails for its own reasons
+      or the upload fails. Needs `cloud-url`, and `permissions: id-token: write` on the
+      job, which is how it proves who it is: there is no secret to store. Only the card
+      leaves the runner: the verdict, the findings and the shape of the data, never a
+      value (docs/DATA.md). Applies to the pytest mode, not to `run-id`.
+    required: false
+    default: "false"
+  cloud-url:
+    description: >-
+      The team workspace to upload to (sets ARGUS_CLOUD_URL). Required when `cloud` is
+      "true". The job also needs `permissions: id-token: write`.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -68,8 +86,25 @@ runs:
         INPUT_RUN_ID: ${{ inputs.run-id }}
         INPUT_PYTEST_ARGS: ${{ inputs.pytest-args }}
         INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_CLOUD: ${{ inputs.cloud }}
+        INPUT_CLOUD_URL: ${{ inputs.cloud-url }}
       run: |
         set -uo pipefail
+        if [ "$INPUT_CLOUD" = "true" ]; then
+          if [ -z "$INPUT_CLOUD_URL" ]; then
+            echo '::error::cloud-url is required when cloud is "true".'
+            exit 2
+          fi
+          if [ -n "$INPUT_RUN_ID" ]; then
+            echo '::error::cloud: "true" reports the pytest session; it cannot be combined with run-id.'
+            exit 2
+          fi
+          export ARGUS_CLOUD_URL="$INPUT_CLOUD_URL"
+          # A run reported to a team workspace is not also sent as telemetry (docs/DATA.md).
+          export ARGUS_TELEMETRY=0
+          # Cloud mode grades the pytest session, never one saved run.
+          unset ARGUS_RUN_ID
+        fi
         marker="$RUNNER_TEMP/argus-marker-$$"
         touch "$marker"
         # Where argus really writes: the nearest project root above us, or $ARGUS_DIR.
@@ -84,10 +119,24 @@ runs:
           strict="$INPUT_STRICT"
         else
           # Unquoted on purpose: pytest-args is a list of arguments.
-          python -m pytest --argus $INPUT_PYTEST_ARGS || rc=$?
+          if [ "$INPUT_CLOUD" = "true" ]; then
+            # Record and grade as usual; the workspace's policy decides red or green.
+            python -m pytest --argus-report-only $INPUT_PYTEST_ARGS || rc=$?
+          else
+            python -m pytest --argus $INPUT_PYTEST_ARGS || rc=$?
+          fi
           # The runs this step recorded, not a leftover from an earlier step.
           run_ids=$(find "$runs" -name '*.json' -newer "$marker" 2>/dev/null \
             | xargs -r -n1 basename | sed 's/\.json$//' | sort)
+          if [ "$INPUT_CLOUD" = "true" ]; then
+            # The job fails for its tests' own reasons, or if the upload does not happen.
+            upload_rc=0
+            argus cloud upload --final || upload_rc=$?
+            if [ "$upload_rc" -ne 0 ]; then
+              echo "::error::ARGUS could not report this job's runs to the team workspace (see above)."
+              if [ "$rc" -eq 0 ]; then rc=$upload_rc; fi
+            fi
+          fi
         fi
 
         # The verdict on the PR page, and the failed runs copied into the bundle
