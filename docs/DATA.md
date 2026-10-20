@@ -87,9 +87,13 @@ keeps its value (`ok: false` is the signal). Numbers keep only their type.
 ## Where it goes and who sees it
 
 Cards go over HTTPS to an Argus-run Supabase project used for nothing else.
-Two people can read them: the project owner and the open-source maintainer,
-through a private panel ([`admin/`](../admin/README.md)) whose access is
-enforced by row-level security in the database.
+Only the project owner and the maintainers the owner adds can read them,
+through a private admin panel, and each maintainer sees only what the owner
+grants: the overview, the rule scoreboard, the cards themselves.
+Access is enforced by row-level security in the database, not by the panel.
+The tables, policies and permissions are public:
+[`supabase/telemetry/migration.sql`](../supabase/telemetry/migration.sql) and
+[`supabase/telemetry/permissions.sql`](../supabase/telemetry/permissions.sql).
 Cards are deleted after 12 months.
 
 ## Paying teams
