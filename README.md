@@ -742,6 +742,7 @@ argus whoami                         # show current login status
 argus update                         # check for newer release
 argus telemetry status|on|off        # anonymous shape cards (docs/DATA.md)
 argus telemetry show-last            # print the last card sent, exactly as sent
+argus cloud upload [--final]         # send this job's run cards to a team workspace (GitHub Actions; docs/DATA.md)
 ```
 
 ---

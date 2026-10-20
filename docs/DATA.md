@@ -104,8 +104,8 @@ A project that sends its runs to a team workspace sends a **run card**, not the 
 card carries the verdict, the findings and the *shape* of the data, and never a value.
 Values never leave your machine unless the project explicitly opts into full payloads.
 
-> Status: `build_card` (`src/argus/cloud_card.py`) and its tests are in the tree; no
-> release uploads a card yet.
+> Status: `build_card` (`src/argus/cloud_card.py`), `argus cloud upload` and their tests are
+> in the tree; no release uploads a card yet.
 
 A card, abridged (all values here are synthetic):
 
@@ -185,3 +185,19 @@ path). `tests/test_data_leaks.py` plants a canary value in the initial state, a 
 update, a nested key, a key that contains a dot, a tool output, a tool error, a sentinel
 finding, a field path, a judge explanation and the description of a learned signature, and
 fails if it reaches the card or the sanitized fix prompt. It runs on every pull request.
+
+### How a job sends it
+
+`argus cloud upload [--final]` posts `{"schema": 1, "final": <bool>, "cards": [...]}` to
+`$ARGUS_CLOUD_URL/api/v1/runs`: one card for each run the pytest session saved
+(`pytest --argus-report-only` lists them in `.argus/session_runs.txt`). The job proves who it is
+with the OIDC token GitHub Actions issues for it (audience `argus-cloud`; the job needs
+`permissions: id-token: write`), so there is no secret to store and the body names no
+repository, ref or commit: the workspace reads those from the token.
+
+The command exits 1 with one line on anything but a 2xx answer, on a timeout, and when the
+token, the list of runs or a run is missing, so a job that could not report never looks like
+one that did. It never prints a card, a response body or the token, follows no redirect (the
+token is not passed on to another host), sends the token only to an `https` URL, and uses
+nothing beyond the Python standard library. `tests/test_data_leaks.py` checks that the body it
+sends is exactly `build_card`'s output for every canary above.

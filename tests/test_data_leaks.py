@@ -13,8 +13,11 @@ from typing import Any, TypedDict
 
 import pytest
 from conftest import make_event, make_run_record
+from fake_workspace import FakeWorkspace, point_at, serve
+from typer.testing import CliRunner
 
-from argus import cloud, llm_proxy, storage
+from argus import cloud, llm_proxy, run_context, storage
+from argus.cli.main import app
 from argus.cloud_card import build_card
 from argus.findings import collect_findings
 from argus.fix_prompt import build_fix_prompt_for_record
@@ -619,3 +622,57 @@ def test_run_card_from_a_real_pipeline_with_a_learned_signature_leaks_nothing():
     card = build_card(record)
     assert card["fix_prompt"]
     assert _leaks(json.dumps(card)) == []
+
+
+# ── the upload: the body is the card and nothing else ────────────────────────
+
+
+@pytest.fixture
+def workspace(monkeypatch):
+    fake = FakeWorkspace()
+    with serve(fake):
+        point_at(monkeypatch, fake)
+        yield fake
+
+
+def _uploaded_cards(workspace, *records):
+    """Save ``records`` as one pytest session does, run ``argus cloud upload`` and return the
+    raw request body and the cards in it."""
+    run_context.begin_session(storage.session_path(), fresh=True)
+    try:
+        for record in records:
+            storage.save_run(record)
+    finally:
+        run_context.end_session()
+    result = CliRunner().invoke(app, ["cloud", "upload", "--final"])
+    assert result.exit_code == 0, result.output
+    (post,) = workspace.posts()
+    return post["body"].decode("utf-8"), json.loads(post["body"])["cards"]
+
+
+@pytest.mark.parametrize("place", sorted(PLANTS))
+def test_the_uploaded_body_is_the_card_and_carries_no_canary(workspace, place):
+    record = _canary_record(**PLANTS[place])
+    text, cards = _uploaded_cards(workspace, record)
+    assert cards == [build_card(storage.load_run(record.run_id))]
+    assert _leaks(text) == []
+
+
+def test_the_uploaded_body_carries_no_canary_from_all_places_at_once(workspace):
+    record = _canary_record(**KITCHEN_SINK)
+    text, cards = _uploaded_cards(workspace, record)
+    assert cards == [build_card(storage.load_run(record.run_id))]
+    assert _leaks(text) == []
+    # not vacuous: the verdict and the pipeline's own names did go up
+    (card,) = cards
+    assert card["run"]["overall_status"] == "silent_failure"
+    assert [s["node"] for s in card["steps"]] == ["lookup", "reply"] and card["fix_prompt"]
+
+
+def test_what_the_runner_saved_to_disk_is_not_what_the_upload_carries(workspace):
+    # The run file holds every value (that is what `argus ui` shows). The upload reads the file
+    # and still sends the card, so a canary in the file is the proof the card is built, not copied.
+    record = _canary_record(**KITCHEN_SINK)
+    assert CANARY in json.dumps(storage._to_json_serializable(record))
+    text, _ = _uploaded_cards(workspace, record)
+    assert CANARY not in text and CANARY_EMAIL not in text

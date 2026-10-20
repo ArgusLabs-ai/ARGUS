@@ -1975,3 +1975,27 @@ elsewhere (`argus cloud upload`) must not also go red here. The state is
 
 `tests/test_report_only.py` (one test needs pytest-xdist and skips without it) and the sync cases
 in `tests/test_data_leaks.py`.
+
+## `argus cloud upload`
+
+`src/argus/cloud_upload.py` (the CLI glue is `cli/cmd_cloud.py`) sends the run cards of one pytest
+session to a team workspace. The runs are the ids in `.argus/session_runs.txt`; each card is
+`build_card` of the loaded run file, so the body is the card and nothing else. The job proves
+who it is with GitHub Actions' OIDC token (`ACTIONS_ID_TOKEN_REQUEST_URL` + `&audience=argus-cloud`,
+bearer `ACTIONS_ID_TOKEN_REQUEST_TOKEN`), which is only there with `permissions: id-token: write`;
+outside GitHub Actions it exits 1 with one line. Laptop uploads are not built.
+
+- **Loud.** The old full-run sync swallowed its errors. Here anything but a 2xx answer, a timeout,
+  an unreachable host or a missing precondition is `UploadError`, one line on stderr, exit 1. A run
+  in the list that cannot be read (or is only a prefix match of the id), or whose card cannot be
+  built, stops the whole upload before anything is sent: a workspace that judges half a job judges
+  it wrong. A line names the status or the error class and never a body, a card or the token.
+- **The token goes one place.** A redirect is an error (urllib would repeat the request, header
+  included, at the new host), and the URL must be https (http only on loopback, for the local fake
+  in the tests). `ARGUS_CLOUD_URL` with credentials in it is refused.
+- **No runs still posts.** An empty `cards` list with `final` is how the workspace learns the job
+  ended; a missing list (pytest never ran with a switch) is an error.
+- **Order.** Cheap checks first, then the cards, then the token (it expires), then the post.
+
+`tests/test_cloud_upload.py` runs the command through the CLI against `tests/fake_workspace.py`;
+`tests/test_data_leaks.py` checks the body equals `build_card` for every canary place.
