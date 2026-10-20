@@ -693,3 +693,39 @@ def test_a_dotted_key_in_one_iteration_is_not_shown_because_another_iteration_ha
     (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
     assert finding["field_path"] == "accounts.?.?.?"
     assert _leaks(json.dumps(build_card(record))) == []
+
+
+def test_a_real_key_beside_a_dotted_key_with_the_same_start_is_not_shown():
+    first, _ = DOTTED
+    update = {"accounts": {first: 1, DOTTED_KEY: {"balance": -1}}}
+    record = _canary_record(update=update, field=f"accounts.{DOTTED_KEY}.balance")
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.?.?.?"
+    assert _leaks(json.dumps(build_card(record))) == []
+    assert _leaks(build_fix_prompt_for_record(record, sanitized=True).prompt) == []
+
+
+def test_a_sibling_key_and_a_nested_iteration_together_still_hide_the_dotted_key():
+    first, second = DOTTED
+    record = _canary_record(
+        update={"accounts": {first: 1, DOTTED_KEY: {"balance": -1}}},
+        field=f"accounts.{DOTTED_KEY}.balance",
+    )
+    other = make_event(
+        node_name="lookup", step_index=1, output={"accounts": {first: {second: {"balance": 2}}}}
+    )
+    record.steps.insert(1, other)
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.?.?.?"
+
+
+def test_a_plain_nested_path_with_no_dotted_key_anywhere_still_reads_in_clear():
+    record = _canary_record(
+        update={"accounts": {"ana": {"balance": -1}}}, field="accounts.ana.balance"
+    )
+    other = make_event(
+        node_name="lookup", step_index=1, output={"accounts": {"bo": {"balance": 2}}}
+    )
+    record.steps.insert(1, other)
+    (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
+    assert finding["field_path"] == "accounts.ana.balance"

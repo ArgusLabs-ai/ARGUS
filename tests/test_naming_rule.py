@@ -86,8 +86,8 @@ def test_each_path_segment_must_be_a_name_or_a_real_key(path, expected):
         ("accounts.john.smith.balance", "accounts.?.?.?"),
         ("accounts.john.smith", "accounts.?.?"),
         ("accounts.john", "accounts.?"),
-        ("john.smith.x", "john.?.?"),  # "john" is a key of its own, "smith" is below an int
-        ("john.smith", "john.?"),
+        ("john.smith.x", "?.?.?"),  # "john" sits beside "john.smith": ambiguous
+        ("john.smith", "?.?"),
     ],
 )
 def test_a_key_that_contains_a_dot_is_never_shown_as_its_parts(path, expected):

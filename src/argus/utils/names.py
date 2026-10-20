@@ -49,46 +49,43 @@ def safe_path(path: Any, *roots: Any) -> str | None:
     The first segment may be missing from the data (a field nobody wrote); it is shown only
     when it is the whole path, because with more segments after it, it could be the start of a
     dotted key. At most ``MAX_SEGMENTS`` segments are kept.
+
+    One strict rule for dots: at each level, if any root has a key that contains a dot and
+    starts with ``<segment>.``, the segment is ambiguous there, and it and everything after it
+    is ``?`` (a real key ``john`` beside ``john.smith`` included).
     """
     if path is None or path == "":
         return None
     parts = (path if isinstance(path, str) else str(path)).split(".")[:MAX_SEGMENTS]
-    containers = [root for root in roots if isinstance(root, (dict, list, tuple))]
-    best: list[str] | None = None
-    best_verified = -1
-    cap = len(parts)
-    for root in containers or [{}]:
-        shown, verified, clash = _read(parts, [root])
-        if verified > best_verified:
-            best, best_verified = shown, verified
-        if clash:
-            cap = min(cap, verified)
-    result = list(best or [])
-    return ".".join(result[:cap] + [UNKNOWN] * (len(result) - cap))
-
-
-def _read(parts: list[str], nodes: list[Any]) -> tuple[list[str], int, bool]:
-    """Walk ``parts`` through ONE root: the text of each, how many were real keys, and whether
-    the first one that was not is the start of a dotted key in that root (``john`` beside
-    ``john.smith``). Roots are never mixed between segments: a path is read against one
-    root at a time."""
-    shown: list[str] = []
-    verified = 0
-    clash = False
+    # Every root is walked alone, in step, so segments are never taken from different roots.
+    fronts = [[root] for root in roots if isinstance(root, (dict, list, tuple))] or [[{}]]
+    shown: list[list[str]] = [[] for _ in fronts]
+    verified = [0] * len(fronts)
     for part in parts:
-        before = nodes
-        text, nodes = _walk(part, nodes, whole=len(parts) == 1)
-        shown.append(text)
-        if nodes:
-            verified += 1
-        elif not clash and part:
-            clash = any(
-                isinstance(k, str) and k.startswith(part + ".")
-                for n in before
-                if isinstance(n, dict)
-                for k in n
-            )
-    return shown, verified, clash
+        if _ambiguous(part, fronts):
+            break
+        for i, nodes in enumerate(fronts):
+            text, fronts[i] = _walk(part, nodes, whole=len(parts) == 1)
+            shown[i].append(text)
+            verified[i] += bool(fronts[i])
+    best = shown[verified.index(max(verified))]
+    return ".".join(best + [UNKNOWN] * (len(parts) - len(best)))
+
+
+def _ambiguous(part: str, fronts: list[list[Any]]) -> bool:
+    """Does any root hold, at this level, a key that contains a dot and starts with ``part.``?
+
+    Then ``part`` may be the start of that key rather than a key of its own, whatever the
+    other roots say, so it and everything after it is not shown.
+    """
+    prefix = part + "."
+    return bool(part) and any(
+        isinstance(key, str) and key.startswith(prefix)
+        for nodes in fronts
+        for node in nodes
+        if isinstance(node, dict)
+        for key in node
+    )
 
 
 def _walk(part: str, nodes: list[Any], *, whole: bool) -> tuple[str, list[Any]]:
