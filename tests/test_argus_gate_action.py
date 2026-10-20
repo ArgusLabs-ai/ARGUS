@@ -285,3 +285,11 @@ def test_cloud_grades_the_pytest_session_even_if_a_run_id_is_left_in_the_environ
 def test_the_documentation_shows_the_permission_and_the_inputs():
     readme = (ACTION.parents[3] / "README.md").read_text(encoding="utf-8")
     assert "id-token: write" in readme and 'cloud: "true"' in readme and "cloud-url:" in readme
+
+
+@pytest.mark.unit
+def test_the_data_page_says_how_the_action_keeps_an_uploaded_run_out_of_telemetry():
+    page = " ".join((ACTION.parents[3] / "docs/DATA.md").read_text(encoding="utf-8").split())
+    assert "is not also sent as telemetry" in page
+    assert 'with `cloud: "true"` it exports `ARGUS_TELEMETRY=0` before it runs your tests' in page
+    assert "#a-run-sent-to-a-workspace-is-not-also-telemetry" in page  # linked from Paying teams

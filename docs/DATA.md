@@ -97,6 +97,8 @@ Cards are deleted after 12 months.
 Team plans can turn telemetry on or off for the whole organization in the
 team agreement. Full runs (real values) are uploaded only with
 `ARGUS_CLOUD_SYNC=1`, into your own team workspace, never into this telemetry.
+A run whose card is uploaded to a team workspace is not also sent as telemetry:
+[how the action ensures it](#a-run-sent-to-a-workspace-is-not-also-telemetry).
 
 ## What a team workspace receives
 
@@ -201,3 +203,16 @@ one that did. It never prints a card, a response body or the token, follows no r
 token is not passed on to another host), sends the token only to an `https` URL, and uses
 nothing beyond the Python standard library. `tests/test_data_leaks.py` checks that the body it
 sends is exactly `build_card`'s output for every canary above.
+
+### A run sent to a workspace is not also telemetry
+
+A run whose card goes to a team workspace is not also sent as the anonymous shape card
+described at the top of this page. The gate action ensures it: with `cloud: "true"` it exports
+`ARGUS_TELEMETRY=0` before it runs your tests, so nothing those tests record can be sent as
+telemetry, and the card goes only to the workspace. If you run `pytest --argus-report-only` and
+`argus cloud upload` yourself, set `ARGUS_TELEMETRY=0` (or `DO_NOT_TRACK=1`) for the test
+step to get the same result.
+
+The opt-in full-run sync (`ARGUS_CLOUD_SYNC=1`) is off whenever a run is recorded in
+report-only mode (`--argus-report-only`, `ARGUS_REPORT_ONLY=1`) or `ARGUS_CLOUD_URL` is set:
+a workspace receives run cards, never the run.
