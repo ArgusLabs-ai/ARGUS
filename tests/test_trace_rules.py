@@ -711,6 +711,48 @@ def test_d4_an_unfinished_query_is_strict_not_pagination():
     assert _run(done) == []
 
 
+def test_d4_elasticsearch_partial_results_are_incomplete_result():
+    hits = [{"_id": "1", "_source": {"title": "doc"}}]
+    timed_out = [
+        _tool(
+            "es_search",
+            {
+                "timed_out": True,
+                "_shards": {"total": 5, "successful": 5, "skipped": 0, "failed": 0},
+                "hits": {"total": {"value": 40}, "hits": hits},
+            },
+            {"hits": hits},
+        )
+    ]
+    assert _kinds(_run(timed_out)) == [("node", "incomplete_result")]
+
+    failed_shards = [
+        _tool(
+            "es_search",
+            {
+                "timed_out": False,
+                "_shards": {"total": 5, "successful": 3, "skipped": 0, "failed": 2},
+                "hits": {"total": {"value": 40}, "hits": hits},
+            },
+            {"hits": hits},
+        )
+    ]
+    assert _kinds(_run(failed_shards)) == [("node", "incomplete_result")]
+
+    healthy = [
+        _tool(
+            "es_search",
+            {
+                "timed_out": False,
+                "_shards": {"total": 5, "successful": 5, "skipped": 0, "failed": 0},
+                "hits": {"total": {"value": 1}, "hits": hits},
+            },
+            {"hits": hits},
+        )
+    ]
+    assert _run(healthy) == []
+
+
 def test_d17_a_pending_status_recorded_as_done():
     out = {"id": "pay_9", "status": "requires_approval"}
     ev = [_tool("create_payment", out, {"payment": {"id": "pay_9", "status": "scheduled"}})]
