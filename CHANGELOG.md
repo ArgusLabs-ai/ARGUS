@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.0 — 2026-10-21
+
+- `pytest --argus-report-only` (or `ARGUS_REPORT_ONLY=1`) records and grades every run but never fails a test on its verdict. The runs a session saved are listed in `.argus/session_runs.txt`
+- `argus cloud upload [--final]` sends a pytest session's run cards to a team workspace (`ARGUS_CLOUD_URL`). It proves which repository is calling with the GitHub Actions OIDC token, so there is no secret to set up (`permissions: id-token: write`). Any error fails the job with one line; nothing is retried silently. A run sent to a workspace is not also sent as telemetry
+- GitHub Action: `cloud: "true"` with `cloud-url:` runs your tests report-only, then uploads. The job fails only on a test's own failure or a failed upload
+- The run card (`argus.cloud_card.build_card`, schema `data/cloud_card.schema.json`) is what a workspace receives: verdict, findings without their reason, and the shape of the data, never a value. See `docs/DATA.md`
+- `argus fix --sanitized` no longer leaks nested keys, top-level keys, input-state keys, path segments, keys that contain a dot, or text a learned signature quoted
+- Runs record `agent` and `environment`: `ArgusRecorder(agent=)`, `$ARGUS_AGENT` and `$ARGUS_ENVIRONMENT` (`ci` on GitHub Actions)
+
 ## 0.15.0 — 2026-10-16
 
 - Judge verdicts record the temperature, seed and `system_fingerprint` they were made with, plus whether they are `deterministic` (temperature 0, and a seed the provider honored). Set `ARGUS_JUDGE_SEED` or `ArgusConfig(judge_seed=)`. `argus show` / `check` / `diff` report it. Audit only, never gates
