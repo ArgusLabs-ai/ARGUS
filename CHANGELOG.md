@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Parallel fan-out branches and concurrent `.batch()` items no longer serialize behind step grading. User validators and the abort-mode sync judge now run concurrently across sibling steps (#91)
+
 ## 0.17.0 — 2026-10-31
 
 - Baselines learn from many runs: `trace_rules.merge_baselines(parts)` combines baselines built from separate batches of runs, equal to one built over all of them. Baseline files are version 2 and record `lens`, the min / max length of each list or string field; version 1 files still load
