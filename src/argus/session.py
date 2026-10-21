@@ -478,6 +478,7 @@ class ArgusSession:
         self._lock = threading.Lock()
         self._events: list[NodeEvent] = []
         self._step_index = 0
+        self._in_flight_steps = 0
         self._initial_state: dict[str, Any] = {}
         self._started_at = datetime.now(timezone.utc).isoformat()
         self._completed = False
@@ -670,7 +671,7 @@ class ArgusSession:
         """
         if not self._has_conditional_edges:
             return self._terminal_nodes
-        executed = {e.node_name for e in self._events}
+        executed = {e.node_name for e in self._events} | set(self._node_attempt_counts)
         expected = {t for t in self._terminal_nodes if t in executed}
         # ponytail: fallback to all if none matched yet (early in execution)
         return expected or self._terminal_nodes
@@ -978,7 +979,12 @@ class ArgusSession:
             self._step_index += 1
             attempt_idx = self._node_attempt_counts.get(node_name, 0)
             self._node_attempt_counts[node_name] = attempt_idx + 1
+            self._in_flight_steps += 1
+            successor_fns = self._get_successor_fns(node_name)
+            has_successors = bool(self.graph_edge_map.get(node_name))
+            current_fn = self.node_fn_registry.get(node_name)
 
+        try:
             suppressed_signals: list[SemanticSignal] = []
             suppressed_anomalies: list[AnomalySignal] = []
             # determine status
@@ -1011,8 +1017,6 @@ class ArgusSession:
             # structural inspection (skip on crash or interrupt)
             inspection = None
             if status == "pass" and output_snap is not None:
-                successor_fns = self._get_successor_fns(node_name)
-                current_fn = self.node_fn_registry.get(node_name)
                 # #129: presence-only consumer fields soften empty retrieval
                 # lists in this node's update and its tool responses.
                 allow_empty = node_writes_allow_empty(self.consumers, output_snap)
@@ -1028,7 +1032,7 @@ class ArgusSession:
                     # Router nodes get no successor_fns (see
                     # _get_successor_fns) but things still run after them, and
                     # the empty_output rule only needs that much.
-                    has_successors=bool(self.graph_edge_map.get(node_name)),
+                    has_successors=has_successors,
                     allow_empty=allow_empty,
                 )
                 # The tools this step actually called (fat trace). Must land
@@ -1163,14 +1167,16 @@ class ArgusSession:
             _deferred_judge = False
             prior_rows: list[Any] = []
             if _should_run_judge:
-                # The run so far, as the ledger sees it (#85). Built here, under
-                # the lock and before this step's event is appended, so the sync
-                # and background paths judge against the same history.
-                # ponytail: rebuilt per judged step — O(n²) over a run, and a run
-                # is tens of steps. Cache the fold on the session if that bites.
+                # The run so far, as the ledger sees it (#85). Snapshot the
+                # completed steps under the lock before this step's event is
+                # appended, so the sync and background paths judge against the
+                # same history without holding the lock across the judge call (#91).
+                with self._lock:
+                    events_so_far = list(self._events)
+                    initial_state_snap = dict(self._initial_state)
                 prior_rows = build_ledger(
-                    list(self._events),
-                    self._initial_state,
+                    events_so_far,
+                    initial_state_snap,
                     self.reducer_kinds,
                     list(self.state_keys),
                 )
@@ -1241,8 +1247,16 @@ class ArgusSession:
                 goto=list(goto or []),
                 superstep=superstep,
             )
+        except BaseException:
+            with self._lock:
+                self._in_flight_steps -= 1
+            raise
 
+        with self._lock:
+            self._in_flight_steps -= 1
             self._events.append(event)
+            if len(self._events) > 1 and self._events[-2].step_index > event.step_index:
+                self._events.sort(key=lambda e: e.step_index)
 
             # Fire deferred LLM judge in background thread
             if _deferred_judge:
@@ -1283,14 +1297,17 @@ class ArgusSession:
 
             # auto-finalize decision (atomic with event append)
             # Uses terminal-node tracking: finalize only when ALL expected DAG
-            # leaves have completed. For conditional graphs, unchosen branch
-            # terminals don't block finalization.
-            should_finalize = (not self._defer_auto_finalize) and (
-                status in ("crashed", "interrupted")
-                or (
-                    not self._is_cyclic
-                    and self._terminal_nodes
-                    and self._completed_terminals >= self._expected_terminals()
+            # leaves have completed and no sibling step is still mid-grade.
+            should_finalize = (
+                not self._defer_auto_finalize
+                and self._in_flight_steps == 0
+                and (
+                    any(e.status in ("crashed", "interrupted") for e in self._events)
+                    or (
+                        not self._is_cyclic
+                        and self._terminal_nodes
+                        and self._completed_terminals >= self._expected_terminals()
+                    )
                 )
             )
 
@@ -1333,7 +1350,8 @@ class ArgusSession:
                     is_valid, message, severity = _parse_validator_return(raw)
                 else:
                     # Advisory: a low score is a warning, never blocking.
-                    self._judge_scores.append(score)
+                    with self._lock:
+                        self._judge_scores.append(score)
                     is_valid, severity = score.severity == "ok", score.severity
                     message = ": ".join(t for t in (score.label, score.explanation) if t)
             except Exception as ve:
@@ -1698,7 +1716,9 @@ class ArgusSession:
         iteration would demote every repeat failure to ``degraded_input`` and
         hide which iteration actually broke (VAR-105).
         """
-        for event in self._events:
+        with self._lock:
+            events = list(self._events)
+        for event in events:
             if event.status != "fail" or event.inspection is None:
                 continue
             if current_node is not None and event.node_name == current_node:
@@ -2185,6 +2205,7 @@ class ArgusSession:
             self._events = []
             self._judge_scores = []
             self._step_index = 0
+            self._in_flight_steps = 0
             self._initial_state = {}
             self._started_at = datetime.now(timezone.utc).isoformat()
             self._completed = False
@@ -2209,6 +2230,7 @@ class ArgusSession:
             self._events = []
             self._judge_scores = []
             self._step_index = 0
+            self._in_flight_steps = 0
             self._initial_state = {}
             self._started_at = datetime.now(timezone.utc).isoformat()
             self._completed = False

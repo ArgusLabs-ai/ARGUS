@@ -814,9 +814,7 @@ class ArgusRecorder(BaseCallbackHandler):
         self, session: ArgusSession, run_id: UUID, outputs: Any, exc: BaseException | None
     ) -> bool:
         """Record one node step. Returns True if ``run_id`` was a node."""
-        # Held across on_node_end so the step index we file tools under is the
-        # one this step actually gets. Parallel fan-out runs these callbacks on
-        # separate threads and the session assigns indices under its own lock.
+        goto = _command_goto(outputs)
         with self._lock:
             entry = self._pending.pop(run_id, None)
             tools = self._tools.pop(run_id, [])
@@ -826,35 +824,36 @@ class ArgusRecorder(BaseCallbackHandler):
                 return False
 
             node, input_snap, started, superstep = entry
-            duration_ms = (time.perf_counter() - started) * 1000
-
-            # `{}` must only ever mean "the node really returned an empty update"
-            # — that is the signal. Anything that is not a dict is not an update
-            # we can read, so it becomes None (the crash/unknown shape) rather
-            # than a fake empty one. A `Command` is unwrapped to the update it
-            # carries first, so a handoff is read, not discarded (#88).
-            update = _node_update(outputs)
-            output_snap = session.capture_output(update) if isinstance(update, dict) else None
-
             # Before the step is graded, not after: `empty_output` reads the
             # edge map inside `on_node_end` (#110).
-            goto = _command_goto(outputs)
             self._observe_route(session, node, goto + routes)
 
-            # Tools go in with the step, not onto the event afterwards: the
-            # graders run inside on_node_end, so tools attached later were
-            # recorded and never read (#86).
-            session.on_node_end(
-                node,
-                input_snap,
-                output_snap,
-                duration_ms,
-                exc=exc if isinstance(exc, Exception) else None,
-                llm_usage=usage_from_calls(llm_calls),
-                tool_calls=tools,
-                goto=goto,
-                superstep=superstep,
-            )
+        duration_ms = (time.perf_counter() - started) * 1000
+
+        # `{}` must only ever mean "the node really returned an empty update"
+        # — that is the signal. Anything that is not a dict is not an update
+        # we can read, so it becomes None (the crash/unknown shape) rather
+        # than a fake empty one. A `Command` is unwrapped to the update it
+        # carries first, so a handoff is read, not discarded (#88).
+        update = _node_update(outputs)
+        output_snap = session.capture_output(update) if isinstance(update, dict) else None
+
+        # Tools go in with the step, not onto the event afterwards: the
+        # graders run inside on_node_end, so tools attached later were
+        # recorded and never read (#86). Grading runs outside `self._lock`
+        # so parallel fan-out and concurrent `.batch()` callbacks do not
+        # serialize behind one step's inspection or synchronous LLM call (#91).
+        session.on_node_end(
+            node,
+            input_snap,
+            output_snap,
+            duration_ms,
+            exc=exc if isinstance(exc, Exception) else None,
+            llm_usage=usage_from_calls(llm_calls),
+            tool_calls=tools,
+            goto=goto,
+            superstep=superstep,
+        )
         return True
 
     def _observe_route(self, session: ArgusSession, node: str, targets: list[str]) -> None:
