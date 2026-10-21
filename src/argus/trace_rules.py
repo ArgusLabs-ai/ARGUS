@@ -15,7 +15,8 @@ runs, 54 of them real model prose.
     D3  empty_result            an empty lookup, whatever its keys are called
     D4  unfollowed_pagination   a first page carried forward as the whole result
         incomplete_result       the same, when the tool said the result itself is incomplete
-                                (BigQuery ``jobComplete: false``, GitHub ``incomplete_results``)
+                                (BigQuery ``jobComplete: false``, GitHub ``incomplete_results``,
+                                Elasticsearch ``timed_out`` / failed shards)
     D5  type_drift              output type differs from the healthy baseline
     D6  sentinel_value          N/A / unknown / -1 where the healthy baseline has data
     D8  unrendered_template     {{var}}, lorem ipsum, "Dear [Name]" written by a model node
@@ -289,7 +290,7 @@ def _is_empty_lookup(o: Any) -> bool:
 
 _MORE = {"has_more": True, "hasmore": True, "done": False}
 # Not "there is another page" but "this answer is unfinished": strict, unlike _MORE.
-_INCOMPLETE = {"jobcomplete": False, "incomplete_results": True}
+_INCOMPLETE = {"jobcomplete": False, "incomplete_results": True, "timed_out": True}
 # A tool's own "not done yet" status, and the success words a node then records.
 _PENDING = frozenset(
     {
@@ -366,7 +367,13 @@ def _tools(e: Any, allow_empty_fields: frozenset[str], **_: Any) -> Iterator[tup
             )
         elif isinstance(out, dict):
             flat = {k.lower(): v for k, v in _flat(out)}
-            incomplete = any(flat.get(k) == v for k, v in _INCOMPLETE.items())
+            shards = out.get("_shards")
+            failed_shards = (
+                isinstance(shards, dict)
+                and _is_num(shards.get("failed"))
+                and shards["failed"] > 0
+            )
+            incomplete = failed_shards or any(flat.get(k) == v for k, v in _INCOMPLETE.items())
             more = (
                 incomplete
                 or any(flat.get(k) == v for k, v in _MORE.items())
