@@ -591,3 +591,66 @@ def test_a_run_leaves_no_bookkeeping_behind_however_it_ends():
     for _ in range(3):
         recorder.attach(_build_app({"summary": "a real summary"})).invoke({"query": "q"})
     assert _leftovers(recorder) == {}, "clean runs through one attach"
+
+
+@pytest.mark.unit
+def test_close_step_does_not_hold_recorder_or_session_lock_across_grading(monkeypatch):
+    """#91: neither recorder._lock nor session._lock may be held while a step
+    is graded inside on_node_end, so parallel fan-out branches and concurrent
+    `.batch()` callbacks do not serialize behind step inspection or sync LLM calls."""
+    import threading
+
+    import argus.session as session_mod
+
+    recorder = ArgusRecorder(semantic_judge=False)
+    recorder.attach(_build_app({}))
+
+    graph_run, node_a, node_b = uuid4(), uuid4(), uuid4()
+    recorder.on_chain_start(None, {"query": "q"}, run_id=graph_run)
+    recorder.on_chain_start(
+        None, {"query": "q"}, run_id=node_a, parent_run_id=graph_run,
+        metadata={"langgraph_node": "search"},
+    )
+    recorder.on_chain_start(
+        None, {"query": "q"}, run_id=node_b, parent_run_id=graph_run,
+        metadata={"langgraph_node": "summarize"},
+    )
+
+    entered = threading.Event()
+    proceed = threading.Event()
+    lock_states: dict[str, bool] = {}
+    real_inspect = session_mod.inspect_transition
+
+    def slow_inspect(*args, **kwargs):
+        if kwargs.get("current_node") == "search" and not entered.is_set():
+            lock_states["recorder_locked"] = recorder._lock.locked()
+            lock_states["session_locked"] = recorder.session._lock.locked()
+            entered.set()
+            assert proceed.wait(timeout=5.0), "sibling callback blocked on lock"
+        return real_inspect(*args, **kwargs)
+
+    monkeypatch.setattr(session_mod, "inspect_transition", slow_inspect)
+
+    t = threading.Thread(
+        target=recorder.on_chain_end,
+        args=({"docs": ["a"]},),
+        kwargs={"run_id": node_a},
+    )
+    t.start()
+    assert entered.wait(timeout=5.0)
+    # While node_a is mid-grade inside inspect_transition, another thread can
+    # record a tool callback AND finish grading node_b without blocking.
+    tool_run = uuid4()
+    recorder.on_tool_start({"name": "fetch"}, "{}", run_id=tool_run, parent_run_id=node_b)
+    recorder.on_tool_end("ok", run_id=tool_run)
+    recorder.on_chain_end({"summary": "valid summary"}, run_id=node_b)
+    proceed.set()
+    t.join(timeout=5.0)
+
+    recorder.on_chain_end({"answer": "done"}, run_id=graph_run)
+
+    assert lock_states == {"recorder_locked": False, "session_locked": False}
+    assert [e.node_name for e in recorder.session._events] == ["summarize", "search"] or [
+        e.step_index for e in recorder.session._events
+    ] == [0, 1]
+    assert [e.step_index for e in recorder.session._events] == [0, 1]
