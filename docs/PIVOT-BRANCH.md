@@ -1411,7 +1411,9 @@ wrong entity on one turn and never revisits it is retired too.
 
 **Recorder:** each `LLMCallInfo` keeps `output_text` (clipped to 4,000 chars),
 read by D11. **CLI:** `argus baseline <run…> --write` — keys, types and value
-kinds every healthy run agrees on; never values. **Recorder param:**
+kinds every healthy run agrees on; never values. `trace_rules.merge_baselines(parts)`
+combines baselines built from separate batches of runs, equal to one built over all of
+them (a node a part never visited constrains nothing). **Recorder param:**
 `ArgusRecorder(baseline=...)`; without it D5 / D6 / D16 are off.
 
 Two tuning passes came out of the existing tests, not the new suite: D1 first

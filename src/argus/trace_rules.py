@@ -48,7 +48,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["Hit", "build_baseline", "run_rules"]
+__all__ = ["Hit", "build_baseline", "merge_baselines", "run_rules"]
 
 # D1 and D16 hits mean "this node did not produce the field under the right
 # name". The contextual layer's "never written → first step" guess defers to them.
@@ -471,13 +471,43 @@ def build_baseline(runs: Iterable[Iterable[Any]]) -> dict[str, Any]:
             keys = set(upd)
             types = {k: _type_name(v) for k, v in upd.items() if v is not None}
             paths = {re.sub(r"\[\d+\]", "[0]", p): t for p, v in _all_paths(upd) if (t := _tag(v))}
-            cur = nodes.get(e.node_name)
-            if cur is None:
-                nodes[e.node_name] = {"keys": keys, "types": types, "paths": paths}
-                continue
-            cur["keys"] &= keys
-            cur["types"] = {k: t for k, t in cur["types"].items() if types.get(k) == t}
-            cur["paths"] = {p: t for p, t in cur["paths"].items() if paths.get(p) == t}
+            _meet(nodes, e.node_name, {"keys": keys, "types": types, "paths": paths})
+    return _baseline_file(nodes)
+
+
+def merge_baselines(parts: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """One baseline from several, as if ``build_baseline`` had seen all their runs.
+
+    A node absent from a part was not visited there, so it constrains nothing;
+    where parts share a node, only what every one of them agrees on survives.
+    """
+    nodes: dict[str, dict[str, Any]] = {}
+    for part in parts:
+        for name, v in (part.get("nodes") or {}).items():
+            _meet(
+                nodes,
+                name,
+                {
+                    "keys": set(v.get("keys", [])),
+                    "types": dict(v.get("types", {})),
+                    "paths": dict(v.get("paths", {})),
+                },
+            )
+    return _baseline_file(nodes)
+
+
+def _meet(nodes: dict[str, dict[str, Any]], name: str, seen: dict[str, Any]) -> None:
+    """Narrow ``nodes[name]`` to what it shares with ``seen``: the one agreement rule."""
+    cur = nodes.get(name)
+    if cur is None:
+        nodes[name] = seen
+        return
+    cur["keys"] &= seen["keys"]
+    cur["types"] = {k: t for k, t in cur["types"].items() if seen["types"].get(k) == t}
+    cur["paths"] = {p: t for p, t in cur["paths"].items() if seen["paths"].get(p) == t}
+
+
+def _baseline_file(nodes: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return {
         "version": 1,
         "nodes": {
