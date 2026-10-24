@@ -117,3 +117,19 @@ def test_outside_github_actions_it_is_exit_1(workspace, monkeypatch):
     monkeypatch.delenv("ACTIONS_ID_TOKEN_REQUEST_URL")
     result = _pull()
     assert result.exit_code == 1 and "OIDC" in result.output and workspace.requests == []
+
+
+def test_an_answer_nested_too_deep_to_parse_is_exit_1(workspace):
+    workspace.baselines_status, workspace.baselines_body = 200, b"[" * 200_000
+    result = _pull()
+    assert result.exit_code == 1 and "pull baselines failed" in result.output
+
+
+def test_a_planted_symlink_at_the_partial_file_is_not_followed(workspace, tmp_path):
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("untouched")
+    Path(".argus/baselines").mkdir(parents=True)
+    Path(".argus/baselines/triage.json.partial").symlink_to(target)
+    _answer(workspace, {"triage": {"parts": [B]}})
+    assert _pull().exit_code == 0
+    assert target.read_text() == "untouched" and _file("triage") == merge_baselines([B])

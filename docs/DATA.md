@@ -171,7 +171,8 @@ name may be:
 When a job is a **push to the repository's default branch** and the run is clean, its card
 also carries `baseline_part`: what `argus baseline` would learn from that run, per node. That
 is the keys the node wrote, their types, a kind tag per field path (`text`, `nonneg`,
-`object`) and the min / max length of each list or string. No value is in it.
+`object`) and the min / max length of each list or string. No value is in it, only how long
+the values were, as the `len` of a step's shape already says.
 
 This is the one place a card names keys nested inside a value (`customer.tier`,
 `docs[0].text`), because a baseline that cannot name a field cannot check it. The rule is

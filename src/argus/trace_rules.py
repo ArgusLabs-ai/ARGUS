@@ -468,7 +468,8 @@ def build_baseline(runs: Iterable[Iterable[Any]]) -> dict[str, Any]:
         for e in events:
             if getattr(e, "status", "pass") in ("skipped", "retried", "fail", "crashed"):
                 continue
-            upd = _update(e)
+            # A state key is a string; any other key cannot be one, and would not sort beside them.
+            upd = {k: v for k, v in _update(e).items() if isinstance(k, str)}
             keys = set(upd)
             types = {k: _type_name(v) for k, v in upd.items() if v is not None}
             paths = {re.sub(r"\[\d+\]", "[0]", p): t for p, v in _all_paths(upd) if (t := _tag(v))}

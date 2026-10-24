@@ -1179,7 +1179,7 @@ def _agent_baseline(agent: str) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:  # nested too deep to parse
         data = e
     if isinstance(data, dict) and is_baseline(data):
         return data

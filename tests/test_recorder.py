@@ -658,3 +658,11 @@ def test_an_agent_name_that_is_not_a_plain_filename_reads_no_file(monkeypatch):
     Path("outside.json").write_text(json.dumps(_SUMMARY_BASELINE))
     Path(".argus/baselines").mkdir(parents=True)
     assert _lost_summary("../../outside") == []
+
+
+@pytest.mark.integration
+def test_a_baseline_file_nested_too_deep_to_parse_is_ignored(monkeypatch, caplog):
+    _no_patching(monkeypatch)
+    _write_baseline("demo", "[" * 200_000)
+    assert _lost_summary("demo") == []
+    assert "baseline" in caplog.text

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -70,7 +71,7 @@ def _agents(raw: bytes, host: str) -> dict[Any, Any]:
         raise UploadError(f"pull baselines failed: the answer from {host} is too large")
     try:
         body = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):  # nested too deep to parse
         body = None
     if not isinstance(body, dict) or body.get("schema") != SCHEMA:
         raise UploadError(f"pull baselines failed: {host} did not answer with baselines")
@@ -91,8 +92,14 @@ def _write(agents: dict[Any, Any]) -> Pulled:
             learning += 1
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            partial = path.with_suffix(".json.partial")
-            partial.write_text(json.dumps(merge_baselines(parts), indent=2) + "\n", "utf-8")
-            partial.replace(path)
+            text = json.dumps(merge_baselines(parts), indent=2) + "\n"
+            # A fresh temp file beside the target (never one already there, which could be a
+            # symlink), then an atomic rename over it.
+            fd, partial = tempfile.mkstemp(
+                dir=path.parent, prefix=f".{path.name}.", suffix=".partial"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(partial, path)
             written += 1
     return Pulled(written, learning, skipped)

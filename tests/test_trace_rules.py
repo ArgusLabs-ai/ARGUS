@@ -799,3 +799,9 @@ def test_a_v1_baseline_merges_with_no_length_claims():
     merged = R.merge_baselines([BASE, v2])
     assert merged["nodes"]["score"]["keys"] == ["scoring"]
     assert merged["nodes"]["score"]["lens"] == {}
+
+
+def test_build_baseline_ignores_keys_that_are_not_text():
+    # A state key is a string; an int key beside one used to break the sort.
+    base = R.build_baseline([[Ev("score", output_dict={1: "a", "k": 2})]])
+    assert base["nodes"]["score"]["keys"] == ["k"]
