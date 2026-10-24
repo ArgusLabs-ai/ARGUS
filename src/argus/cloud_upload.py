@@ -44,8 +44,8 @@ _OIDC = "the GitHub OIDC endpoint"
 
 
 class UploadError(Exception):
-    """Why the upload did not happen. The message is one line and carries no card content,
-    response body or token."""
+    """Why the upload (or ``pull-baselines``, which shares these requests) did not happen.
+    The message is one line and carries no card content, response body or token."""
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -95,38 +95,40 @@ def upload(*, final: bool, environ: Mapping[str, str] | None = None) -> int:
 # ── preconditions ────────────────────────────────────────────────────────────
 
 
-def _oidc_request(env: Mapping[str, str]) -> tuple[str, str]:
+def _oidc_request(env: Mapping[str, str], verb: str = "upload") -> tuple[str, str]:
     url = env.get("ACTIONS_ID_TOKEN_REQUEST_URL", "").strip()
     token = env.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "").strip()
     if not url or not token:
         raise UploadError(
-            "cannot upload: no GitHub OIDC token is available. This runs in GitHub Actions, "
+            f"cannot {verb}: no GitHub OIDC token is available. This runs in GitHub Actions, "
             "with 'permissions: id-token: write' on the job (a fork's pull request gets none)"
         )
-    _checked(url, "ACTIONS_ID_TOKEN_REQUEST_URL")
+    _checked(url, "ACTIONS_ID_TOKEN_REQUEST_URL", verb)
     return url, token
 
 
-def _workspace(env: Mapping[str, str]) -> tuple[str, str]:
-    """The ``/api/v1/runs`` endpoint and the host name to show in a message."""
+def _workspace(
+    env: Mapping[str, str], path: str = "/api/v1/runs", verb: str = "upload"
+) -> tuple[str, str]:
+    """The workspace endpoint at ``path`` and the host name to show in a message."""
     raw = env.get("ARGUS_CLOUD_URL", "").strip()
     if not raw:
-        raise UploadError("cannot upload: ARGUS_CLOUD_URL is not set")
-    parts = _checked(raw, "ARGUS_CLOUD_URL")
-    return f"{raw.rstrip('/')}/api/v1/runs", parts.hostname or ""
+        raise UploadError(f"cannot {verb}: ARGUS_CLOUD_URL is not set")
+    parts = _checked(raw, "ARGUS_CLOUD_URL", verb)
+    return f"{raw.rstrip('/')}{path}", parts.hostname or ""
 
 
-def _checked(raw: str, name: str) -> urllib.parse.SplitResult:
+def _checked(raw: str, name: str, verb: str = "upload") -> urllib.parse.SplitResult:
     """A URL a bearer token may be sent to: https, or http on this machine (a local fake)."""
     try:
         parts = urllib.parse.urlsplit(raw)
         host = parts.hostname
     except ValueError:
-        raise UploadError(f"cannot upload: {name} is not a usable URL") from None
+        raise UploadError(f"cannot {verb}: {name} is not a usable URL") from None
     if parts.scheme != "https" and not (parts.scheme == "http" and host in _LOOPBACK):
-        raise UploadError(f"cannot upload: {name} must be an https URL")
+        raise UploadError(f"cannot {verb}: {name} must be an https URL")
     if not host or parts.username or parts.password:
-        raise UploadError(f"cannot upload: {name} is not a usable URL")
+        raise UploadError(f"cannot {verb}: {name} is not a usable URL")
     return parts
 
 
@@ -184,7 +186,7 @@ def on_default_branch(env: Mapping[str, str]) -> bool:
 # ── the two requests ─────────────────────────────────────────────────────────
 
 
-def _oidc_token(request_url: str, request_token: str) -> str:
+def _oidc_token(request_url: str, request_token: str, verb: str = "upload") -> str:
     request = urllib.request.Request(
         audience_url(request_url),
         headers={
@@ -193,29 +195,41 @@ def _oidc_token(request_url: str, request_token: str) -> str:
             "User-Agent": f"argus-agents/{__version__}",
         },
     )
-    answer = _send(request, TOKEN_TIMEOUT_S, _OIDC, read=MAX_TOKEN_BYTES)
+    answer = _send(request, TOKEN_TIMEOUT_S, _OIDC, read=MAX_TOKEN_BYTES, verb=verb)
     try:
-        value = json.loads(answer).get("value")
+        value = json.loads(answer or b"").get("value")
     except (ValueError, AttributeError):
         value = None
     if not isinstance(value, str) or not value.strip():
-        raise UploadError(f"upload failed: {_OIDC} returned no token")
+        raise UploadError(f"{verb} failed: {_OIDC} returned no token")
     return value
 
 
-def _send(request: urllib.request.Request, timeout: float, where: str, *, read: int) -> bytes:
-    """Make one request; anything but a 2xx answer is an ``UploadError`` naming ``where``."""
+def _send(
+    request: urllib.request.Request,
+    timeout: float,
+    where: str,
+    *,
+    read: int,
+    verb: str = "upload",
+    missing_ok: bool = False,
+) -> bytes | None:
+    """Make one request; anything but a 2xx answer is an ``UploadError`` naming ``where``.
+    With ``missing_ok`` a 404 is ``None`` (nothing there yet), not an error."""
     try:
         with _OPENER.open(request, timeout=timeout) as response:
             return bytes(response.read(read))
     except urllib.error.HTTPError as exc:
+        if missing_ok and exc.code == 404:
+            exc.close()
+            return None
         status = " ".join(filter(None, [f"HTTP {exc.code}", _printable(exc.reason)]))
         exc.close()
-        raise UploadError(f"upload failed: {status} from {where}") from None
+        raise UploadError(f"{verb} failed: {status} from {where}") from None
     except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
         if _timed_out(exc):
-            raise UploadError(f"upload failed: no answer from {where} in {timeout:g}s") from None
-        raise UploadError(f"upload failed: could not reach {where} ({_why(exc)})") from None
+            raise UploadError(f"{verb} failed: no answer from {where} in {timeout:g}s") from None
+        raise UploadError(f"{verb} failed: could not reach {where} ({_why(exc)})") from None
 
 
 def _timed_out(exc: BaseException) -> bool:

@@ -30,6 +30,8 @@ class FakeWorkspace:
         self.upload_body = b'{"ok": true}'
         self.upload_delay = 0.0
         self.redirect_to: str | None = None
+        self.baselines_status = 404  # GET /api/v1/baselines: nothing learned yet
+        self.baselines_body = b"{}"
         self.requests: list[dict[str, Any]] = []
 
     @property
@@ -74,7 +76,9 @@ def _handler(fake: FakeWorkspace) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:  # noqa: N802
             self._record()
-            if not self.path.startswith("/oidc"):
+            if self.path == "/api/v1/baselines":
+                self._send(fake.baselines_status, fake.baselines_body)
+            elif not self.path.startswith("/oidc"):
                 self._send(404, b"{}")
             elif fake.oidc_body is not None:
                 self._send(fake.oidc_status, fake.oidc_body)

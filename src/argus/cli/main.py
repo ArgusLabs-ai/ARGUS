@@ -19,7 +19,7 @@ except ImportError:
 
 from argus.cli.cmd_baseline import baseline_for_runs
 from argus.cli.cmd_check import check_run
-from argus.cli.cmd_cloud import cloud_upload
+from argus.cli.cmd_cloud import cloud_pull_baselines, cloud_upload
 from argus.cli.cmd_consumers import propose_for_run
 from argus.cli.cmd_diff import diff_runs
 from argus.cli.cmd_doctor import doctor
@@ -68,7 +68,7 @@ telemetry_app = typer.Typer(
 app.add_typer(telemetry_app, name="telemetry")
 
 cloud_app = typer.Typer(
-    help="Send this job's run cards to a team workspace (docs/DATA.md).",
+    help="Send this job's run cards to a team workspace, and pull its baselines (docs/DATA.md).",
     no_args_is_help=True,
 )
 app.add_typer(cloud_app, name="cloud")
@@ -90,6 +90,17 @@ def cmd_cloud_upload(
     card: the verdict, the findings and the shape of the data, never a value.
     """
     cloud_upload(final)
+
+
+@cloud_app.command("pull-baselines")
+def cmd_cloud_pull_baselines() -> None:
+    """Write the baselines $ARGUS_CLOUD_URL learned from main to .argus/baselines/.
+
+    Same OIDC sign-in as `upload`. Each agent's parts are merged here, by the open-source
+    code, into `.argus/baselines/<agent>.json`, which the recorder loads when given no
+    baseline. Nothing learned yet is not an error. Exits 1, with one line, on a failed request.
+    """
+    cloud_pull_baselines()
 
 
 @telemetry_app.command("on")

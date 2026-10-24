@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,18 @@ def resolve_project_root(start: Path | None = None) -> Path:
 def argus_dir(start: Path | None = None) -> Path:
     """``<project-root>/.argus`` — does not create the directory."""
     return resolve_project_root(start) / _ARGUS_DIR
+
+
+# An agent name comes from the caller, $ARGUS_AGENT, the graph or a workspace's answer: only a
+# plain file name gets a path, so a name can never reach outside `.argus/baselines`.
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}")
+
+
+def baseline_path(agent: object) -> Path | None:
+    """``.argus/baselines/<agent>.json``, or None when ``agent`` is not a plain file name."""
+    if not isinstance(agent, str) or not _PLAIN_NAME.fullmatch(agent):
+        return None
+    return argus_dir() / "baselines" / f"{agent}.json"
 
 
 def session_path() -> Path:

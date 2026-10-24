@@ -743,6 +743,7 @@ argus update                         # check for newer release
 argus telemetry status|on|off        # anonymous shape cards (docs/DATA.md)
 argus telemetry show-last            # print the last card sent, exactly as sent
 argus cloud upload [--final]         # send this job's run cards to a team workspace (GitHub Actions; docs/DATA.md)
+argus cloud pull-baselines           # write the baselines the workspace learned from main to .argus/baselines/
 ```
 
 ---
@@ -787,9 +788,9 @@ To let a team workspace decide red or green instead of the job, set `cloud: "tru
           pytest-args: tests/
 ```
 
-In cloud mode the action runs `pytest --argus-report-only tests/` (every run is still recorded and graded, but no test fails because a run was not clean) with telemetry off for that step, then `argus cloud upload --final`. The job fails only if a test fails for its own reasons or the upload does: a non-2xx answer, a timeout, or no token (a pull request from a fork gets none). Only run cards leave the runner: the verdict, the findings and the shape of the data, never a value ([docs/DATA.md](docs/DATA.md)). The job summary is written as before. `cloud` applies to the pytest mode, so it cannot be combined with `run-id`.
+In cloud mode the action first runs `argus cloud pull-baselines` (the baselines the workspace learned from green runs on main, merged into `.argus/baselines/`, which the recorder loads), then `pytest --argus-report-only tests/` (every run is still recorded and graded, but no test fails because a run was not clean) with telemetry off for that step, then `argus cloud upload --final`. The job fails only if a test fails for its own reasons, or the pull or the upload does: a non-2xx answer, a timeout, or no token (a pull request from a fork gets none). Only run cards leave the runner: the verdict, the findings and the shape of the data, never a value ([docs/DATA.md](docs/DATA.md)). The job summary is written as before. `cloud` applies to the pytest mode, so it cannot be combined with `run-id`.
 
-Outside the action, the same two steps are `pytest --argus-report-only` (or `ARGUS_REPORT_ONLY=1`) and `argus cloud upload [--final]` with `ARGUS_CLOUD_URL` set, in a GitHub Actions job that has `id-token: write`.
+Outside the action, the same steps are `argus cloud pull-baselines`, `pytest --argus-report-only` (or `ARGUS_REPORT_ONLY=1`) and `argus cloud upload [--final]` with `ARGUS_CLOUD_URL` set, in a GitHub Actions job that has `id-token: write`.
 
 ---
 

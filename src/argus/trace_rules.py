@@ -48,7 +48,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["Hit", "build_baseline", "merge_baselines", "run_rules"]
+__all__ = ["Hit", "build_baseline", "is_baseline", "merge_baselines", "run_rules"]
 
 # D1 and D16 hits mean "this node did not produce the field under the right
 # name". The contextual layer's "never written → first step" guess defers to them.
@@ -503,6 +503,35 @@ def merge_baselines(parts: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 },
             )
     return _baseline_file(nodes)
+
+
+def is_baseline(data: Any) -> bool:
+    """Does ``data`` (read from a file or a workspace) have the shape the rules and
+    ``merge_baselines`` read? Checked before use, so a bad file cannot raise mid-grading."""
+
+    def strings(v: Any) -> bool:
+        return isinstance(v, dict) and all(
+            isinstance(k, str) and isinstance(x, str) for k, x in v.items()
+        )
+
+    def ranges(v: Any) -> bool:
+        return isinstance(v, dict) and all(
+            isinstance(r, (list, tuple))
+            and len(r) == 2
+            and all(isinstance(n, int) and not isinstance(n, bool) for n in r)
+            for r in v.values()
+        )
+
+    nodes = data.get("nodes") if isinstance(data, dict) else None
+    return isinstance(nodes, dict) and all(
+        isinstance(n, dict)
+        and isinstance(n.get("keys", []), list)
+        and all(isinstance(k, str) for k in n.get("keys", []))
+        and strings(n.get("types", {}))
+        and strings(n.get("paths", {}))
+        and ranges(n.get("lens", {}))
+        for n in nodes.values()
+    )
 
 
 def _meet(nodes: dict[str, dict[str, Any]], name: str, seen: dict[str, Any]) -> None:

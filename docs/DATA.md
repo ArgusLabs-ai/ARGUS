@@ -208,6 +208,15 @@ update, a nested key, a key that contains a dot, a tool output, a tool error, a 
 finding, a field path, a judge explanation and the description of a learned signature, and
 fails if it reaches the card, a baseline part or the sanitized fix prompt. It runs on every pull request.
 
+### What a job takes back: baselines
+
+Before the tests, cloud mode runs `argus cloud pull-baselines`: a `GET` to
+`$ARGUS_CLOUD_URL/api/v1/baselines` with the same OIDC token and no body. The answer is the
+baseline parts of the repository's last green main runs, per agent. They are merged on the
+runner by the open-source code (`trace_rules.merge_baselines`) and written to
+`.argus/baselines/<agent>.json`, which the recorder reads. Nothing is sent but the token, and
+nothing comes back but key names, types, kind tags and length ranges your own main runs sent.
+
 ### How a job sends it
 
 `argus cloud upload [--final]` posts `{"schema": 1, "final": <bool>, "cards": [...]}` to

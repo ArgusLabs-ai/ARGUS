@@ -347,10 +347,11 @@ def test_the_token_request_adds_the_audience_to_a_url_with_or_without_a_query():
 
 
 @pytest.mark.unit
-def test_the_cloud_command_group_has_upload_and_nothing_that_pulls():
-    result = CliRunner().invoke(app, ["cloud", "--help"])
-    assert result.exit_code == 0 and "upload" in result.output
-    assert "pull" not in result.output
+def test_the_cloud_command_group_has_upload_and_pull_baselines_only():
+    # Nothing pulls a run or a card back down: the one thing that comes back is a baseline.
+    from argus.cli.main import cloud_app
+
+    assert sorted(c.name for c in cloud_app.registered_commands) == ["pull-baselines", "upload"]
 
 
 # ── a green run on the default branch sends its baseline part ────────────────

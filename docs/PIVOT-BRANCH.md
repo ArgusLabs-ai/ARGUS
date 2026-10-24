@@ -2010,10 +2010,19 @@ outside GitHub Actions it exits 1 with one line. Laptop uploads are not built.
 ## The Action's cloud mode
 
 `.github/actions/argus-gate` gains `cloud` (default `"false"`) and `cloud-url`. With `cloud: "true"`
-the gate step runs `pytest --argus-report-only` instead of `pytest --argus`, then
-`argus cloud upload --final`, and exports `ARGUS_CLOUD_URL` and `ARGUS_TELEMETRY=0` first. The
-job fails only for the tests' own exit code, or when the upload fails (the tests' code wins when
-both do; a failed upload also writes an `::error::`). The workspace's policy decides red or
+the gate step runs `argus cloud pull-baselines`, then `pytest --argus-report-only` instead of
+`pytest --argus`, then `argus cloud upload --final`, and exports `ARGUS_CLOUD_URL` and
+`ARGUS_TELEMETRY=0` first. The job fails only for the tests' own exit code, or when the pull or
+the upload fails (the tests' code wins; a failed pull or upload also writes an `::error::`). A
+failed pull still runs the tests and the upload, so the workspace hears from the job.
+
+`argus cloud pull-baselines` (`cloud_baselines.py`) reuses the upload's OIDC, URL and
+no-redirect request code. The answer is `{"schema": 1, "agents": {<agent>: {"parts": [...]}}}`;
+each agent's parts are merged with `merge_baselines` into `.argus/baselines/<agent>.json`
+(written through a `.partial` file). A 404 or an agent with no parts is "learning", exit 0. An
+agent whose name is not a plain file name (`storage.baseline_path`) or with one part that fails
+`trace_rules.is_baseline` gets no file: merging fewer parts would claim more than the runs agreed
+on. Any other non-2xx, a body that is not that shape, or one over 16 MB is exit 1, one line. The workspace's policy decides red or
 green, so a run that was not clean never reaches the exit code. The README and the input docs
 show `permissions: id-token: write`.
 

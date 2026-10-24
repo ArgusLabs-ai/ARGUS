@@ -39,7 +39,6 @@ import dataclasses
 import inspect
 import json
 import logging
-import re
 import sys
 import threading
 import time
@@ -55,6 +54,7 @@ from argus.llm_tracker import call_from_llm_outputs, usage_from_calls
 from argus.models import LLMCallInfo, ToolFailure
 from argus.review import Reviewer
 from argus.session import ArgusSession
+from argus.trace_rules import is_baseline
 from argus.utils.ids import resolve_agent
 
 # Metadata an attached recorder puts on its runs, so `pytest --argus` (#78) does
@@ -1168,36 +1168,20 @@ def _async_node_names(app: Any) -> list[str]:
     return names
 
 
-# An agent name comes from the caller, $ARGUS_AGENT or the graph: only a plain
-# file name is looked up, so a name can never reach outside `.argus/baselines`.
-_PLAIN_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}")
-_BASELINE_FIELDS = {"keys": list, "types": dict, "paths": dict, "lens": dict}
-
-
 def _agent_baseline(agent: str) -> dict[str, Any] | None:
     """``.argus/baselines/<agent>.json`` (``argus cloud pull-baselines``), else None.
 
     A file that will not read as a baseline is skipped with one warning: grading
     falls back to no baseline rather than raising into the user's graph.
     """
-    if not _PLAIN_NAME.fullmatch(agent):
-        return None
-    path = storage.argus_dir() / "baselines" / f"{agent}.json"
-    if not path.is_file():
+    path = storage.baseline_path(agent)
+    if path is None or not path.is_file():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         data = e
-    if (
-        isinstance(data, dict)
-        and isinstance(data.get("nodes"), dict)
-        and all(
-            isinstance(n, dict)
-            and all(isinstance(n.get(k, t()), t) for k, t in _BASELINE_FIELDS.items())
-            for n in data["nodes"].values()
-        )
-    ):
+    if isinstance(data, dict) and is_baseline(data):
         return data
     logging.getLogger("argus").warning(
         "ignoring baseline file %s: it is not a baseline (%s)", path, type(data).__name__
