@@ -456,7 +456,8 @@ def _baseline_rules(
 
 
 def build_baseline(runs: Iterable[Iterable[Any]]) -> dict[str, Any]:
-    """What every healthy run agrees on, per node: keys written, their types, leaf kinds.
+    """What every healthy run agrees on, per node: keys written, their types, leaf kinds,
+    and (v2) ``lens``, the min / max length of each list or string path every visit had.
 
     Pass several runs — one per branch, ideally a few per node. Only what is true
     of *every* visit survives, so a key written on one path is not required on
@@ -471,7 +472,13 @@ def build_baseline(runs: Iterable[Iterable[Any]]) -> dict[str, Any]:
             keys = set(upd)
             types = {k: _type_name(v) for k, v in upd.items() if v is not None}
             paths = {re.sub(r"\[\d+\]", "[0]", p): t for p, v in _all_paths(upd) if (t := _tag(v))}
-            _meet(nodes, e.node_name, {"keys": keys, "types": types, "paths": paths})
+            lens: dict[str, tuple[int, int]] = {}
+            for p, v in _all_paths(upd):
+                if isinstance(v, (str, list)):
+                    p = re.sub(r"\[\d+\]", "[0]", p)
+                    lo, hi = lens.get(p, (len(v), len(v)))
+                    lens[p] = (min(lo, len(v)), max(hi, len(v)))
+            _meet(nodes, e.node_name, {"keys": keys, "types": types, "paths": paths, "lens": lens})
     return _baseline_file(nodes)
 
 
@@ -491,6 +498,8 @@ def merge_baselines(parts: Iterable[dict[str, Any]]) -> dict[str, Any]:
                     "keys": set(v.get("keys", [])),
                     "types": dict(v.get("types", {})),
                     "paths": dict(v.get("paths", {})),
+                    # A v1 part never measured lengths, so it agrees on none.
+                    "lens": {p: tuple(r) for p, r in (v.get("lens") or {}).items()},
                 },
             )
     return _baseline_file(nodes)
@@ -505,16 +514,22 @@ def _meet(nodes: dict[str, dict[str, Any]], name: str, seen: dict[str, Any]) -> 
     cur["keys"] &= seen["keys"]
     cur["types"] = {k: t for k, t in cur["types"].items() if seen["types"].get(k) == t}
     cur["paths"] = {p: t for p, t in cur["paths"].items() if seen["paths"].get(p) == t}
+    cur["lens"] = {
+        p: (min(lo, seen["lens"][p][0]), max(hi, seen["lens"][p][1]))
+        for p, (lo, hi) in cur["lens"].items()
+        if p in seen["lens"]
+    }
 
 
 def _baseline_file(nodes: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "nodes": {
             n: {
                 "keys": sorted(v["keys"]),
                 "types": dict(sorted(v["types"].items())),
                 "paths": v["paths"],
+                "lens": {p: list(r) for p, r in sorted(v["lens"].items())},
             }
             for n, v in sorted(nodes.items())
         },

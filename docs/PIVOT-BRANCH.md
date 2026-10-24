@@ -1413,7 +1413,9 @@ wrong entity on one turn and never revisits it is retired too.
 read by D11. **CLI:** `argus baseline <run…> --write` — keys, types and value
 kinds every healthy run agrees on; never values. `trace_rules.merge_baselines(parts)`
 combines baselines built from separate batches of runs, equal to one built over all of
-them (a node a part never visited constrains nothing). **Recorder param:**
+them (a node a part never visited constrains nothing). Version 2 adds `lens`, the
+min / max length of every list or string path all visits had (display only, no rule
+reads it); a v1 file still loads, and merges as claiming no lengths. **Recorder param:**
 `ArgusRecorder(baseline=...)`; without it D5 / D6 / D16 are off.
 
 Two tuning passes came out of the existing tests, not the new suite: D1 first

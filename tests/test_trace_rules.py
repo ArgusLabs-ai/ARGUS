@@ -784,3 +784,18 @@ def test_merge_baselines_equals_one_baseline_over_every_run():
 
 def test_merge_baselines_of_nothing_is_an_empty_baseline():
     assert R.merge_baselines([]) == R.build_baseline([])
+
+
+def test_build_baseline_records_length_ranges_for_lists_and_text():
+    run1 = [Ev("retrieve", output_dict={"docs": [{"t": "ab"}, {"t": "abcd"}], "q": "hi", "n": 3})]
+    run2 = [Ev("retrieve", output_dict={"docs": [{"t": "abcdef"}] * 6, "q": "hello"})]
+    base = R.build_baseline([run1, run2])
+    assert base["version"] == 2
+    assert base["nodes"]["retrieve"]["lens"] == {"docs": [2, 6], "docs[0].t": [2, 6], "q": [2, 5]}
+
+
+def test_a_v1_baseline_merges_with_no_length_claims():
+    v2 = R.build_baseline([[Ev("score", output_dict={"scoring": {"tier": "hot", "score": 1}})]])
+    merged = R.merge_baselines([BASE, v2])
+    assert merged["nodes"]["score"]["keys"] == ["scoring"]
+    assert merged["nodes"]["score"]["lens"] == {}
