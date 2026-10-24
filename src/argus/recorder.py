@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -45,7 +47,7 @@ from collections import Counter
 from typing import Any, Callable
 from uuid import UUID
 
-from argus import determinism, verdict_cache
+from argus import determinism, storage, verdict_cache
 from argus.contextual import ConsumerMap
 from argus.grading import IncompleteTraceError, finish, new_session
 from argus.judge_api import check_floor
@@ -474,6 +476,8 @@ class ArgusRecorder(BaseCallbackHandler):
         # Declared `field -> [reader nodes]`; a trace cannot tell us who reads what.
         self._consumers = consumers
         # Healthy-run shape from `argus baseline` (argus.trace_rules D5/D6/D16).
+        # None = `.argus/baselines/<agent>.json` if there is one, read at `bind`.
+        self._baseline_arg = baseline
         self._baseline = baseline
         # One sentence per node; the run reviewer cannot run without them.
         self._purposes = dict(purposes or (baseline or {}).get("purposes") or {})
@@ -573,6 +577,9 @@ class ArgusRecorder(BaseCallbackHandler):
         self._agent_name = resolve_agent(
             explicit=self._agent, graph_name=getattr(app, "name", None), node_names=names
         )
+        if self._baseline_arg is None:
+            # Rules only: purposes in that file do not switch the LLM reviewer on.
+            self._baseline = _agent_baseline(self._agent_name)
         (
             self._subgraph_nodes,
             self._subgraphs_with_successors,
@@ -1016,9 +1023,10 @@ class ArgusRecorder(BaseCallbackHandler):
         with self._lock:
             bucket = self._tools.setdefault(step, [])
             for existing in bucket:
-                if existing.get("name") == record["name"] and existing.get(
-                    "input"
-                ) == record["input"]:
+                if (
+                    existing.get("name") == record["name"]
+                    and existing.get("input") == record["input"]
+                ):
                     if (
                         existing.get("output") is None
                         and existing.get("error") is None
@@ -1073,8 +1081,16 @@ class ArgusRecorder(BaseCallbackHandler):
                 if owner == root
             }
             for table in (
-                self._root_of, self._node_of, self._parent_of, self._pending, self._tools,
-                self._tool_owner, self._tool_root, self._llm, self._routes, self._roots,
+                self._root_of,
+                self._node_of,
+                self._parent_of,
+                self._pending,
+                self._tools,
+                self._tool_owner,
+                self._tool_root,
+                self._llm,
+                self._routes,
+                self._roots,
             ):
                 for rid in dead & table.keys():
                     del table[rid]
@@ -1150,6 +1166,43 @@ def _async_node_names(app: Any) -> list[str]:
         ):
             names.append(name)
     return names
+
+
+# An agent name comes from the caller, $ARGUS_AGENT or the graph: only a plain
+# file name is looked up, so a name can never reach outside `.argus/baselines`.
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}")
+_BASELINE_FIELDS = {"keys": list, "types": dict, "paths": dict, "lens": dict}
+
+
+def _agent_baseline(agent: str) -> dict[str, Any] | None:
+    """``.argus/baselines/<agent>.json`` (``argus cloud pull-baselines``), else None.
+
+    A file that will not read as a baseline is skipped with one warning: grading
+    falls back to no baseline rather than raising into the user's graph.
+    """
+    if not _PLAIN_NAME.fullmatch(agent):
+        return None
+    path = storage.argus_dir() / "baselines" / f"{agent}.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        data = e
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("nodes"), dict)
+        and all(
+            isinstance(n, dict)
+            and all(isinstance(n.get(k, t()), t) for k, t in _BASELINE_FIELDS.items())
+            for n in data["nodes"].values()
+        )
+    ):
+        return data
+    logging.getLogger("argus").warning(
+        "ignoring baseline file %s: it is not a baseline (%s)", path, type(data).__name__
+    )
+    return None
 
 
 def _warn_async_nodes(app: Any) -> None:

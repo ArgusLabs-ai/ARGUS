@@ -1416,7 +1416,10 @@ combines baselines built from separate batches of runs, equal to one built over 
 them (a node a part never visited constrains nothing). Version 2 adds `lens`, the
 min / max length of every list or string path all visits had (display only, no rule
 reads it); a v1 file still loads, and merges as claiming no lengths. **Recorder param:**
-`ArgusRecorder(baseline=...)`; without it D5 / D6 / D16 are off.
+`ArgusRecorder(baseline=...)`; left `None`, `bind` reads `.argus/baselines/<agent>.json`
+(the run's resolved agent name, looked up only when it is a plain file name; a file that
+is not a baseline is skipped with one warning; its `purposes` do not turn the reviewer
+on). With neither, D5 / D6 / D16 are off.
 
 Two tuning passes came out of the existing tests, not the new suite: D1 first
 flagged every extra key (the contextual tests write `noise_a`), then every
