@@ -117,3 +117,5 @@ def point_at(monkeypatch: Any, fake: FakeWorkspace) -> None:
     monkeypatch.setenv("ARGUS_CLOUD_URL", fake.url)
     monkeypatch.setenv("no_proxy", "*")  # never route the loopback through a proxy
     monkeypatch.setenv("NO_PROXY", "*")
+    for name in ("GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH", "GITHUB_REF"):  # this repo's own CI
+        monkeypatch.delenv(name, raising=False)

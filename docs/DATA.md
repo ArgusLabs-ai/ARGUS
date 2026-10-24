@@ -166,6 +166,22 @@ name may be:
   `{t, len, f}`, the type, the length and features from the fixed list above. A
   boolean carries no value and a number is only "an int".
 
+### A green run on the default branch: the baseline part
+
+When a job is a **push to the repository's default branch** and the run is clean, its card
+also carries `baseline_part`: what `argus baseline` would learn from that run, per node. That
+is the keys the node wrote, their types, a kind tag per field path (`text`, `nonneg`,
+`object`) and the min / max length of each list or string. No value is in it.
+
+This is the one place a card names keys nested inside a value (`customer.tier`,
+`docs[0].text`), because a baseline that cannot name a field cannot check it. The rule is
+stricter than the one above: a key or path is sent only if **every** segment looks like an
+identifier and is verified against that node's own updates; anything else (a value used
+as a key, a key that contains a dot) is left out of the part entirely, not sent as `?`.
+Leaving a field out only makes the baseline claim less. Pull requests, other branches and
+red runs send no part. The workspace stores a part only when the job's token says it ran
+on the default branch.
+
 ### Also never sent
 
 - Any value from node inputs, outputs, state, tool inputs, tool outputs or tool errors
@@ -190,7 +206,7 @@ fix, the file and function to edit, field names by the rule above, shapes and ex
 path). `tests/test_data_leaks.py` plants a canary value in the initial state, a node
 update, a nested key, a key that contains a dot, a tool output, a tool error, a sentinel
 finding, a field path, a judge explanation and the description of a learned signature, and
-fails if it reaches the card or the sanitized fix prompt. It runs on every pull request.
+fails if it reaches the card, a baseline part or the sanitized fix prompt. It runs on every pull request.
 
 ### How a job sends it
 

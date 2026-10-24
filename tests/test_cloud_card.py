@@ -752,3 +752,77 @@ def test_real_clean_failing_and_crashed_runs_produce_valid_cards():
     assert statuses == ["clean", "silent_failure", "crashed"]
     assert build_card(clean)["fix_prompt"] is None
     assert build_card(failing)["fix_prompt"] and build_card(crashed)["fix_prompt"]
+
+
+# ── baseline part (a green run on the default branch) ────────────────────────
+
+
+def test_a_clean_ci_run_on_main_carries_its_baseline_part():
+    from argus.trace_rules import build_baseline
+
+    record = _clean_record()
+    card = build_card(record, baseline_part=True)
+    assert card["baseline_part"] == build_baseline([record.steps])
+    validate(card, SCHEMA)
+
+
+@pytest.mark.parametrize(
+    "record, flag",
+    [(_clean_record, False), (_failing_record, True), (_crashed_record, True)],
+    ids=["not-main", "failing", "crashed"],
+)
+def test_no_baseline_part_off_main_or_on_a_red_run(record, flag):
+    assert "baseline_part" not in build_card(record(), baseline_part=flag)
+
+
+def test_no_baseline_part_from_a_local_run():
+    record = _clean_record()
+    record.environment = "local"
+    assert "baseline_part" not in build_card(record, baseline_part=True)
+
+
+def test_a_baseline_part_names_only_identifier_keys_it_can_verify():
+    record = _clean_record()
+    record.steps[0].output_dict = {
+        "docs": [{"text": "a"}],
+        "customer": {CANARY: "Ana", "tier": "gold"},
+        "accounts": {"john.smith": {"balance": 1}},
+        CANARY: "x",
+    }
+    part = build_card(record, baseline_part=True)["baseline_part"]
+    text = json.dumps(part)
+    assert CANARY not in text and "john" not in text and "smith" not in text
+    fetch = part["nodes"]["fetch"]
+    assert fetch["keys"] == ["accounts", "customer", "docs"]
+    assert set(fetch["paths"]) == {
+        "docs[0]",
+        "docs[0].text",
+        "customer",
+        "customer.tier",
+        "accounts",
+    }
+    assert set(fetch["lens"]) == {"docs", "docs[0].text", "customer.tier"}
+    validate(build_card(record, baseline_part=True), SCHEMA)
+
+
+@pytest.mark.parametrize(
+    "where, bad",
+    [("keys", CANARY), ("paths", f"customer.{CANARY}"), ("paths", "customer.?"), ("lens", "a..b")],
+)
+def test_the_schema_refuses_a_baseline_name_that_is_not_an_identifier(where, bad):
+    card = build_card(_clean_record(), baseline_part=True)
+    node = card["baseline_part"]["nodes"]["fetch"]
+    if where == "keys":
+        node["keys"].append(bad)
+    else:
+        node[where][bad] = "text" if where == "paths" else [1, 2]
+    with pytest.raises(AssertionError):
+        validate(card, SCHEMA)
+
+
+def test_the_baseline_part_limits_are_the_builders():
+    node = SCHEMA["$defs"]["baseline_node"]["properties"]
+    assert node["keys"]["maxItems"] == node["types"]["maxProperties"] == cloud_card.MAX_KEYS
+    assert node["paths"]["maxProperties"] == node["lens"]["maxProperties"] == cloud_card.MAX_PATHS
+    nodes = SCHEMA["$defs"]["baseline_part"]["properties"]["nodes"]
+    assert nodes["maxProperties"] == cloud_card.MAX_NODES

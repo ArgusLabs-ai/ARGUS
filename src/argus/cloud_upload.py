@@ -73,7 +73,7 @@ def upload(*, final: bool, environ: Mapping[str, str] | None = None) -> int:
     env = os.environ if environ is None else environ
     request_url, request_token = _oidc_request(env)
     endpoint, host = _workspace(env)
-    cards = _cards()
+    cards = _cards(baseline_part=on_default_branch(env))
     token = _oidc_token(request_url, request_token)
     payload = {"schema": ENVELOPE_SCHEMA, "final": final, "cards": cards}
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -130,7 +130,7 @@ def _checked(raw: str, name: str) -> urllib.parse.SplitResult:
     return parts
 
 
-def _cards() -> list[dict[str, Any]]:
+def _cards(*, baseline_part: bool) -> list[dict[str, Any]]:
     """The card of every run the session saved. One that cannot be built stops the upload: a
     workspace that judges half a job would judge it wrong."""
     path = storage.session_path()
@@ -153,13 +153,32 @@ def _cards() -> list[dict[str, Any]]:
                 f"({type(exc).__name__}); nothing was sent"
             ) from None
         try:
-            cards.append(build_card(record))
+            cards.append(build_card(record, baseline_part=baseline_part))
         except Exception as exc:  # noqa: BLE001
             raise UploadError(
                 f"cannot upload: could not build the card for run {shown} "
                 f"({type(exc).__name__}); nothing was sent"
             ) from None
     return cards
+
+
+def on_default_branch(env: Mapping[str, str]) -> bool:
+    """Is this job a push to the repository's default branch? Only then may a clean run's card
+    carry a baseline part. The default branch is read from GitHub's event file; anything that
+    cannot be read means no (a part is a bonus, never worth failing an upload for). The
+    workspace checks the ref again from the token."""
+    if env.get("GITHUB_EVENT_NAME") != "push":
+        return False
+    try:
+        with open(env.get("GITHUB_EVENT_PATH", ""), encoding="utf-8") as f:
+            branch = json.load(f)["repository"]["default_branch"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return (
+        isinstance(branch, str)
+        and bool(branch)
+        and env.get("GITHUB_REF") == f"refs/heads/{branch}"
+    )
 
 
 # ── the two requests ─────────────────────────────────────────────────────────
