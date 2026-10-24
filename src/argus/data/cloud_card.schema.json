@@ -27,7 +27,8 @@
     "findings": {"type": "array", "maxItems": 500, "items": {"$ref": "#/$defs/finding"}},
     "llm_usage": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/usage"}},
     "root_cause_chain": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/name"}},
-    "fix_prompt": {"type": ["string", "null"], "maxLength": 50000}
+    "fix_prompt": {"type": ["string", "null"], "maxLength": 50000},
+    "baseline_part": {"$ref": "#/$defs/baseline_part"}
   },
   "$defs": {
     "name": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -139,6 +140,52 @@
         "prompt_tokens": {"type": "integer", "minimum": 0},
         "completion_tokens": {"type": "integer", "minimum": 0},
         "total_tokens": {"type": "integer", "minimum": 0}
+      }
+    },
+    "identifier": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"},
+    "named_path": {"type": "string", "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]{0,63}(?:\\[[0-9]{1,6}\\])*|(?:\\[[0-9]{1,6}\\])+)(?:\\.(?:[A-Za-z_][A-Za-z0-9_]{0,63}(?:\\[[0-9]{1,6}\\])*|(?:\\[[0-9]{1,6}\\])+)){0,7}$"},
+    "baseline_part": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "nodes"],
+      "properties": {
+        "version": {"type": "integer", "enum": [2]},
+        "nodes": {
+          "type": "object",
+          "maxProperties": 500,
+          "propertyNames": {"$ref": "#/$defs/name"},
+          "additionalProperties": {"$ref": "#/$defs/baseline_node"}
+        }
+      }
+    },
+    "baseline_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keys", "types", "paths", "lens"],
+      "properties": {
+        "keys": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/identifier"}},
+        "types": {
+          "type": "object",
+          "maxProperties": 50,
+          "propertyNames": {"$ref": "#/$defs/identifier"},
+          "additionalProperties": {"$ref": "#/$defs/identifier"}
+        },
+        "paths": {
+          "type": "object",
+          "maxProperties": 200,
+          "propertyNames": {"$ref": "#/$defs/named_path"},
+          "additionalProperties": {"type": "string", "enum": ["text", "nonneg", "object"]}
+        },
+        "lens": {
+          "type": "object",
+          "maxProperties": 200,
+          "propertyNames": {"$ref": "#/$defs/named_path"},
+          "additionalProperties": {
+            "type": "array",
+            "maxItems": 2,
+            "items": {"type": "integer", "minimum": 0}
+          }
+        }
       }
     }
   }

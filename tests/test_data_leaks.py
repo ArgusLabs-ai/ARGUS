@@ -729,3 +729,18 @@ def test_a_plain_nested_path_with_no_dotted_key_anywhere_still_reads_in_clear():
     record.steps.insert(1, other)
     (finding,) = [f for f in build_card(record)["findings"] if f["type"] == "sentinel_value"]
     assert finding["field_path"] == "accounts.ana.balance"
+
+
+# ── the baseline part of a green main run ────────────────────────────────────
+
+
+@pytest.mark.parametrize("place", sorted(p for p in PLANTS if "update" in PLANTS[p]))
+def test_a_baseline_part_carries_no_canary(place):
+    """Key names go in a baseline part, so a canary planted as a key must still not."""
+    lookup = make_event(node_name="lookup", output=PLANTS[place]["update"])
+    reply = make_event(node_name="reply", step_index=1, output={"answer": "ok"})
+    record = make_run_record(events=[lookup, reply], edges={"lookup": ["reply"], "reply": []})
+    record.environment = "ci"
+    card = build_card(record, baseline_part=True)
+    assert "baseline_part" in card
+    assert _leaks(json.dumps(card)) == []

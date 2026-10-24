@@ -48,7 +48,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["Hit", "build_baseline", "run_rules"]
+__all__ = ["Hit", "build_baseline", "is_baseline", "merge_baselines", "run_rules"]
 
 # D1 and D16 hits mean "this node did not produce the field under the right
 # name". The contextual layer's "never written → first step" guess defers to them.
@@ -456,7 +456,8 @@ def _baseline_rules(
 
 
 def build_baseline(runs: Iterable[Iterable[Any]]) -> dict[str, Any]:
-    """What every healthy run agrees on, per node: keys written, their types, leaf kinds.
+    """What every healthy run agrees on, per node: keys written, their types, leaf kinds,
+    and (v2) ``lens``, the min / max length of each list or string path every visit had.
 
     Pass several runs — one per branch, ideally a few per node. Only what is true
     of *every* visit survives, so a key written on one path is not required on
@@ -467,24 +468,98 @@ def build_baseline(runs: Iterable[Iterable[Any]]) -> dict[str, Any]:
         for e in events:
             if getattr(e, "status", "pass") in ("skipped", "retried", "fail", "crashed"):
                 continue
-            upd = _update(e)
+            # A state key is a string; any other key cannot be one, and would not sort beside them.
+            upd = {k: v for k, v in _update(e).items() if isinstance(k, str)}
             keys = set(upd)
             types = {k: _type_name(v) for k, v in upd.items() if v is not None}
             paths = {re.sub(r"\[\d+\]", "[0]", p): t for p, v in _all_paths(upd) if (t := _tag(v))}
-            cur = nodes.get(e.node_name)
-            if cur is None:
-                nodes[e.node_name] = {"keys": keys, "types": types, "paths": paths}
-                continue
-            cur["keys"] &= keys
-            cur["types"] = {k: t for k, t in cur["types"].items() if types.get(k) == t}
-            cur["paths"] = {p: t for p, t in cur["paths"].items() if paths.get(p) == t}
+            lens: dict[str, tuple[int, int]] = {}
+            for p, v in _all_paths(upd):
+                if isinstance(v, (str, list)):
+                    p = re.sub(r"\[\d+\]", "[0]", p)
+                    lo, hi = lens.get(p, (len(v), len(v)))
+                    lens[p] = (min(lo, len(v)), max(hi, len(v)))
+            _meet(nodes, e.node_name, {"keys": keys, "types": types, "paths": paths, "lens": lens})
+    return _baseline_file(nodes)
+
+
+def merge_baselines(parts: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """One baseline from several, as if ``build_baseline`` had seen all their runs.
+
+    A node absent from a part was not visited there, so it constrains nothing;
+    where parts share a node, only what every one of them agrees on survives.
+    """
+    nodes: dict[str, dict[str, Any]] = {}
+    for part in parts:
+        for name, v in (part.get("nodes") or {}).items():
+            _meet(
+                nodes,
+                name,
+                {
+                    "keys": set(v.get("keys", [])),
+                    "types": dict(v.get("types", {})),
+                    "paths": dict(v.get("paths", {})),
+                    # A v1 part never measured lengths, so it agrees on none.
+                    "lens": {p: tuple(r) for p, r in (v.get("lens") or {}).items()},
+                },
+            )
+    return _baseline_file(nodes)
+
+
+def is_baseline(data: Any) -> bool:
+    """Does ``data`` (read from a file or a workspace) have the shape the rules and
+    ``merge_baselines`` read? Checked before use, so a bad file cannot raise mid-grading."""
+
+    def strings(v: Any) -> bool:
+        return isinstance(v, dict) and all(
+            isinstance(k, str) and isinstance(x, str) for k, x in v.items()
+        )
+
+    def ranges(v: Any) -> bool:
+        return isinstance(v, dict) and all(
+            isinstance(r, (list, tuple))
+            and len(r) == 2
+            and all(isinstance(n, int) and not isinstance(n, bool) for n in r)
+            for r in v.values()
+        )
+
+    nodes = data.get("nodes") if isinstance(data, dict) else None
+    return isinstance(nodes, dict) and all(
+        isinstance(n, dict)
+        and isinstance(n.get("keys", []), list)
+        and all(isinstance(k, str) for k in n.get("keys", []))
+        and strings(n.get("types", {}))
+        and strings(n.get("paths", {}))
+        and ranges(n.get("lens", {}))
+        for n in nodes.values()
+    )
+
+
+def _meet(nodes: dict[str, dict[str, Any]], name: str, seen: dict[str, Any]) -> None:
+    """Narrow ``nodes[name]`` to what it shares with ``seen``: the one agreement rule."""
+    cur = nodes.get(name)
+    if cur is None:
+        nodes[name] = seen
+        return
+    cur["keys"] &= seen["keys"]
+    cur["types"] = {k: t for k, t in cur["types"].items() if seen["types"].get(k) == t}
+    cur["paths"] = {p: t for p, t in cur["paths"].items() if seen["paths"].get(p) == t}
+    cur["lens"] = {
+        p: (min(lo, seen["lens"][p][0]), max(hi, seen["lens"][p][1]))
+        for p, (lo, hi) in cur["lens"].items()
+        if p in seen["lens"]
+    }
+
+
+def _baseline_file(nodes: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "nodes": {
             n: {
                 "keys": sorted(v["keys"]),
                 "types": dict(sorted(v["types"].items())),
                 "paths": v["paths"],
+                "lens": {p: list(r) for p, r in sorted(v["lens"].items())},
             }
             for n, v in sorted(nodes.items())
         },

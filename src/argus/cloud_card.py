@@ -15,6 +15,10 @@ telemetry card it keeps names readable, so the rules are about what a name may b
 - A finding is sent without its ``reason``, which quotes values. A tool call is its name, an
   HTTP status and a retry class; its input, output and error text stay behind.
 - The fix prompt is the ``sanitized`` one.
+- A green CI run on the default branch may carry its ``baseline_part`` (key names, types, kind
+  tags, length ranges; never a value). A name or path goes in only when every segment looks
+  like an identifier and ``safe_path`` verifies it against the node's own updates; anything
+  else is left out, which only makes the baseline claim less.
 
 The published contract is ``argus/data/cloud_card.schema.json``; it lists every field and
 sets ``additionalProperties: false``. See docs/DATA.md.
@@ -27,6 +31,7 @@ import math
 import re
 from typing import Any
 
+from argus.check import is_run_clean
 from argus.failure_class import (
     classify_failure_class,
     coerce_status,
@@ -38,6 +43,7 @@ from argus.fix_prompt import FixPromptError, build_fix_prompt_for_record
 from argus.inspector import _STATUS_KEYS, _as_json_payload
 from argus.models import Finding, NodeEvent, RunRecord
 from argus.telemetry.card import _word, value_shape
+from argus.trace_rules import build_baseline
 from argus.utils.names import safe_key, safe_path, step_roots
 
 logger = logging.getLogger("argus")
@@ -56,6 +62,7 @@ MAX_EDGES = 100
 MAX_CHAIN = 50
 MAX_MODELS = 50
 MAX_PROMPT = 50_000
+MAX_PATHS = 200
 
 _ANOMALY_ID = re.compile(r"[A-Z]{2}-[0-9]{3}")  # BA-001: a rule id, not free text
 _VERSION = re.compile(r"[0-9A-Za-z.+-]{1,32}")
@@ -257,11 +264,49 @@ def _fix_prompt(record: RunRecord) -> str | None:
         return None
 
 
-def build_card(record: RunRecord) -> dict[str, Any]:
+def _baseline_part(record: RunRecord) -> dict[str, Any]:
+    """``build_baseline`` of this run, keeping only names the naming rule can show as written.
+
+    Dropping a key or a path only removes a claim, so a filtered part is still a true baseline.
+    """
+    updates: dict[str, list[Any]] = {}
+    for e in record.steps or []:
+        updates.setdefault(e.node_name, []).append(e.output_dict)
+
+    def named(p: str, roots: list[Any]) -> bool:
+        return safe_path(p, *roots) == p
+
+    nodes: dict[str, Any] = {}
+    for name, node in build_baseline([record.steps or []])["nodes"].items():
+        if not isinstance(name, str) or not 0 < len(name) <= MAX_NAME or len(nodes) >= MAX_NODES:
+            continue
+        roots = updates.get(name, [])
+        nodes[name] = {
+            "keys": [k for k in node["keys"] if safe_key(k) == k][:MAX_KEYS],
+            "types": dict(
+                [
+                    (k, t)
+                    for k, t in node["types"].items()
+                    if safe_key(k) == k and safe_key(t) == t
+                ][:MAX_KEYS]
+            ),
+            "paths": dict(
+                [(q, t) for q, t in node["paths"].items() if named(q, roots)][:MAX_PATHS]
+            ),
+            "lens": dict([(q, r) for q, r in node["lens"].items() if named(q, roots)][:MAX_PATHS]),
+        }
+    return {"version": 2, "nodes": nodes}
+
+
+def build_card(record: RunRecord, *, baseline_part: bool = False) -> dict[str, Any]:
     """The run card for ``record``. Pure but for the fix prompt, which reads source files to
-    name the function to edit (``argus fix`` does the same)."""
+    name the function to edit (``argus fix`` does the same).
+
+    ``baseline_part`` says this run is on the default branch (the caller reads that from CI);
+    the part is added only when the run is also a clean ``ci`` run.
+    """
     roots = _roots_by_node(record)
-    return {
+    card = {
         "schema": SCHEMA_VERSION,
         "run": _run(record),
         "topology": _topology(record),
@@ -273,3 +318,6 @@ def build_card(record: RunRecord) -> dict[str, Any]:
         "root_cause_chain": [_text(n) for n in (record.root_cause_chain or [])[:MAX_CHAIN]],
         "fix_prompt": _fix_prompt(record),
     }
+    if baseline_part and record.environment == "ci" and is_run_clean(record):
+        card["baseline_part"] = _baseline_part(record)
+    return card

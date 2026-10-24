@@ -52,10 +52,11 @@ inputs:
   cloud:
     description: >-
       Send this job's run cards to a team workspace, and let its policy decide red or
-      green. Runs `pytest --argus-report-only` (every run is still recorded and graded,
-      but no test fails because of one), with telemetry off for that step, then
-      `argus cloud upload --final`. The job fails only if a test fails for its own reasons
-      or the upload fails. Needs `cloud-url`, and `permissions: id-token: write` on the
+      green. Runs `argus cloud pull-baselines` (what the workspace learned from main),
+      then `pytest --argus-report-only` (every run is still recorded and graded, but no
+      test fails because of one), with telemetry off for that step, then
+      `argus cloud upload --final`. The job fails only if a test fails for its own reasons,
+      or the pull or the upload fails. Needs `cloud-url`, and `permissions: id-token: write` on the
       job, which is how it proves who it is: there is no secret to store. Only the card
       leaves the runner: the verdict, the findings and the shape of the data, never a
       value (docs/DATA.md). Applies to the pytest mode, not to `run-id`.
@@ -120,6 +121,12 @@ runs:
         else
           # Unquoted on purpose: pytest-args is a list of arguments.
           if [ "$INPUT_CLOUD" = "true" ]; then
+            # What main learned (.argus/baselines/), so a regression is graded as one. A failed
+            # pull fails the job, but the tests still run and the workspace still hears from it.
+            if ! argus cloud pull-baselines; then
+              echo "::error::ARGUS could not pull the team workspace's baselines (see above)."
+              rc=1
+            fi
             # Record and grade as usual; the workspace's policy decides red or green.
             python -m pytest --argus-report-only $INPUT_PYTEST_ARGS || rc=$?
           else

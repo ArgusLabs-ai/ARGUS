@@ -506,13 +506,14 @@ def test_tool_inside_inner_chain_parents_to_the_node_step():
     graph_run, node_run, chain_run, tool_run = uuid4(), uuid4(), uuid4(), uuid4()
     recorder.on_chain_start(None, {}, run_id=graph_run)  # run boundary
     recorder.on_chain_start(
-        None, {}, run_id=node_run, parent_run_id=graph_run,
+        None,
+        {},
+        run_id=node_run,
+        parent_run_id=graph_run,
         metadata={"langgraph_node": "n1"},
     )
     recorder.on_chain_start(None, {}, run_id=chain_run, parent_run_id=node_run)  # inner sequence
-    recorder.on_tool_start(
-        {"name": "fetch"}, "{}", run_id=tool_run, parent_run_id=chain_run
-    )
+    recorder.on_tool_start({"name": "fetch"}, "{}", run_id=tool_run, parent_run_id=chain_run)
     recorder.on_tool_end("ok", run_id=tool_run)
     recorder.on_chain_end({}, run_id=chain_run)
     recorder.on_chain_end({"out": 1}, run_id=node_run)
@@ -534,9 +535,7 @@ def test_tool_at_graph_level_keeps_raw_parent_key():
 
     graph_run, tool_run = uuid4(), uuid4()
     recorder.on_chain_start(None, {}, run_id=graph_run)
-    recorder.on_tool_start(
-        {"name": "t"}, "{}", run_id=tool_run, parent_run_id=graph_run
-    )
+    recorder.on_tool_start({"name": "t"}, "{}", run_id=tool_run, parent_run_id=graph_run)
     assert recorder._tools[graph_run][0]["name"] == "t"
     # Closing the bare run boundary grades an empty trace (no node steps) —
     # IncompleteTraceError is expected. The ``finally`` in ``_finish`` still
@@ -547,8 +546,16 @@ def test_tool_at_graph_level_keeps_raw_parent_key():
 
 
 _BOOKKEEPING = (
-    "_root_of", "_node_of", "_parent_of", "_pending",
-    "_tools", "_tool_owner", "_tool_root", "_llm", "_routes", "_roots",
+    "_root_of",
+    "_node_of",
+    "_parent_of",
+    "_pending",
+    "_tools",
+    "_tool_owner",
+    "_tool_root",
+    "_llm",
+    "_routes",
+    "_roots",
 )
 
 
@@ -561,7 +568,10 @@ def _orphaned_run(recorder, *, tool_ends: bool, step_ends: bool):
     graph_run, node_run, tool_run = uuid4(), uuid4(), uuid4()
     recorder.on_chain_start(None, {}, run_id=graph_run)
     recorder.on_chain_start(
-        None, {"query": "q"}, run_id=node_run, parent_run_id=graph_run,
+        None,
+        {"query": "q"},
+        run_id=node_run,
+        parent_run_id=graph_run,
         metadata={"langgraph_node": "search"},
     )
     recorder.on_tool_start({"name": "fetch"}, "{}", run_id=tool_run, parent_run_id=node_run)
@@ -591,3 +601,68 @@ def test_a_run_leaves_no_bookkeeping_behind_however_it_ends():
     for _ in range(3):
         recorder.attach(_build_app({"summary": "a real summary"})).invoke({"query": "q"})
     assert _leftovers(recorder) == {}, "clean runs through one attach"
+
+
+_SUMMARY_BASELINE = {
+    "version": 2,
+    "nodes": {"summarize": {"keys": ["summary"], "types": {}, "paths": {}, "lens": {}}},
+}
+
+
+def _lost_summary(agent: str, **kw) -> list[str]:
+    """Run the demo graph with `summarize` dropping its key; the baseline rule names it."""
+    recorder = ArgusRecorder(semantic_judge=False, agent=agent, **kw)
+    recorder.attach(_build_app({"note": "x"})).invoke({"query": "q"})
+    return [
+        f.node
+        for f in load_run(recorder.session.run_id).findings
+        if f.type == "missing_output_key"
+    ]
+
+
+def _write_baseline(name: str, text: str) -> None:
+    from pathlib import Path
+
+    (Path(".argus/baselines")).mkdir(parents=True, exist_ok=True)
+    Path(f".argus/baselines/{name}.json").write_text(text)
+
+
+@pytest.mark.integration
+def test_the_agents_baseline_file_is_loaded_when_none_is_passed(monkeypatch):
+    import json
+
+    _no_patching(monkeypatch)
+    assert _lost_summary("demo") == []
+    _write_baseline("demo", json.dumps(_SUMMARY_BASELINE))
+    assert _lost_summary("demo") == ["summarize"]
+    assert (
+        _lost_summary("demo", baseline={"version": 2, "nodes": {}}) == []
+    )  # an explicit one wins
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("text", ["{not json", "[]", '{"nodes": []}'])
+def test_a_broken_baseline_file_is_ignored_with_a_warning(monkeypatch, caplog, text):
+    _no_patching(monkeypatch)
+    _write_baseline("demo", text)
+    assert _lost_summary("demo") == []
+    assert "baseline" in caplog.text
+
+
+@pytest.mark.integration
+def test_an_agent_name_that_is_not_a_plain_filename_reads_no_file(monkeypatch):
+    import json
+    from pathlib import Path
+
+    _no_patching(monkeypatch)
+    Path("outside.json").write_text(json.dumps(_SUMMARY_BASELINE))
+    Path(".argus/baselines").mkdir(parents=True)
+    assert _lost_summary("../../outside") == []
+
+
+@pytest.mark.integration
+def test_a_baseline_file_nested_too_deep_to_parse_is_ignored(monkeypatch, caplog):
+    _no_patching(monkeypatch)
+    _write_baseline("demo", "[" * 200_000)
+    assert _lost_summary("demo") == []
+    assert "baseline" in caplog.text
