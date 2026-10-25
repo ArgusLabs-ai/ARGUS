@@ -634,6 +634,13 @@ class ArgusRecorder(BaseCallbackHandler):
                     "argus: review=True but no LLM key or login; grading by rules only"
                 )
             return None
+        missing = [n for n in self._topology[0] if not str(self._purposes.get(n) or "").strip()]
+        if missing:
+            logging.getLogger("argus").warning(
+                "argus: run reviewer has no purpose for: %s"
+                " — add them to purposes= or your baseline file",
+                ", ".join(missing),
+            )
         temperature, seed = determinism.resolve_sampling()
         # Only a pinned request is ever cached, so an unseeded reviewer is given no scope.
         scope = verdict_cache.current_scope() if determinism.is_pinned(temperature, seed) else None

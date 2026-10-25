@@ -522,7 +522,7 @@ app = ArgusRecorder(consumers=consumers, baseline=baseline).attach(compiled_grap
 
 Everything it verified, gating or advisory, is listed under **Run reviewer** in
 `argus show <run>`. It runs when there are purposes and a key (or `argus login`). Without purposes it does not
-run: the same model with no purposes flagged about 40% of healthy runs.
+run: the same model with no purposes flagged about 40% of healthy runs. If some nodes in the graph have no purpose, ARGUS logs a warning naming them at attach time.
 
 **Cost.** One call per run plus one per reported item (at most 8), `gpt-4.1` by default
 (mapped to your provider's capable model). It runs when the run finishes, so `invoke()`

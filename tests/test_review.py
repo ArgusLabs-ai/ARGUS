@@ -313,6 +313,38 @@ def test_no_purposes_no_reviewer(monkeypatch):
     assert evaluate_run(load_run(rec.session.run_id)).failing_nodes == ("draft_reply",)
 
 
+def test_warns_once_when_some_nodes_have_no_purpose(monkeypatch, caplog):
+    import logging
+
+    _stub(monkeypatch, report=())
+    rec = ArgusRecorder(purposes={"classify": PURPOSES["classify"]})
+    with caplog.at_level(logging.WARNING, logger="argus"):
+        rec.attach(_graph(HEALTHY_REPLY, refund=True))
+    warnings = [r.message for r in caplog.records if "no purpose for" in r.message]
+    assert len(warnings) == 1
+    assert "act, draft_reply" in warnings[0]
+
+
+def test_no_missing_purpose_warning_when_all_nodes_covered(monkeypatch, caplog):
+    import logging
+
+    _stub(monkeypatch, report=())
+    rec = ArgusRecorder(purposes=PURPOSES)
+    with caplog.at_level(logging.WARNING, logger="argus"):
+        rec.attach(_graph(HEALTHY_REPLY, refund=True))
+    assert not [r for r in caplog.records if "no purpose for" in r.message]
+
+
+def test_no_missing_purpose_warning_when_review_is_disabled(monkeypatch, caplog):
+    import logging
+
+    _stub(monkeypatch, report=())
+    rec = ArgusRecorder(purposes={"classify": PURPOSES["classify"]}, review=False)
+    with caplog.at_level(logging.WARNING, logger="argus"):
+        rec.attach(_graph(HEALTHY_REPLY, refund=True))
+    assert not [r for r in caplog.records if "no purpose for" in r.message]
+
+
 # ── arithmetic is settled by code ────────────────────────────────────────────
 
 
