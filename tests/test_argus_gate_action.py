@@ -40,6 +40,7 @@ case "$name $*" in
     for id in $FAKE_NEW_RUNS; do : > "$FAKE_RUNS/$id.json"; done
     exit "${FAKE_PYTEST_RC:-0}" ;;
   "argus cloud upload"*) exit "${FAKE_UPLOAD_RC:-0}" ;;
+  "argus cloud pull-baselines"*) exit "${FAKE_PULL_RC:-0}" ;;
   "argus check"*) exit "${FAKE_CHECK_RC:-0}" ;;
 esac
 exit 0
@@ -210,6 +211,7 @@ def test_cloud_runs_report_only_pytest_with_telemetry_off_then_uploads_the_final
     assert code == 0 and outputs["rc"] == "0"
     assert _commands(calls) == [
         "python -c from argus.storage import runs_dir; print(runs_dir())",
+        "argus cloud pull-baselines",  # what main learned, before anything is graded
         "python -m pytest --argus-report-only tests/ -x",
         "argus cloud upload --final",
         "python /action/summary.py r1",  # the job summary is still written
@@ -236,6 +238,32 @@ def test_cloud_fails_when_the_upload_does(tmp_path, monkeypatch):
     code, calls, outputs, output = _run_gate(tmp_path, monkeypatch, FAKE_UPLOAD_RC="1", **CLOUD)
     assert outputs["rc"] == "1"
     assert "::error::" in output and "team workspace" in output
+
+
+@pytest.mark.unit
+def test_cloud_fails_when_the_baselines_cannot_be_pulled_but_still_tests_and_uploads(
+    tmp_path, monkeypatch
+):
+    # Graded without its baseline, a regression would pass unseen: that is not a green job.
+    code, calls, outputs, output = _run_gate(tmp_path, monkeypatch, FAKE_PULL_RC="1", **CLOUD)
+    assert outputs["rc"] == "1"
+    assert "::error::" in output and "baselines" in output
+    assert "python -m pytest --argus-report-only tests/ -x" in calls
+    assert "argus cloud upload --final" in calls
+
+
+@pytest.mark.unit
+def test_cloud_keeps_the_test_runs_exit_code_when_the_pull_fails_too(tmp_path, monkeypatch):
+    _, _, outputs, _ = _run_gate(
+        tmp_path, monkeypatch, FAKE_PULL_RC="1", FAKE_PYTEST_RC="5", **CLOUD
+    )
+    assert outputs["rc"] == "5"
+
+
+@pytest.mark.unit
+def test_without_cloud_no_baselines_are_pulled(tmp_path, monkeypatch):
+    _, calls, _, _ = _run_gate(tmp_path, monkeypatch)
+    assert not any("pull-baselines" in c for c in calls)
 
 
 @pytest.mark.unit

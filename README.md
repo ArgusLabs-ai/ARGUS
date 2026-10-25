@@ -743,6 +743,7 @@ argus update                         # check for newer release
 argus telemetry status|on|off        # anonymous shape cards (docs/DATA.md)
 argus telemetry show-last            # print the last card sent, exactly as sent
 argus cloud upload [--final]         # send this job's run cards to a team workspace (GitHub Actions; docs/DATA.md)
+argus cloud pull-baselines           # write the baselines the workspace learned from main to .argus/baselines/
 ```
 
 ---
@@ -762,12 +763,12 @@ ARGUS records every LangGraph run in the test session through LangChain's public
 Add the gate to any workflow, after your dependencies are installed:
 
 ```yaml
-      - uses: ArgusLabs-ai/ARGUS/.github/actions/argus-gate@v0.15.0
+      - uses: ArgusLabs-ai/ARGUS/.github/actions/argus-gate@v0.16.0
         with:
           pytest-args: tests/          # runs: pytest --argus tests/
 ```
 
-The job fails when a run was not clean. The job summary on the PR names the root-cause node for each failed run and carries its `argus fix` prompt (sanitized: the page shows failure types and field names, never recorded values). The failed runs are uploaded as an `argus-runs-*` artifact, which holds raw recorded state (inputs, outputs, tool I/O) and is readable by anyone who can read the repo; set `upload-runs: "false"` to keep it on the runner. Unzip it into your project and run `argus ui`, `argus fix <run-id>` or `argus replay <run-id> <node>`. If your tests never invoked a graph, the summary says the gate checked nothing instead of showing a quiet pass. To grade one saved run instead of your tests, pass `run-id:` (or set `ARGUS_RUN_ID`); it runs `argus check <id>`, never `last`. Other inputs: `strict: warn_as_fail`, `version: "==0.15.0"`, `install: "false"` when your requirements already install `argus-agents`, `working-directory`, `upload-runs`.
+The job fails when a run was not clean. The job summary on the PR names the root-cause node for each failed run and carries its `argus fix` prompt (sanitized: the page shows failure types and field names, never recorded values). The failed runs are uploaded as an `argus-runs-*` artifact, which holds raw recorded state (inputs, outputs, tool I/O) and is readable by anyone who can read the repo; set `upload-runs: "false"` to keep it on the runner. Unzip it into your project and run `argus ui`, `argus fix <run-id>` or `argus replay <run-id> <node>`. If your tests never invoked a graph, the summary says the gate checked nothing instead of showing a quiet pass. To grade one saved run instead of your tests, pass `run-id:` (or set `ARGUS_RUN_ID`); it runs `argus check <id>`, never `last`. Other inputs: `strict: warn_as_fail`, `version: "==0.16.0"`, `install: "false"` when your requirements already install `argus-agents`, `working-directory`, `upload-runs`.
 
 #### Report to a team workspace
 
@@ -780,16 +781,16 @@ To let a team workspace decide red or green instead of the job, set `cloud: "tru
     steps:
       - uses: actions/checkout@v4
       - run: pip install -r requirements.txt
-      - uses: ArgusLabs-ai/ARGUS/.github/actions/argus-gate@v0.15.0
+      - uses: ArgusLabs-ai/ARGUS/.github/actions/argus-gate@v0.16.0
         with:
           cloud: "true"
           cloud-url: https://workspace.example.com   # your team workspace
           pytest-args: tests/
 ```
 
-In cloud mode the action runs `pytest --argus-report-only tests/` (every run is still recorded and graded, but no test fails because a run was not clean) with telemetry off for that step, then `argus cloud upload --final`. The job fails only if a test fails for its own reasons or the upload does: a non-2xx answer, a timeout, or no token (a pull request from a fork gets none). Only run cards leave the runner: the verdict, the findings and the shape of the data, never a value ([docs/DATA.md](docs/DATA.md)). The job summary is written as before. `cloud` applies to the pytest mode, so it cannot be combined with `run-id`.
+In cloud mode the action first runs `argus cloud pull-baselines` (the baselines the workspace learned from green runs on main, merged into `.argus/baselines/`, which the recorder loads), then `pytest --argus-report-only tests/` (every run is still recorded and graded, but no test fails because a run was not clean) with telemetry off for that step, then `argus cloud upload --final`. The job fails only if a test fails for its own reasons, or the pull or the upload does: a non-2xx answer, a timeout, or no token (a pull request from a fork gets none). Only run cards leave the runner: the verdict, the findings and the shape of the data, never a value ([docs/DATA.md](docs/DATA.md)). The job summary is written as before. `cloud` applies to the pytest mode, so it cannot be combined with `run-id`.
 
-Outside the action, the same two steps are `pytest --argus-report-only` (or `ARGUS_REPORT_ONLY=1`) and `argus cloud upload [--final]` with `ARGUS_CLOUD_URL` set, in a GitHub Actions job that has `id-token: write`.
+Outside the action, the same steps are `argus cloud pull-baselines`, `pytest --argus-report-only` (or `ARGUS_REPORT_ONLY=1`) and `argus cloud upload [--final]` with `ARGUS_CLOUD_URL` set, in a GitHub Actions job that has `id-token: write`.
 
 ---
 
@@ -862,7 +863,7 @@ For AI setup prompts and integration guides, visit **[arguslabs.in](https://argu
 
 ---
 
-**v0.15.0** — [changelog](https://github.com/ArgusLabs-ai/ARGUS/releases)
+**v0.16.0** — [changelog](https://github.com/ArgusLabs-ai/ARGUS/releases)
 
 ## Contributing
 

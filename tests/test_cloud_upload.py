@@ -313,7 +313,7 @@ def test_a_card_that_cannot_be_built_names_the_run_and_the_error_class_only(
 ):
     _session(_clean())
 
-    def boom(record):
+    def boom(record, **_):
         raise ValueError("SERVER-BODY-SECRET is a value")
 
     monkeypatch.setattr(cloud_upload, "build_card", boom)
@@ -347,7 +347,65 @@ def test_the_token_request_adds_the_audience_to_a_url_with_or_without_a_query():
 
 
 @pytest.mark.unit
-def test_the_cloud_command_group_has_upload_and_nothing_that_pulls():
-    result = CliRunner().invoke(app, ["cloud", "--help"])
-    assert result.exit_code == 0 and "upload" in result.output
-    assert "pull" not in result.output
+def test_the_cloud_command_group_has_upload_and_pull_baselines_only():
+    # Nothing pulls a run or a card back down: the one thing that comes back is a baseline.
+    from argus.cli.main import cloud_app
+
+    assert sorted(c.name for c in cloud_app.registered_commands) == ["pull-baselines", "upload"]
+
+
+# ── a green run on the default branch sends its baseline part ────────────────
+
+
+def _on_branch(monkeypatch, tmp_path, *, event="push", ref="refs/heads/main", default="main"):
+    import json
+
+    path = tmp_path / "event.json"
+    path.write_text(json.dumps({"repository": {"default_branch": default}}))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(path))
+    monkeypatch.setenv("GITHUB_REF", ref)
+
+
+@pytest.mark.unit
+def test_a_clean_ci_run_pushed_to_the_default_branch_carries_a_baseline_part(
+    workspace, monkeypatch, tmp_path
+):
+    record = _clean()
+    record.environment = "ci"
+    _session(record)
+    _on_branch(monkeypatch, tmp_path)
+    assert _upload("--final").exit_code == 0
+    (card,) = workspace.uploaded()["cards"]
+    assert card == build_card(record, baseline_part=True) and "baseline_part" in card
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"event": "pull_request", "ref": "refs/pull/7/merge"},
+        {"ref": "refs/heads/feature"},
+        {"default": "trunk"},
+    ],
+)
+def test_any_other_ref_sends_no_baseline_part(workspace, monkeypatch, tmp_path, kw):
+    record = _clean()
+    record.environment = "ci"
+    _session(record)
+    _on_branch(monkeypatch, tmp_path, **kw)
+    assert _upload("--final").exit_code == 0
+    assert "baseline_part" not in workspace.uploaded()["cards"][0]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("event_file", ["{not json", "[]", '{"repository": null}', None])
+def test_an_unreadable_event_file_means_not_the_default_branch(monkeypatch, tmp_path, event_file):
+    _on_branch(monkeypatch, tmp_path)
+    if event_file is None:
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(tmp_path / "missing.json"))
+    else:
+        (tmp_path / "event.json").write_text(event_file)
+    import os
+
+    assert cloud_upload.on_default_branch(os.environ) is False

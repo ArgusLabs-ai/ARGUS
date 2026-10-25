@@ -740,3 +740,68 @@ def test_404_and_an_already_exists_409_are_judgement_calls():
     assert is_heuristic("error_response", "tool `get_report`: HTTP 404 error response")
     assert not is_heuristic("error_response", "tool `get_po`: HTTP 500 error response")
     assert is_heuristic("status_overstated")
+
+
+def _random_update(rng) -> dict:
+    """A random node update from a small key pool, so runs overlap and disagree."""
+
+    def value(depth: int):
+        roll = rng.random()
+        if depth < 2 and roll < 0.2:
+            return {
+                k: value(depth + 1)
+                for k in rng.sample(["tier", "score", "text"], rng.randint(0, 3))
+            }
+        if depth < 2 and roll < 0.3:
+            return [value(depth + 1) for _ in range(rng.randint(0, 2))]
+        return rng.choice(["hot", "N/A", "", 7, -1, 0.5, None, True])
+
+    return {k: value(0) for k in rng.sample(["scoring", "docs", "note", "id"], rng.randint(0, 4))}
+
+
+def _random_run(rng) -> list:
+    return [
+        Ev(
+            rng.choice(["score", "retrieve", "route"]),
+            output_dict=_random_update(rng),
+            status=rng.choice(["pass", "pass", "pass", "skipped", "fail"]),
+        )
+        for _ in range(rng.randint(0, 4))
+    ]
+
+
+def test_merge_baselines_equals_one_baseline_over_every_run():
+    import random
+
+    rng = random.Random(149)
+    for _ in range(500):
+        runs = [_random_run(rng) for _ in range(rng.randint(1, 5))]
+        cut = sorted(rng.sample(range(len(runs) + 1), 2)) if len(runs) > 1 else [0, len(runs)]
+        groups = [g for g in (runs[: cut[0]], runs[cut[0] : cut[1]], runs[cut[1] :]) if g]
+        merged = R.merge_baselines([R.build_baseline(g) for g in groups])
+        assert merged == R.build_baseline(runs)
+
+
+def test_merge_baselines_of_nothing_is_an_empty_baseline():
+    assert R.merge_baselines([]) == R.build_baseline([])
+
+
+def test_build_baseline_records_length_ranges_for_lists_and_text():
+    run1 = [Ev("retrieve", output_dict={"docs": [{"t": "ab"}, {"t": "abcd"}], "q": "hi", "n": 3})]
+    run2 = [Ev("retrieve", output_dict={"docs": [{"t": "abcdef"}] * 6, "q": "hello"})]
+    base = R.build_baseline([run1, run2])
+    assert base["version"] == 2
+    assert base["nodes"]["retrieve"]["lens"] == {"docs": [2, 6], "docs[0].t": [2, 6], "q": [2, 5]}
+
+
+def test_a_v1_baseline_merges_with_no_length_claims():
+    v2 = R.build_baseline([[Ev("score", output_dict={"scoring": {"tier": "hot", "score": 1}})]])
+    merged = R.merge_baselines([BASE, v2])
+    assert merged["nodes"]["score"]["keys"] == ["scoring"]
+    assert merged["nodes"]["score"]["lens"] == {}
+
+
+def test_build_baseline_ignores_keys_that_are_not_text():
+    # A state key is a string; an int key beside one used to break the sort.
+    base = R.build_baseline([[Ev("score", output_dict={1: "a", "k": 2})]])
+    assert base["nodes"]["score"]["keys"] == ["k"]
