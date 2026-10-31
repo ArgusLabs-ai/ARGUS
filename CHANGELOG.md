@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.0 — 2026-10-31
+
+- Baselines learn from many runs: `trace_rules.merge_baselines(parts)` combines baselines built from separate batches of runs, equal to one built over all of them. Baseline files are version 2 and record `lens`, the min / max length of each list or string field; version 1 files still load
+- The recorder loads `.argus/baselines/<agent>.json` by itself when no `baseline=` is passed. Only a plain file name is read, and a file that is not a baseline is skipped with one warning
+- `argus cloud pull-baselines` writes the baselines a team workspace learned from green runs on the default branch to `.argus/baselines/`. Nothing learned yet is not an error. The GitHub Action's cloud mode runs it before your tests
+- A clean CI run pushed to the default branch adds a `baseline_part` to its run card: key names, types, kinds and lengths, never a value. A name is included only when every part of it is an identifier found in the node's own data. See `docs/DATA.md`
+- `attach()` warns on the `argus` logger when the run reviewer is on and some graph nodes have no purpose (#193)
+
 ## 0.16.0 — 2026-10-21
 
 - `pytest --argus-report-only` (or `ARGUS_REPORT_ONLY=1`) records and grades every run but never fails a test on its verdict. The runs a session saved are listed in `.argus/session_runs.txt`
