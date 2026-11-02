@@ -2,6 +2,8 @@
   <img src="https://github.com/ArgusLabs-ai/ARGUS/blob/master/assets/Argus-NameTrans.png?raw=true" width="480"/><br/>
   <a href="https://arguslabs.in"><img src="https://img.shields.io/badge/website-arguslabs.in-6366f1" alt="Website"/></a>
   <a href="https://pypi.org/project/argus-agents/"><img src="https://img.shields.io/pypi/v/argus-agents" alt="PyPI version"/></a>
+  <a href="https://pepy.tech/projects/argus-agents"><img src="https://img.shields.io/badge/downloads-12.7k-blue" alt="Downloads"/></a>
+  <a href="https://pepy.tech/projects/argus-agents"><img src="https://img.shields.io/pypi/dm/argus-agents" alt="Monthly downloads"/></a>
   <a href="https://pypi.org/project/argus-agents/"><img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9+"/></a>
   <a href="https://github.com/ArgusLabs-ai/ARGUS/releases"><img src="https://img.shields.io/badge/status-beta-6366f1" alt="Beta"/></a>
   <a href="https://discord.gg/67XTFTDSgd"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"/></a>
