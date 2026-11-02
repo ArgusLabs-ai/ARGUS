@@ -380,7 +380,10 @@ def _tools(e: Any, allow_empty_fields: frozenset[str], **_: Any) -> Iterator[tup
                 or any(flat.get(k) for k in _NEXT)
             )
             followed = any(c.get("name") == t.get("name") for c in calls[i + 1 :])
-            page = next((len(x) for x in _lists(out) if x), 0)
+            page = next(
+                (len(x) for x in _lists({k: v for k, v in out.items() if k != "_shards"}) if x),
+                0,
+            )
             carried = any(isinstance(v, list) and len(v) == page for v in _update(e).values())
             if more and page and carried and not followed:
                 yield (

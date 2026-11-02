@@ -731,7 +731,16 @@ def test_d4_elasticsearch_partial_results_are_incomplete_result():
             "es_search",
             {
                 "timed_out": False,
-                "_shards": {"total": 5, "successful": 3, "skipped": 0, "failed": 2},
+                "_shards": {
+                    "total": 5,
+                    "successful": 3,
+                    "skipped": 0,
+                    "failed": 2,
+                    "failures": [
+                        {"shard": 1, "index": "docs", "reason": {"type": "es_rejected_execution"}},
+                        {"shard": 4, "index": "docs", "reason": {"type": "node_not_connected"}},
+                    ],
+                },
                 "hits": {"total": {"value": 40}, "hits": hits},
             },
             {"hits": hits},
