@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Parallel fan-out branches and concurrent `.batch()` items no longer serialize behind step grading. User validators and the abort-mode sync judge now run concurrently across sibling steps (#91)
+- D4 `incomplete_result` also catches Elasticsearch partial results (`timed_out: true`, `_shards.failed > 0`); `_shards` is skipped when measuring the page list (#159)
 
 ## 0.17.0 — 2026-10-31
 

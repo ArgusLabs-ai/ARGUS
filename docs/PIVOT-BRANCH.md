@@ -81,8 +81,8 @@ after it.
 | ~~#57~~ | **Done:** `.github/actions/argus-gate`, used by this repo's own CI, including a run it must fail | — |
 | ~~#25~~ | **Done:** `argus doctor` checks run storage writability, keys and disk usage (#154) | — |
 | #83 | Delete the wrap path (`patcher.py`, `watcher.py`, `http_recorder.py`). Replay continuing the tail (below) still needs the watcher | — |
-| #91 | Recorder lock is held across per-step grading. Findings on the issue: the session lock also covers it, so the fix is two-part. Left for after launch | — |
-| #160, #159 | Warn on nodes with no purpose; Elasticsearch partial results. Good first issues | — |
+| ~~#91~~ | **Closed:** recorder and session release `_lock` across step grading; parallel fan-out / `.batch()` no longer serialize behind inspection or the sync judge (#195) | — |
+| ~~#160~~, ~~#159~~ | **Closed:** `attach()` warns when the run reviewer has no purpose for some nodes (#193); Elasticsearch `timed_out` / `_shards.failed > 0` → `incomplete_result` (#194) | — |
 | #49 | Re-triage signature severities | — |
 
 **Eval defects (`test-cases.md` §6):** E1, E2, E4, E4b, E5, E6, E7, E8, E9 are
@@ -497,10 +497,13 @@ Recorder is LangGraph-specific. Skinny traces (payloads stripped) must refuse, n
 
 Blocked on (1). (4) is done. First `master` PR keeps the wrap beside the recorder.
 
-### 11. Recorder lock is held across grading (#91)
+### 11. ~~Recorder lock is held across grading~~ — done (#91 / #195)
 
-Fan-out serializes behind it, and a judge call blocks every other callback.
-Correct but slow; matters for wide fan-out and for a served app.
+`ArgusRecorder._close_step` and `ArgusSession.on_node_end` no longer hold
+their locks across step grading. Session tracks `_in_flight_steps`, keeps
+`_events` sorted by `step_index`, and auto-finalize waits for in-flight
+siblings. User validators and the abort-mode sync judge run concurrently
+across parallel branches.
 
 ### 12. Semantic failures are mostly invisible to the rules (#149)
 
@@ -1813,8 +1816,9 @@ shapes were missed outright. Both are fixed, along with #78.
 - **D2** counts a mail relay that refused every recipient (`accepted: []`,
   `rejected: [...]`).
 - **D4** splits in two. Cursors and `has_more` stay `unfollowed_pagination` (heuristic). An
-  explicit "unfinished" flag (`jobComplete: false`, `incomplete_results: true`) is the
-  new strict `incomplete_result`.
+  explicit "unfinished" flag (`jobComplete: false`, `incomplete_results: true`, Elasticsearch
+  `timed_out: true` / `_shards.failed > 0`) is the strict `incomplete_result` (#194);
+  `_shards` is excluded when picking the page list so its `failures` array is not taken as hits.
 - **D17 `status_overstated`** (heuristic): a tool said `requires_approval` /
   `pending_*` and the node's update records a done word (`scheduled`, `succeeded`, …).
 
