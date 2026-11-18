@@ -9,10 +9,16 @@ the last green main runs' baseline parts. Each agent's parts are merged by the O
 Nothing learned yet (a 404, or an agent with no parts) is "learning", not an error. An agent
 whose name is not a plain file name, or with any part that is not a baseline, gets no file:
 merging only some of the parts would claim more than the runs agreed on.
+
+The answer also carries the repository's payload mode (``"payloads": "shapes" | "full"``). Only
+``"full"`` writes ``.argus/cloud_payloads``, which tells ``argus cloud upload`` to send each run
+file beside its card. The file is removed first on every pull, so anything else (no answer, a
+404, a failed pull, a missing or unknown mode) leaves the project on shapes.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import tempfile
@@ -42,11 +48,15 @@ class Pulled:
     written: int = 0
     learning: int = 0
     skipped: int = 0
+    full_payloads: bool = False
 
 
 def pull(*, environ: Mapping[str, str] | None = None) -> Pulled:
     """Fetch and write every agent's baseline; ``UploadError`` (one line) on any failure."""
     env = os.environ if environ is None else environ
+    # Off first, before anything can fail: only an answer from this job's pull turns it on, so a
+    # file left on a reused runner, or a pull that failed, never sends values.
+    storage.payloads_path().unlink(missing_ok=True)
     request_url, request_token = _oidc_request(env, _VERB)
     endpoint, host = _workspace(env, "/api/v1/baselines", _VERB)
     token = _oidc_token(request_url, request_token, _VERB)
@@ -63,10 +73,17 @@ def pull(*, environ: Mapping[str, str] | None = None) -> Pulled:
     )
     if raw is None:
         return Pulled()
-    return _write(_agents(raw, host))
+    body = _body(raw, host)
+    pulled = _write(body["agents"])
+    if body.get("payloads") == "full":
+        path = storage.payloads_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("full\n", encoding="utf-8")
+        return dataclasses.replace(pulled, full_payloads=True)
+    return pulled
 
 
-def _agents(raw: bytes, host: str) -> dict[Any, Any]:
+def _body(raw: bytes, host: str) -> dict[str, Any]:
     if len(raw) > MAX_BASELINES_BYTES:
         raise UploadError(f"pull baselines failed: the answer from {host} is too large")
     try:
@@ -78,7 +95,7 @@ def _agents(raw: bytes, host: str) -> dict[Any, Any]:
     agents = body.get("agents")
     if not isinstance(agents, dict):
         raise UploadError(f"pull baselines failed: {host} did not answer with baselines")
-    return agents
+    return body
 
 
 def _write(agents: dict[Any, Any]) -> Pulled:

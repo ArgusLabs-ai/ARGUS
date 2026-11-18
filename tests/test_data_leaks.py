@@ -744,3 +744,59 @@ def test_a_baseline_part_carries_no_canary(place):
     card = build_card(record, baseline_part=True)
     assert "baseline_part" in card
     assert _leaks(json.dumps(card)) == []
+
+
+# ── the full-payload switch (off unless this job's pull said "full") ────────
+
+
+def _pull(workspace, status=200, **extra):
+    workspace.baselines_status = status
+    workspace.baselines_body = json.dumps({"schema": 1, "agents": {}, **extra}).encode()
+    return CliRunner().invoke(app, ["cloud", "pull-baselines"])
+
+
+def test_full_payloads_are_off_by_default(workspace):
+    record = _canary_record(**KITCHEN_SINK)
+    assert not storage.payloads_path().exists()
+    text, _ = _uploaded_cards(workspace, record)
+    assert set(json.loads(text)) == {"schema", "final", "cards"}
+    assert _leaks(text) == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{}, {"payloads": "shapes"}, {"payloads": "FULL"}, {"payloads": True}, {"payloads": ["full"]}],
+)
+def test_only_an_answer_saying_exactly_full_turns_them_on(workspace, answer):
+    assert _pull(workspace, **answer).exit_code == 0
+    assert not storage.payloads_path().exists()
+    text, _ = _uploaded_cards(workspace, _canary_record(**KITCHEN_SINK))
+    assert "payloads" not in json.loads(text) and _leaks(text) == []
+
+
+@pytest.mark.parametrize("status", [404, 500])
+def test_a_file_left_from_an_earlier_job_is_cleared_by_a_pull_that_does_not_say_full(
+    workspace, status
+):
+    path = storage.payloads_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("full\n")  # a reused self-hosted runner
+    _pull(workspace, status=status)
+    assert not path.exists()
+    workspace.requests.clear()
+    text, _ = _uploaded_cards(workspace, _canary_record(**KITCHEN_SINK))
+    assert _leaks(text) == []
+
+
+def test_with_full_payloads_the_run_file_goes_beside_an_unchanged_card(workspace):
+    result = _pull(workspace, payloads="full")
+    assert result.exit_code == 0 and "full payloads" in result.output
+    workspace.requests.clear()
+    record = _canary_record(**KITCHEN_SINK)
+    text, cards = _uploaded_cards(workspace, record)
+    body = json.loads(text)
+    # The card is still the shape-only card; the values are only in `payloads`, as saved.
+    assert cards == [build_card(storage.load_run(record.run_id))]
+    assert _leaks(json.dumps(cards)) == []
+    assert body["payloads"] == {record.run_id: json.loads(storage.load_run_text(record.run_id))}
+    assert CANARY in json.dumps(body["payloads"])  # not vacuous: the opt-in does send values

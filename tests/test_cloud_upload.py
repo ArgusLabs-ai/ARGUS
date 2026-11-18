@@ -8,6 +8,7 @@ the token nor a card ever appears in what it prints.
 
 from __future__ import annotations
 
+import json
 import socket
 
 import pytest
@@ -409,3 +410,69 @@ def test_an_unreadable_event_file_means_not_the_default_branch(monkeypatch, tmp_
     import os
 
     assert cloud_upload.on_default_branch(os.environ) is False
+
+
+# ── full payloads: the run file beside its card, in posts under the cap ─────
+
+
+def _full():
+    path = storage.payloads_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("full\n")
+
+
+@pytest.mark.unit
+def test_with_full_payloads_each_run_file_goes_beside_its_card(workspace):
+    first, second = _clean(), _failing()
+    _session(first, second)
+    _full()
+    result = _upload("--final")
+    assert result.exit_code == 0, result.output
+    assert _one_line(result.output) == "argus: uploaded 2 run cards (2 with full payload) (final)"
+    body = workspace.uploaded()
+    assert body["cards"] == [build_card(first), build_card(second)]
+    assert set(body["payloads"]) == {first.run_id, second.run_id}
+
+
+@pytest.mark.unit
+def test_payloads_past_the_cap_split_into_posts_and_only_the_last_is_final(workspace, monkeypatch):
+    records = [_clean(f"20261019-101010-a{i}") for i in range(4)]
+    _session(*records)
+    _full()
+    one = len(cloud_upload._encode(build_card(records[0]))) + len(
+        storage.load_run_text(records[0].run_id)
+    )
+    monkeypatch.setattr(cloud_upload, "MAX_BODY_BYTES", int(one * 2.5))
+    result = _upload("--final")
+    assert result.exit_code == 0, result.output
+    bodies = [json.loads(p["body"]) for p in workspace.posts()]
+    assert len(bodies) == 2
+    assert [b["final"] for b in bodies] == [False, True]
+    assert all(len(p["body"]) <= cloud_upload.MAX_BODY_BYTES for p in workspace.posts())
+    assert [c["run"]["run_id"] for b in bodies for c in b["cards"]] == [r.run_id for r in records]
+    assert sorted(k for b in bodies for k in b["payloads"]) == sorted(r.run_id for r in records)
+
+
+@pytest.mark.unit
+def test_a_run_file_too_large_for_any_post_is_left_out_and_its_card_still_goes(
+    workspace, monkeypatch
+):
+    record = _clean()
+    _session(record)
+    _full()
+    monkeypatch.setattr(
+        cloud_upload, "MAX_BODY_BYTES", len(cloud_upload._encode(build_card(record))) + 200
+    )
+    result = _upload("--final")
+    assert result.exit_code == 0, result.output
+    assert "1 payload too large to send" in result.output
+    assert workspace.uploaded() == {"schema": 1, "final": True, "cards": [build_card(record)]}
+
+
+@pytest.mark.unit
+def test_without_full_payloads_a_big_job_is_still_one_post(workspace, monkeypatch):
+    records = [_clean(f"20261019-101010-a{i}") for i in range(4)]
+    _session(*records)
+    monkeypatch.setattr(cloud_upload, "MAX_BODY_BYTES", 10)
+    assert _upload("--final").exit_code == 0
+    assert len(workspace.posts()) == 1

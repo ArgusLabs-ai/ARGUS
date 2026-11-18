@@ -99,8 +99,9 @@ Cards are deleted after 12 months.
 ## Paying teams
 
 Team plans can turn telemetry on or off for the whole organization in the
-team agreement. Full runs (real values) are uploaded only with
-`ARGUS_CLOUD_SYNC=1`, into your own team workspace, never into this telemetry.
+team agreement. Full runs (real values) reach a team workspace only when that
+project [opted into full payloads](#full-payloads-opt-in-per-project), and never
+this telemetry.
 A run whose card is uploaded to a team workspace is not also sent as telemetry:
 [how the action ensures it](#a-run-sent-to-a-workspace-is-not-also-telemetry).
 
@@ -110,8 +111,8 @@ A project that sends its runs to a team workspace sends a **run card**, not the 
 card carries the verdict, the findings and the *shape* of the data, and never a value.
 Values never leave your machine unless the project explicitly opts into full payloads.
 
-> Status: `build_card` (`src/argus/cloud_card.py`), `argus cloud upload` and their tests are
-> in the tree; no release uploads a card yet.
+> Status: released in 0.16.0 (cards) and 0.17.0 (baselines). Full payloads: in the tree, not
+> yet released.
 
 A card, abridged (all values here are synthetic):
 
@@ -234,6 +235,34 @@ token is not passed on to another host), sends the token only to an `https` URL,
 nothing beyond the Python standard library. `tests/test_data_leaks.py` checks that the body it
 sends is exactly `build_card`'s output for every canary above.
 
+### Full payloads (opt-in, per project)
+
+Everything above is the default, and stays true unless an owner of the workspace switches one
+repository to **full payloads**. Then, and only then, a job also sends each run file as it was
+saved on the runner (every node input and output, so real values; `ArgusRecorder(redact_keys=)`
+is already applied to it) so the team can read the run on the hosted run page.
+
+How the switch reaches the job, and why it fails closed:
+
+- The workspace says it in its `pull-baselines` answer (`"payloads": "full"`). The job writes
+  `.argus/cloud_payloads` and prints `argus: this project sends full payloads (real values) with
+  its run cards`, so the CI log says so.
+- Every pull deletes that file **first**, before any request. A missing answer, a 404, a failed
+  pull, a missing mode or any value but exactly `"full"` leaves the job on cards only, including
+  on a reused self-hosted runner. There is no environment variable or flag that turns it on.
+- The run file goes in its own field, `payloads` (`{"<run_id>": <run file>}`), beside the cards.
+  The card is byte for byte the card the project would send without the switch, so the run card
+  schema stays shape-only.
+- The workspace stores a payload only while that repository is set to full payloads, deletes it
+  30 days after the run, and an owner can delete every stored payload of a repository at once.
+- Bodies stay under the workspace's size cap: the cards go in as many posts as needed (only the
+  last says `final`), and a run file too large for any post is left out while its card still
+  goes (`N payloads too large to send` in the log).
+
+`tests/test_data_leaks.py` checks that the switch is off by default, that only an answer saying
+exactly `full` turns it on, that a file left by an earlier job is cleared by the next pull, and
+that with the switch on the canary is only in `payloads`, never in a card.
+
 ### A run sent to a workspace is not also telemetry
 
 A run whose card goes to a team workspace is not also sent as the anonymous shape card
@@ -243,6 +272,6 @@ telemetry, and the card goes only to the workspace. If you run `pytest --argus-r
 `argus cloud upload` yourself, set `ARGUS_TELEMETRY=0` (or `DO_NOT_TRACK=1`) for the test
 step to get the same result.
 
-The opt-in full-run sync (`ARGUS_CLOUD_SYNC=1`) is off whenever a run is recorded in
+The older opt-in full-run sync (`ARGUS_CLOUD_SYNC=1`) is off whenever a run is recorded in
 report-only mode (`--argus-report-only`, `ARGUS_REPORT_ONLY=1`) or `ARGUS_CLOUD_URL` is set:
-a workspace receives run cards, never the run.
+a workspace receives run cards, and run files only through the per-project switch above.
