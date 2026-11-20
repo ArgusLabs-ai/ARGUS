@@ -11,12 +11,23 @@ from argus.cloud_upload import UploadError, upload
 def cloud_upload(final: bool) -> None:
     """Upload this job's run cards; one line either way, exit 1 when it did not work."""
     try:
-        count = upload(final=final)
+        got = upload(final=final)
     except UploadError as exc:
         typer.echo(f"argus: {exc}", err=True)
         raise typer.Exit(1) from None
-    cards = f"{count} run card" + ("" if count == 1 else "s")
-    typer.echo(f"argus: uploaded {cards}" + (" (final)" if final else ""))
+    cards = f"{got.cards} run card" + ("" if got.cards == 1 else "s")
+    extra = []
+    if got.payloads:
+        extra.append(f"{got.payloads} with full payload")
+    if got.too_large:
+        extra.append(
+            f"{got.too_large} payload{'' if got.too_large == 1 else 's'} too large to send"
+        )
+    typer.echo(
+        f"argus: uploaded {cards}"
+        + (f" ({', '.join(extra)})" if extra else "")
+        + (" (final)" if final else "")
+    )
 
 
 def cloud_pull_baselines() -> None:
@@ -26,6 +37,8 @@ def cloud_pull_baselines() -> None:
     except UploadError as exc:
         typer.echo(f"argus: {exc}", err=True)
         raise typer.Exit(1) from None
+    if got.full_payloads:
+        typer.echo("argus: this project sends full payloads (real values) with its run cards")
     if not (got.written or got.learning or got.skipped):
         typer.echo("argus: no baselines yet (learning from main)")
         return

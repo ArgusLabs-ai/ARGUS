@@ -94,6 +94,12 @@ def session_path() -> Path:
     return argus_dir() / SESSION_FILE
 
 
+def payloads_path() -> Path:
+    """``<project-root>/.argus/cloud_payloads``: ``full`` when the last ``argus cloud
+    pull-baselines`` was told this project opted into full payloads. Absent means shapes only."""
+    return argus_dir() / "cloud_payloads"
+
+
 def runs_dir(*, create: bool = False) -> Path:
     """``<project-root>/.argus/runs``.
 

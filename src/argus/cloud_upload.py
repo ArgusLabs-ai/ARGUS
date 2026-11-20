@@ -15,6 +15,13 @@ full-run sync it replaces swallowed its errors, so a job that could not report l
 that had.) A line never carries a card, a response body or a token, and a redirect is not
 followed, so the token cannot be passed on to another host.
 
+A project whose workspace turned on full payloads (``.argus/cloud_payloads`` says ``full``,
+written by ``argus cloud pull-baselines`` from the workspace's answer) also sends each run file,
+as saved on the runner, in ``payloads`` beside the cards: ``{run_id: <run file>}``. The card is
+the same either way. Then the cards go in as many posts as keep each body under
+``MAX_BODY_BYTES`` (only the last carries ``final``), and a run file too large for any post is left
+out: its card still goes. Without that file nothing but cards is ever sent.
+
 Standard library only: ``urllib`` with a timeout.
 """
 
@@ -29,6 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from argus import __version__, run_context, storage
@@ -39,6 +47,8 @@ AUDIENCE = "argus-cloud"
 TOKEN_TIMEOUT_S = 10.0
 UPLOAD_TIMEOUT_S = 30.0
 MAX_TOKEN_BYTES = 64 * 1024  # a JWT is a few KB
+# Under the workspace's 4 MB cap, with room for the envelope. Only full payloads come near it.
+MAX_BODY_BYTES = 3_500_000
 _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 _OIDC = "the GitHub OIDC endpoint"
 
@@ -64,8 +74,15 @@ def audience_url(request_url: str) -> str:
     return f"{request_url}{'&' if '?' in request_url else '?'}audience={AUDIENCE}"
 
 
-def upload(*, final: bool, environ: Mapping[str, str] | None = None) -> int:
-    """Send the session's cards; returns how many. ``final`` says no more will follow.
+@dataclass(frozen=True)
+class Uploaded:
+    cards: int = 0
+    payloads: int = 0  # run files sent beside their cards (full payloads only)
+    too_large: int = 0  # run files left out because no post could hold them
+
+
+def upload(*, final: bool, environ: Mapping[str, str] | None = None) -> Uploaded:
+    """Send the session's cards. ``final`` says no more will follow.
 
     Cheap checks come first, the OIDC token last: it expires, and building cards can take a
     while. With no runs it still posts (an empty list): the workspace must learn the job ended.
@@ -73,23 +90,74 @@ def upload(*, final: bool, environ: Mapping[str, str] | None = None) -> int:
     env = os.environ if environ is None else environ
     request_url, request_token = _oidc_request(env)
     endpoint, host = _workspace(env)
-    cards = _cards(baseline_part=on_default_branch(env))
+    cards, payloads = _cards(baseline_part=on_default_branch(env), full=full_payloads())
+    batches, too_large = _batches(cards, payloads)
     token = _oidc_token(request_url, request_token)
-    payload = {"schema": ENVELOPE_SCHEMA, "final": final, "cards": cards}
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    request = urllib.request.Request(
-        endpoint,
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": f"argus-agents/{__version__}",
-        },
+    for i, (batch, files) in enumerate(batches):
+        envelope: dict[str, Any] = {
+            "schema": ENVELOPE_SCHEMA,
+            "final": final and i == len(batches) - 1,
+            "cards": batch,
+        }
+        if files:
+            envelope["payloads"] = files
+        request = urllib.request.Request(
+            endpoint,
+            data=_encode(envelope),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+                "User-Agent": f"argus-agents/{__version__}",
+            },
+        )
+        _send(request, UPLOAD_TIMEOUT_S, host, read=0)
+    sent = sum(len(files) for _, files in batches)
+    return Uploaded(len(cards), sent, too_large)
+
+
+def full_payloads() -> bool:
+    """Did this job's ``pull-baselines`` say the project opted into full payloads? Anything but a
+    readable file saying exactly ``full`` is no."""
+    try:
+        return storage.payloads_path().read_text(encoding="utf-8").strip() == "full"
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _encode(value: Any) -> bytes:
+    return json.dumps(value, separators=(",", ":")).encode("utf-8")
+
+
+_Batch = tuple[list[dict[str, Any]], dict[str, Any]]
+
+
+def _batches(cards: list[dict[str, Any]], payloads: dict[str, Any]) -> tuple[list[_Batch], int]:
+    """Cards (and their run files) packed in order into posts that stay under the cap. Without
+    payloads that is one post, exactly as before. A run file that cannot fit even alone beside
+    its card is dropped (the card still goes); a card alone is far under the cap."""
+    if not payloads:
+        return [(cards, {})], 0
+    envelope = len(
+        _encode({"schema": ENVELOPE_SCHEMA, "final": False, "cards": [], "payloads": {}})
     )
-    _send(request, UPLOAD_TIMEOUT_S, host, read=0)
-    return len(cards)
+    batches: list[_Batch] = [([], {})]
+    size, too_large = envelope, 0
+    for card in cards:
+        run_id = card["run"]["run_id"]
+        need = len(_encode(card)) + 1
+        extra = len(_encode({run_id: payloads[run_id]})) if run_id in payloads else 0
+        if extra and envelope + need + extra > MAX_BODY_BYTES:
+            extra, too_large = 0, too_large + 1
+        if size + need + extra > MAX_BODY_BYTES and batches[-1][0]:
+            batches.append(([], {}))
+            size = envelope
+        batches[-1][0].append(card)
+        if extra:
+            batches[-1][1][run_id] = payloads[run_id]
+        size += need + extra
+    return batches, too_large
 
 
 # ── preconditions ────────────────────────────────────────────────────────────
@@ -132,9 +200,12 @@ def _checked(raw: str, name: str, verb: str = "upload") -> urllib.parse.SplitRes
     return parts
 
 
-def _cards(*, baseline_part: bool) -> list[dict[str, Any]]:
-    """The card of every run the session saved. One that cannot be built stops the upload: a
-    workspace that judges half a job would judge it wrong."""
+def _cards(
+    *, baseline_part: bool, full: bool = False
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The card of every run the session saved, and with ``full`` each run file by run id. One
+    that cannot be read or built stops the upload: a workspace that judges half a job would
+    judge it wrong."""
     path = storage.session_path()
     run_ids = run_context.session_run_ids(path)
     if run_ids is None:
@@ -142,7 +213,8 @@ def _cards(*, baseline_part: bool) -> list[dict[str, Any]]:
             f"cannot upload: no record of this job's runs ({path.name}). "
             "Run pytest with --argus-report-only first"
         )
-    cards = []
+    cards: list[dict[str, Any]] = []
+    payloads: dict[str, Any] = {}
     for run_id in run_ids:
         shown = _printable(run_id)
         try:
@@ -156,12 +228,18 @@ def _cards(*, baseline_part: bool) -> list[dict[str, Any]]:
             ) from None
         try:
             cards.append(build_card(record, baseline_part=baseline_part))
+            if full:
+                # The file as saved (redact_keys already applied), not a re-serialization.
+                # save_run may write NaN / Infinity, which strict JSON parsers refuse: send null.
+                payloads[run_id] = json.loads(
+                    storage.load_run_text(run_id), parse_constant=lambda _: None
+                )
         except Exception as exc:  # noqa: BLE001
             raise UploadError(
                 f"cannot upload: could not build the card for run {shown} "
                 f"({type(exc).__name__}); nothing was sent"
             ) from None
-    return cards
+    return cards, payloads
 
 
 def on_default_branch(env: Mapping[str, str]) -> bool:
