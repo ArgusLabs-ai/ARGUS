@@ -435,6 +435,26 @@ def test_with_full_payloads_each_run_file_goes_beside_its_card(workspace):
 
 
 @pytest.mark.unit
+def test_a_non_finite_float_in_a_run_file_still_posts_strict_json(workspace):
+    # save_run writes NaN / Infinity (Python's json allows them); the workspace's parser does not.
+    record = make_run_record(
+        events=[make_event(node_name="score", output={"score": float("nan"), "hi": float("inf")})],
+        run_id="20261019-101010-nan",
+    )
+    _session(record)
+    _full()
+    result = _upload("--final")
+    assert result.exit_code == 0, result.output
+
+    def strict(token):
+        raise AssertionError(f"not JSON: {token}")
+
+    (post,) = workspace.posts()
+    body = json.loads(post["body"], parse_constant=strict)
+    assert body["payloads"][record.run_id]["steps"][0]["output_dict"] == {"score": None, "hi": None}
+
+
+@pytest.mark.unit
 def test_payloads_past_the_cap_split_into_posts_and_only_the_last_is_final(workspace, monkeypatch):
     records = [_clean(f"20261019-101010-a{i}") for i in range(4)]
     _session(*records)

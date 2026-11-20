@@ -230,7 +230,10 @@ def _cards(
             cards.append(build_card(record, baseline_part=baseline_part))
             if full:
                 # The file as saved (redact_keys already applied), not a re-serialization.
-                payloads[run_id] = json.loads(storage.load_run_text(run_id))
+                # save_run may write NaN / Infinity, which strict JSON parsers refuse: send null.
+                payloads[run_id] = json.loads(
+                    storage.load_run_text(run_id), parse_constant=lambda _: None
+                )
         except Exception as exc:  # noqa: BLE001
             raise UploadError(
                 f"cannot upload: could not build the card for run {shown} "
