@@ -451,7 +451,8 @@ def test_a_non_finite_float_in_a_run_file_still_posts_strict_json(workspace):
 
     (post,) = workspace.posts()
     body = json.loads(post["body"], parse_constant=strict)
-    assert body["payloads"][record.run_id]["steps"][0]["output_dict"] == {"score": None, "hi": None}
+    step = body["payloads"][record.run_id]["steps"][0]
+    assert step["output_dict"] == {"score": None, "hi": None}
 
 
 @pytest.mark.unit
