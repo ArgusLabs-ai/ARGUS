@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.18.0 — 2026-11-20
+## 0.18.0 — 2026-11-21
 
 - Opt-in full payloads for a team workspace: when the workspace answers `"payloads": "full"`, `argus cloud pull-baselines` writes `.argus/cloud_payloads` and `argus cloud upload` sends each saved run file in a `payloads` field beside the unchanged run cards, split into posts under the body cap (only the last is `final`). Any other answer removes the file; without it the upload body is exactly as before. Non-finite floats in a run file are sent as `null`. `docs/DATA.md` documents the switch (#204)
 - Parallel fan-out branches and concurrent `.batch()` items no longer serialize behind step grading. User validators and the abort-mode sync judge now run concurrently across sibling steps (#91)
