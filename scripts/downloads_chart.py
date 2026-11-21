@@ -2,6 +2,11 @@
 """Render assets/downloads.svg: cumulative PyPI downloads of argus-agents.
 
 Mirror downloads are excluded (they are bandwidth mirrors, not installs).
+
+pypistats only retains ~180 days, so early history must be kept locally in
+assets/downloads_history.json. This script merges new API days onto that
+file and never drops dates that have fallen out of the pypistats window.
+
 Rerun on release:  python scripts/downloads_chart.py
 """
 
@@ -14,7 +19,9 @@ from itertools import accumulate
 from pathlib import Path
 
 URL = "https://pypistats.org/api/packages/argus-agents/overall?mirrors=false"
-OUT = Path(__file__).resolve().parent.parent / "assets" / "downloads.svg"
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "assets" / "downloads.svg"
+HISTORY = ROOT / "assets" / "downloads_history.json"
 W, H = 800, 240
 LEFT, RIGHT, TOP, BOTTOM = 48, 72, 36, 28
 
@@ -30,6 +37,38 @@ def fetch_daily() -> list[tuple[date, int]]:
     if len(daily) < 2:
         raise SystemExit(f"pypistats returned {len(daily)} days; nothing to plot")
     return daily
+
+
+def load_history() -> dict[date, int]:
+    if not HISTORY.exists():
+        return {}
+    rows = json.loads(HISTORY.read_text())
+    return {date.fromisoformat(r["date"]): int(r["downloads"]) for r in rows}
+
+
+def save_history(daily: dict[date, int]) -> None:
+    rows = [
+        {"date": d.isoformat(), "downloads": n}
+        for d, n in sorted(daily.items())
+    ]
+    HISTORY.write_text(json.dumps(rows, indent=2) + "\n")
+
+
+def merge_history(
+    history: dict[date, int], api: list[tuple[date, int]]
+) -> dict[date, int]:
+    """Keep every historical day; add/overwrite only with newer API dates.
+
+    Days already stored that have fallen out of the pypistats window are
+    preserved. API values replace history for dates the API still covers, so
+    a re-run after a late revision stays accurate without erasing the prefix.
+    """
+    merged = dict(history)
+    if not api:
+        return merged
+    for d, n in api:
+        merged[d] = n
+    return merged
 
 
 def fmt(n: float) -> str:
@@ -94,6 +133,21 @@ def render(daily: list[tuple[date, int]]) -> str:
 
 
 if __name__ == "__main__":
-    daily = fetch_daily()
+    api = fetch_daily()
+    history = load_history()
+    if not history:
+        raise SystemExit(
+            f"missing {HISTORY.relative_to(ROOT)} — seed it once from the "
+            "committed chart before the pypistats window rolled off, then rerun"
+        )
+    merged = merge_history(history, api)
+    save_history(merged)
+    daily = sorted(merged.items())
     OUT.write_text(render(daily))
-    print(f"wrote {OUT} — total {sum(n for _, n in daily)} through {daily[-1][0]}")
+    total = sum(n for _, n in daily)
+    print(
+        f"wrote {OUT.relative_to(ROOT)} — total {total} ({fmt(total)}) "
+        f"through {daily[-1][0]} ({len(daily)} days; "
+        f"history kept {len(history)} → {len(merged)})"
+    )
+    print(f"README badge: https://img.shields.io/badge/downloads-{fmt(total)}-blue")
