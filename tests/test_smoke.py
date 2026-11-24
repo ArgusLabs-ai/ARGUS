@@ -1778,3 +1778,16 @@ def test_root_cause_display_annotates_failing_iteration_on_cyclic_run():
     # acyclic runs keep the plain arrow form
     record.is_cyclic = False
     assert _root_cause_chain_str(record) == "gen"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", ["null", "blah blah blah", "-----", "etc. etc. etc."])
+def test_degenerate_output_signatures_gate_the_node(text):
+    """#49: null-like, filler and empty-state matches are real failures, not advisories."""
+    from argus.models import LLMInvestigationConfig
+
+    session = ArgusSession(llm_investigation=LLMInvestigationConfig(enabled=False))
+    session.set_node_names(["summarize"])
+    session.wrap("summarize", lambda state: {"notes": text})({"input": "doc"})
+    session.finalize()
+    assert load_run(session.run_id).steps[0].status != "pass"

@@ -156,7 +156,7 @@
       "category": "placeholder_outputs",
       "pattern": "PLACEHOLDER",
       "match_strategy": "exact_ci",
-      "severity": "critical",
+      "severity": "warning",
       "description": "Field is a literal PLACEHOLDER string",
       "source": "builtin",
       "metadata": {
@@ -366,7 +366,7 @@
       "category": "null_like_semantic",
       "pattern": "null",
       "match_strategy": "exact_ci",
-      "severity": "warning",
+      "severity": "critical",
       "description": "String literal 'null' — semantically absent value",
       "source": "builtin",
       "metadata": {
@@ -396,7 +396,7 @@
       "category": "null_like_semantic",
       "pattern": "undefined",
       "match_strategy": "exact_ci",
-      "severity": "warning",
+      "severity": "critical",
       "description": "String 'undefined' — JavaScript null serialized as string",
       "source": "builtin",
       "metadata": {
@@ -426,7 +426,7 @@
       "category": "null_like_semantic",
       "pattern": "nil",
       "match_strategy": "exact_ci",
-      "severity": "warning",
+      "severity": "critical",
       "description": "String 'nil' — Ruby/Go null serialized as string",
       "source": "builtin",
       "metadata": {
@@ -441,7 +441,7 @@
       "category": "null_like_semantic",
       "pattern": "nan",
       "match_strategy": "exact_ci",
-      "severity": "warning",
+      "severity": "critical",
       "description": "String 'nan' — numeric not-a-number serialized as string",
       "source": "builtin",
       "metadata": {
@@ -471,7 +471,7 @@
       "category": "null_like_semantic",
       "pattern": "void",
       "match_strategy": "exact_ci",
-      "severity": "warning",
+      "severity": "critical",
       "description": "String 'void' — semantic absence marker",
       "source": "builtin",
       "metadata": {
@@ -1011,7 +1011,7 @@
       "category": "repeated_filler",
       "pattern": "",
       "match_strategy": "repetition",
-      "severity": "warning",
+      "severity": "critical",
       "description": "Any single word or phrase repeated 3+ times — filler content",
       "source": "builtin",
       "metadata": {
@@ -1026,7 +1026,7 @@
       "category": "repeated_filler",
       "pattern": "(?:etc[., ]+){3,}",
       "match_strategy": "regex",
-      "severity": "warning",
+      "severity": "critical",
       "description": "'etc' repeated 3+ times — degenerate enumeration",
       "source": "builtin",
       "metadata": {
@@ -1056,7 +1056,7 @@
       "category": "repeated_filler",
       "pattern": "(?:blah\\s*){3,}",
       "match_strategy": "regex",
-      "severity": "warning",
+      "severity": "critical",
       "description": "'blah' repeated 3+ times — explicit nonsense filler",
       "source": "builtin",
       "metadata": {
@@ -1071,7 +1071,7 @@
       "category": "repeated_filler",
       "pattern": "(?:lorem ipsum\\s*){2,}",
       "match_strategy": "regex",
-      "severity": "warning",
+      "severity": "critical",
       "description": "Lorem ipsum repeated — unfilled template text",
       "source": "builtin",
       "metadata": {
@@ -1101,7 +1101,7 @@
       "category": "empty_semantic_state",
       "pattern": "^-+$",
       "match_strategy": "regex",
-      "severity": "warning",
+      "severity": "critical",
       "description": "String of only dashes — empty semantic content",
       "source": "builtin",
       "metadata": {
@@ -1116,7 +1116,7 @@
       "category": "empty_semantic_state",
       "pattern": "^_+$",
       "match_strategy": "regex",
-      "severity": "warning",
+      "severity": "critical",
       "description": "String of only underscores — empty semantic content",
       "source": "builtin",
       "metadata": {
@@ -1131,7 +1131,7 @@
       "category": "empty_semantic_state",
       "pattern": "^\\s+$",
       "match_strategy": "regex",
-      "severity": "warning",
+      "severity": "critical",
       "description": "Whitespace-only string — passes structural checks but is semantically empty",
       "source": "builtin",
       "metadata": {
