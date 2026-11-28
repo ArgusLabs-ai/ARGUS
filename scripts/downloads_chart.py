@@ -1,35 +1,47 @@
 # ruff: noqa: E501  (inline SVG markup reads better unwrapped)
-"""Render assets/downloads.svg: cumulative PyPI downloads of argus-agents.
+"""Render downloads.svg: cumulative PyPI downloads of argus-agents.
 
 Mirror downloads are excluded (they are bandwidth mirrors, not installs).
-Rerun on release:  python scripts/downloads_chart.py
+pypistats only serves the last 180 days, so every run merges that window into
+a ledger (downloads.json) and the total keeps the days that have scrolled out.
+Run daily by .github/workflows/downloads.yml into the `stats` branch:
+    python scripts/downloads_chart.py <out-dir>
 """
 
 from __future__ import annotations
 
 import json
+import sys
 import urllib.request
 from datetime import date
 from itertools import accumulate
 from pathlib import Path
 
 URL = "https://pypistats.org/api/packages/argus-agents/overall?mirrors=false"
-OUT = Path(__file__).resolve().parent.parent / "assets" / "downloads.svg"
 W, H = 800, 240
 LEFT, RIGHT, TOP, BOTTOM = 48, 72, 36, 28
 
 
-def fetch_daily() -> list[tuple[date, int]]:
+def fetch_window() -> dict[str, int]:
     with urllib.request.urlopen(URL, timeout=30) as resp:
         rows = json.load(resp)["data"]
-    daily = sorted(
-        (date.fromisoformat(r["date"]), r["downloads"])
-        for r in rows
-        if r["category"] == "without_mirrors"
-    )
-    if len(daily) < 2:
-        raise SystemExit(f"pypistats returned {len(daily)} days; nothing to plot")
-    return daily
+    window = {r["date"]: r["downloads"] for r in rows if r["category"] == "without_mirrors"}
+    if len(window) < 2:
+        raise SystemExit(f"pypistats returned {len(window)} days; refusing to update")
+    return window
+
+
+def merge(ledger: dict, window: dict[str, int]) -> dict:
+    """New ledger: recorded days, overwritten by pypistats' (possibly revised) window."""
+    daily = {**ledger.get("daily", {}), **window}
+    baseline = ledger.get("baseline", {"downloads": 0})
+    total = baseline["downloads"] + sum(daily.values())
+    return {
+        "baseline": baseline,
+        "total": total,
+        "updated": max(daily),
+        "daily": dict(sorted(daily.items())),
+    }
 
 
 def fmt(n: float) -> str:
@@ -42,9 +54,9 @@ def nice_step(top: int) -> int:
     return next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
 
 
-def render(daily: list[tuple[date, int]]) -> str:
+def render(daily: list[tuple[date, int]], start: int = 0) -> str:
     days = [d for d, _ in daily]
-    totals = list(accumulate(n for _, n in daily))
+    totals = list(accumulate((n for _, n in daily), initial=start))[1:]
     step = nice_step(totals[-1])
     y_max = step * -(-totals[-1] // step)
     span = (days[-1] - days[0]).days
@@ -93,7 +105,18 @@ def render(daily: list[tuple[date, int]]) -> str:
 """
 
 
+def badge(total: int) -> dict:
+    """shields.io endpoint payload."""
+    return {"schemaVersion": 1, "label": "downloads", "message": fmt(total), "color": "blue"}
+
+
 if __name__ == "__main__":
-    daily = fetch_daily()
-    OUT.write_text(render(daily))
-    print(f"wrote {OUT} — total {sum(n for _, n in daily)} through {daily[-1][0]}")
+    out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "assets"
+    ledger_path = out / "downloads.json"
+    old = json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
+    ledger = merge(old, fetch_window())
+    daily = [(date.fromisoformat(d), n) for d, n in ledger["daily"].items()]
+    ledger_path.write_text(json.dumps(ledger, indent=1) + "\n")
+    (out / "downloads.svg").write_text(render(daily, ledger["baseline"]["downloads"]))
+    (out / "downloads-badge.json").write_text(json.dumps(badge(ledger["total"])) + "\n")
+    print(f"total {ledger['total']} through {ledger['updated']}")
