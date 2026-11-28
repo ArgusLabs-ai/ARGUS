@@ -2,11 +2,11 @@
   <img src="https://github.com/ArgusLabs-ai/ARGUS/blob/master/assets/Argus-NameTrans.png?raw=true" width="480"/><br/>
   <a href="https://arguslabs.in"><img src="https://img.shields.io/badge/website-arguslabs.in-6366f1" alt="Website"/></a>
   <a href="https://pypi.org/project/argus-agents/"><img src="https://img.shields.io/pypi/v/argus-agents" alt="PyPI version"/></a>
-  <a href="https://pepy.tech/projects/argus-agents"><img src="https://img.shields.io/badge/downloads-12.7k-blue" alt="Downloads"/></a>
+  <a href="https://pepy.tech/projects/argus-agents"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ArgusLabs-ai/ARGUS/stats/downloads-badge.json" alt="Downloads"/></a>
   <a href="https://pepy.tech/projects/argus-agents"><img src="https://img.shields.io/pypi/dm/argus-agents" alt="Monthly downloads"/></a>
   <a href="https://pypi.org/project/argus-agents/"><img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9+"/></a>
   <a href="https://discord.gg/67XTFTDSgd"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"/></a><br/><br/>
-  <a href="https://pypistats.org/packages/argus-agents"><img src="assets/downloads.svg" width="640" alt="Cumulative PyPI downloads of argus-agents"/></a>
+  <a href="https://pypistats.org/packages/argus-agents"><img src="https://raw.githubusercontent.com/ArgusLabs-ai/ARGUS/stats/downloads.svg" width="640" alt="Cumulative PyPI downloads of argus-agents"/></a>
 </div>
 
 ---
